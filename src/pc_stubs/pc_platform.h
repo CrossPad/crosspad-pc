@@ -20,11 +20,15 @@ void pc_platform_init(void);
 
 namespace crosspad { class IMidiOutput; }
 namespace crosspad { class IAudioOutput; }
+namespace crosspad { class RgbColor; }
 
 /// Replace the default null MIDI output with a real one (e.g. PcMidi)
 void pc_platform_set_midi_output(crosspad::IMidiOutput* midi);
 
 /// Replace the default null audio output with a real one (e.g. PcAudioOutput)
 void pc_platform_set_audio_output(crosspad::IAudioOutput* audio);
+
+/// Read back a LED pixel color (0-15) for the STM32 emulator display
+crosspad::RgbColor pc_get_led_color(uint16_t idx);
 
 #endif

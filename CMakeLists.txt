@@ -1,8 +1,12 @@
 cmake_minimum_required(VERSION 3.14)
 project(lvgl C CXX)
 
-# Set the correct FreeRTOS port for your system (e.g., Posix for WSL)
-set(FREERTOS_PORT GCC_POSIX CACHE STRING "Port for FreeRTOS on Posix environment")
+# Set the correct FreeRTOS port for the current compiler
+if(MSVC OR MINGW)
+    set(FREERTOS_PORT MSVC_MINGW CACHE STRING "FreeRTOS port" FORCE)
+else()
+    set(FREERTOS_PORT GCC_POSIX CACHE STRING "FreeRTOS port" FORCE)
+endif()
 
 set(LVGL_PRO_PROJECT_DIR
     ""
@@ -25,14 +29,20 @@ if(USE_FREERTOS)
 
     # FreeRTOS-specific include directories
     include_directories(${PROJECT_SOURCE_DIR}/FreeRTOS/include)
-    include_directories(${PROJECT_SOURCE_DIR}/FreeRTOS/portable/ThirdParty/GCC/Posix)
     include_directories(${PROJECT_SOURCE_DIR}/config)
+
+    if(MSVC OR MINGW)
+        set(FREERTOS_PORT_DIR ${PROJECT_SOURCE_DIR}/FreeRTOS/portable/MSVC-MingW)
+    else()
+        set(FREERTOS_PORT_DIR ${PROJECT_SOURCE_DIR}/FreeRTOS/portable/ThirdParty/GCC/Posix)
+    endif()
+    include_directories(${FREERTOS_PORT_DIR})
 
     # Add FreeRTOS sources
     file(GLOB FREERTOS_SOURCES
         "${PROJECT_SOURCE_DIR}/FreeRTOS/*.c"
         "${PROJECT_SOURCE_DIR}/FreeRTOS/portable/MemMang/heap_4.c"
-        "${PROJECT_SOURCE_DIR}/FreeRTOS/portable/ThirdParty/GCC/Posix/*.c"
+        "${FREERTOS_PORT_DIR}/*.c"
     )
 else()
     message(STATUS "FreeRTOS is disabled")
@@ -62,6 +72,14 @@ set(WORKING_DIRECTORY ${PROJECT_SOURCE_DIR})
 find_package(SDL2 REQUIRED)
 
 include(FetchContent)
+
+# Suppress warnings from all third-party code (LVGL, RtMidi, RtAudio, etc.)
+if(MSVC)
+    set(_SAVED_C_FLAGS "${CMAKE_C_FLAGS}")
+    set(_SAVED_CXX_FLAGS "${CMAKE_CXX_FLAGS}")
+    string(REGEX REPLACE "/W[0-4]" "/w" CMAKE_C_FLAGS "${CMAKE_C_FLAGS}")
+    string(REGEX REPLACE "/W[0-4]" "/w" CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS}")
+endif()
 
 # ArduinoJson (header-only, required by crosspad-core settings)
 FetchContent_Declare(
@@ -112,8 +130,15 @@ add_compile_definitions($<$<BOOL:${LV_USE_FFMPEG}>:LV_USE_FFMPEG=1>)
 # which breaks ThorVG linking — it can't resolve lv_realloc/lv_strdup/lv_zalloc
 # when built as a separate DLL)
 set(BUILD_SHARED_LIBS OFF)
+
 add_subdirectory(lvgl)
 target_include_directories(lvgl PUBLIC ${PROJECT_SOURCE_DIR} ${SDL2_INCLUDE_DIRS})
+
+# Restore warning level for project code
+if(MSVC)
+    set(CMAKE_C_FLAGS "${_SAVED_C_FLAGS}")
+    set(CMAKE_CXX_FLAGS "${_SAVED_CXX_FLAGS}")
+endif()
 
 # ── crosspad-core portable sources (excluding ESP-IDF / FreeRTOS specific) ──
 set(CROSSPAD_CORE_SOURCES
@@ -154,6 +179,8 @@ set(PC_STUB_SOURCES
 )
 
 set(MAIN_SOURCES src/mouse_cursor_icon.c src/hal/hal.c
+    src/stm32_emu/Stm32EmuWindow.cpp
+    src/crosspad_app.cpp
     ${CROSSPAD_CORE_SOURCES}
     ${CROSSPAD_GUI_SOURCES}
     ${PC_STUB_SOURCES}
@@ -162,7 +189,11 @@ set(MAIN_LIBS lvgl lvgl::examples lvgl::demos lvgl::thorvg ${SDL2_LIBRARIES} Ard
 
 # Create the main executable, depending on the FreeRTOS option
 if(USE_FREERTOS)
-    list(APPEND MAIN_SOURCES src/freertos_main.c src/freertos/freertos_posix_port.c ${FREERTOS_SOURCES})
+    if(MSVC OR MINGW)
+        list(APPEND MAIN_SOURCES src/freertos_main.cpp src/freertos/freertos_win32_port.c ${FREERTOS_SOURCES})
+    else()
+        list(APPEND MAIN_SOURCES src/freertos_main.cpp src/freertos/freertos_posix_port.c ${FREERTOS_SOURCES})
+    endif()
     list(APPEND MAIN_LIBS freertos_config freertos_kernel)
 else()
     list(APPEND MAIN_SOURCES src/main.cpp)
@@ -248,6 +279,8 @@ add_executable(main ${MAIN_SOURCES})
 target_compile_definitions(main PRIVATE
     LV_CONF_INCLUDE_SIMPLE
     USE_LVGL=1
+    CP_LCD_HOR_RES=320
+    CP_LCD_VER_RES=240
 )
 target_include_directories(main PRIVATE
     ${PROJECT_SOURCE_DIR}/src

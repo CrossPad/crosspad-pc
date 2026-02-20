@@ -86,6 +86,10 @@ public:
 
     uint16_t getPixelCount() const override { return PIXEL_COUNT; }
 
+    RgbColor getPixelColor(uint16_t idx) const {
+        return (idx < PIXEL_COUNT) ? pixels_[idx] : RgbColor(0, 0, 0);
+    }
+
 private:
     static constexpr uint16_t PIXEL_COUNT = 16;
     RgbColor pixels_[PIXEL_COUNT]{};
@@ -163,7 +167,9 @@ private:
 
 class PcGuiPlatform : public crosspad_gui::IGuiPlatform {
 public:
-    PcGuiPlatform() : start_(std::chrono::steady_clock::now()) {}
+    PcGuiPlatform() : start_(std::chrono::steady_clock::now()) {
+        initAssetPath();
+    }
 
     crosspad_gui::HeapStats getHeapStats() override {
         // Simulated values for PC
@@ -177,7 +183,7 @@ public:
     }
 
     const char* assetPathPrefix() override {
-        return "C:/";
+        return assetPrefix_.c_str();
     }
 
     void delayMs(uint32_t ms) override {
@@ -195,6 +201,30 @@ public:
 
 private:
     std::chrono::steady_clock::time_point start_;
+    std::string assetPrefix_ = "C:/";
+
+    void initAssetPath() {
+#ifdef _MSC_VER
+        char exePath[MAX_PATH];
+        DWORD len = GetModuleFileNameA(NULL, exePath, MAX_PATH);
+        if (len == 0 || len >= MAX_PATH) return;
+
+        std::string path(exePath, len);
+        // Remove exe filename → bin directory
+        size_t pos = path.find_last_of("\\/");
+        if (pos == std::string::npos) return;
+        path = path.substr(0, pos);
+        // Go up one level → project root
+        pos = path.find_last_of("\\/");
+        if (pos == std::string::npos) return;
+        path = path.substr(0, pos);
+        // Convert backslashes to forward slashes (LVGL convention)
+        for (char& c : path) {
+            if (c == '\\') c = '/';
+        }
+        assetPrefix_ = path + "/crosspad-gui/assets/";
+#endif
+    }
 };
 
 // =============================================================================
@@ -233,6 +263,14 @@ static IAudioOutput* s_audioOutput = &s_nullAudio;
 static bool s_initialized = false;
 
 } // anonymous namespace
+
+// =============================================================================
+// LED color accessor for STM32 emulator window
+// =============================================================================
+
+crosspad::RgbColor pc_get_led_color(uint16_t idx) {
+    return s_ledStrip.getPixelColor(idx);
+}
 
 // =============================================================================
 // crosspad-core singleton getters
