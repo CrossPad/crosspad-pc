@@ -103,12 +103,11 @@ static void LoadMainScreen(lv_obj_t* parent) {
     lv_obj_set_style_bg_color(parent, lv_color_black(), 0);
     lv_obj_set_style_bg_opa(parent, LV_OPA_COVER, 0);
 
-    lv_obj_t* fill_cont = lv_obj_create(parent);
-    lv_obj_set_size(fill_cont, lv_obj_get_content_width(parent), LV_STATUS_BAR_HEIGHT);
-    lv_obj_set_style_bg_opa(fill_cont, LV_OPA_TRANSP, 0);
-    lv_obj_set_style_border_width(fill_cont, 0, 0);
-    lv_obj_set_style_pad_all(fill_cont, 0, 0);
+    /* Status bar is now a normal flex child (overlay parent = lcdContainer).
+       Reset alignment from TOP_MID (set inside lv_CreateStatusBar) to DEFAULT
+       so the flex column layout controls its position instead of ignoring it. */
     status_c = lv_CreateStatusBar();
+    lv_obj_set_style_align(status_c, LV_ALIGN_DEFAULT, 0);
 
     app_c = lv_obj_create(parent);
     lv_obj_add_style(app_c, &styleAppContainer, 0);
@@ -234,14 +233,10 @@ void crosspad_app_init()
     }).detach();
 #endif
 
-    /* Constrain lv_layer_top() to the LCD area */
-    {
-        lv_obj_update_layout(lcdContainer);
-        lv_obj_t* layerTop = lv_layer_top();
-        lv_obj_set_pos(layerTop, lv_obj_get_x(lcdContainer), lv_obj_get_y(lcdContainer));
-        lv_obj_set_size(layerTop, lv_obj_get_width(lcdContainer), lv_obj_get_height(lcdContainer));
-        lv_obj_set_style_pad_all(layerTop, 0, 0);
-    }
+    /* Use the LCD container as overlay parent so the status bar renders
+       on the normal working layer instead of lv_layer_top() (system layer),
+       which has different dimensions on the PC build. */
+    crosspad_gui::setOverlayParent(lcdContainer);
 
     /* Styles, apps, main screen */
     initStyles();

@@ -44,7 +44,7 @@ void vApplicationTickHook(void) {}
 static void lvgl_task(void* pvParameters)
 {
     (void)pvParameters;
-
+    printf("Starting LVGL task\n");
     lv_init();
     sdl_hal_init(Stm32EmuWindow::WIN_W, Stm32EmuWindow::WIN_H);
     crosspad_app_init();

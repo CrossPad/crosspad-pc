@@ -180,6 +180,8 @@ set(PC_STUB_SOURCES
 
 set(MAIN_SOURCES src/mouse_cursor_icon.c src/hal/hal.c
     src/stm32_emu/Stm32EmuWindow.cpp
+    src/stm32_emu/EmuEncoder.cpp
+    src/stm32_emu/EmuPadGrid.cpp
     src/crosspad_app.cpp
     ${CROSSPAD_CORE_SOURCES}
     ${CROSSPAD_GUI_SOURCES}
