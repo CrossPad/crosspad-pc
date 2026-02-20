@@ -1,0 +1,1 @@
+﻿[1/1] Linking CXX executable C:\Users\Mateusz\GIT\crosspad-pc\bin\main.exe

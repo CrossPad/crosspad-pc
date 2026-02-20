@@ -1,4 +1,4 @@
-cmake_minimum_required(VERSION 3.12.4)
+cmake_minimum_required(VERSION 3.14)
 project(lvgl C CXX)
 
 # Set the correct FreeRTOS port for your system (e.g., Posix for WSL)
@@ -9,6 +9,8 @@ set(LVGL_PRO_PROJECT_DIR
     CACHE PATH "Path to LVGL Pro Project folder")
 
 option(USE_FREERTOS "Enable FreeRTOS" OFF) # Turn this on to enable FreeRTOS
+option(USE_MIDI "Enable MIDI input/output via RtMidi" ON)
+option(USE_AUDIO "Enable system audio output via RtAudio" ON)
 
 if(USE_FREERTOS)
     message(STATUS "FreeRTOS is enabled")
@@ -59,30 +61,131 @@ set(WORKING_DIRECTORY ${PROJECT_SOURCE_DIR})
 # Find and include SDL2 library
 find_package(SDL2 REQUIRED)
 
+include(FetchContent)
+
+# ArduinoJson (header-only, required by crosspad-core settings)
+FetchContent_Declare(
+    ArduinoJson
+    GIT_REPOSITORY https://github.com/bblanchon/ArduinoJson.git
+    GIT_TAG        v7.3.0
+)
+FetchContent_MakeAvailable(ArduinoJson)
+
+# MIDI support via RtMidi
+if(USE_MIDI)
+    FetchContent_Declare(
+        rtmidi
+        GIT_REPOSITORY https://github.com/thestk/rtmidi.git
+        GIT_TAG        6.0.0
+    )
+    set(RTMIDI_BUILD_TESTING OFF CACHE BOOL "" FORCE)
+    set(RTMIDI_BUILD_SHARED_LIBS OFF CACHE BOOL "" FORCE)
+    set(BUILD_SHARED_LIBS OFF)
+    FetchContent_MakeAvailable(rtmidi)
+    message(STATUS "MIDI support enabled (RtMidi)")
+endif()
+
+# Audio support via RtAudio
+if(USE_AUDIO)
+    FetchContent_Declare(
+        rtaudio
+        GIT_REPOSITORY https://github.com/thestk/rtaudio.git
+        GIT_TAG        6.0.0
+    )
+    set(RTAUDIO_BUILD_TESTING OFF CACHE BOOL "" FORCE)
+    set(BUILD_SHARED_LIBS OFF CACHE BOOL "" FORCE)
+    # Rename RtAudio's "uninstall" target to avoid collision with RtMidi's
+    set(RTAUDIO_TARGETNAME_UNINSTALL "rtaudio-uninstall" CACHE STRING "" FORCE)
+    # Keep dynamic CRT (/MDd) — don't let RtAudio switch to static /MT
+    set(RTAUDIO_STATIC_MSVCRT OFF)
+    FetchContent_MakeAvailable(rtaudio)
+    message(STATUS "Audio support enabled (RtAudio)")
+endif()
+
 # Add compile definitions based on the selected options
 add_compile_definitions($<$<BOOL:${LV_USE_DRAW_SDL}>:LV_USE_DRAW_SDL=1>)
 add_compile_definitions($<$<BOOL:${LV_USE_LIBPNG}>:LV_USE_LIBPNG=1>)
 add_compile_definitions($<$<BOOL:${LV_USE_LIBJPEG_TURBO}>:LV_USE_LIBJPEG_TURBO=1>)
 add_compile_definitions($<$<BOOL:${LV_USE_FFMPEG}>:LV_USE_FFMPEG=1>)
 
-# Add LVGL subdirectory
+# Force LVGL to build as static library (vcpkg sets BUILD_SHARED_LIBS=ON
+# which breaks ThorVG linking — it can't resolve lv_realloc/lv_strdup/lv_zalloc
+# when built as a separate DLL)
+set(BUILD_SHARED_LIBS OFF)
 add_subdirectory(lvgl)
 target_include_directories(lvgl PUBLIC ${PROJECT_SOURCE_DIR} ${SDL2_INCLUDE_DIRS})
 
-set(MAIN_SOURCES src/mouse_cursor_icon.c src/hal/hal.c)
-set(MAIN_LIBS lvgl lvgl::examples lvgl::demos lvgl::thorvg ${SDL2_LIBRARIES})
+# ── crosspad-core portable sources (excluding ESP-IDF / FreeRTOS specific) ──
+set(CROSSPAD_CORE_SOURCES
+    crosspad-core/src/app/AppRegistry.cpp
+    crosspad-core/src/music/MusicTheory.cpp
+    crosspad-core/src/pad/PadManager.cpp
+    crosspad-core/src/pad/PadLedController.cpp
+    crosspad-core/src/pad/PadAnimator.cpp
+    crosspad-core/src/pad/RGBCallbackManager.cpp
+    crosspad-core/src/settings/CrosspadSettings.cpp
+)
+
+# ── crosspad-gui sources ──
+set(CROSSPAD_GUI_SOURCES
+    crosspad-gui/src/platform/GuiPlatform.cpp
+    crosspad-gui/src/styles/styles.cpp
+    crosspad-gui/src/widgets/gui_helpers.cpp
+    crosspad-gui/src/widgets/keypad_buttons.cpp
+    crosspad-gui/src/widgets/footer_button.cpp
+    crosspad-gui/src/widgets/spinbox_helpers.cpp
+    crosspad-gui/src/widgets/settings_widgets.cpp
+    crosspad-gui/src/components/dfu_panel.cpp
+    crosspad-gui/src/components/file_explorer.cpp
+    crosspad-gui/src/components/radial_menu.cpp
+    crosspad-gui/src/components/status_bar.cpp
+    crosspad-gui/src/components/ui_modal.cpp
+    crosspad-gui/src/components/ui_toast.cpp
+    crosspad-gui/src/components/vu_meter.cpp
+    crosspad-gui/src/components/app_launcher.cpp
+    crosspad-gui/src/components/app_lifecycle.cpp
+)
+
+# ── PC platform stubs (event bus, singletons, interface impls) ──
+set(PC_STUB_SOURCES
+    src/pc_stubs/PcEventBus.cpp
+    src/pc_stubs/PcPlatformStubs.cpp
+    src/pc_stubs/PcApp.cpp
+)
+
+set(MAIN_SOURCES src/mouse_cursor_icon.c src/hal/hal.c
+    ${CROSSPAD_CORE_SOURCES}
+    ${CROSSPAD_GUI_SOURCES}
+    ${PC_STUB_SOURCES}
+)
+set(MAIN_LIBS lvgl lvgl::examples lvgl::demos lvgl::thorvg ${SDL2_LIBRARIES} ArduinoJson)
 
 # Create the main executable, depending on the FreeRTOS option
 if(USE_FREERTOS)
     list(APPEND MAIN_SOURCES src/freertos_main.c src/freertos/freertos_posix_port.c ${FREERTOS_SOURCES})
     list(APPEND MAIN_LIBS freertos_config freertos_kernel)
 else()
-    list(APPEND MAIN_SOURCES src/main.c)
+    list(APPEND MAIN_SOURCES src/main.cpp)
 endif()
 
 
 if(NOT MSVC)
     list(APPEND MAIN_LIBS m pthread)
+endif()
+
+# MIDI sources and libraries
+if(USE_MIDI)
+    list(APPEND MAIN_SOURCES src/midi/PcMidi.cpp)
+    list(APPEND MAIN_LIBS rtmidi)
+    if(WIN32)
+        list(APPEND MAIN_LIBS winmm)
+    endif()
+endif()
+
+# Audio sources and libraries
+if(USE_AUDIO)
+    list(APPEND MAIN_SOURCES src/audio/PcAudio.cpp)
+    list(APPEND MAIN_LIBS rtaudio)
 endif()
 
 # Custom target to run the executable
@@ -142,8 +245,25 @@ if(LVGL_PRO_PROJECT_DIR)
 endif()
 
 add_executable(main ${MAIN_SOURCES})
-target_compile_definitions(main PRIVATE LV_CONF_INCLUDE_SIMPLE)
+target_compile_definitions(main PRIVATE
+    LV_CONF_INCLUDE_SIMPLE
+    USE_LVGL=1
+)
+target_include_directories(main PRIVATE
+    ${PROJECT_SOURCE_DIR}/src
+    ${PROJECT_SOURCE_DIR}/crosspad-core/include
+    ${PROJECT_SOURCE_DIR}/crosspad-gui/include
+)
 target_link_libraries(main ${MAIN_LIBS})
+
+# MIDI compile definition
+if(USE_MIDI)
+    target_compile_definitions(main PRIVATE USE_MIDI=1)
+endif()
+
+if(USE_AUDIO)
+    target_compile_definitions(main PRIVATE USE_AUDIO=1)
+endif()
 
 # On Windows, GUI applications do not show a console by default,
 # which hides log output. This ensures a console is available for logging.
@@ -159,31 +279,33 @@ endif()
 if(CMAKE_BUILD_TYPE STREQUAL "Debug")
     message(STATUS "Debug mode enabled")
 
-    target_compile_options(lvgl PRIVATE
-        -pedantic-errors
-        -Wall
-        -Wclobbered
-        -Wdeprecated
-        -Wdouble-promotion
-        -Wempty-body
-        -Wextra
-        -Wformat-security
-        -Wmaybe-uninitialized
-        # -Wmissing-prototypes
-        -Wpointer-arith
-        -Wmultichar
-        -Wno-pedantic # ignored for now, we convert functions to pointers for properties table.
-        -Wreturn-type
-        -Wshadow
-        -Wshift-negative-value
-        -Wsizeof-pointer-memaccess
-        -Wtype-limits
-        -Wundef
-        -Wuninitialized
-        -Wunreachable-code
-        -Wfloat-conversion
-        -Wstrict-aliasing
-    )
+    if(NOT MSVC)
+        target_compile_options(lvgl PRIVATE
+            -pedantic-errors
+            -Wall
+            -Wclobbered
+            -Wdeprecated
+            -Wdouble-promotion
+            -Wempty-body
+            -Wextra
+            -Wformat-security
+            -Wmaybe-uninitialized
+            # -Wmissing-prototypes
+            -Wpointer-arith
+            -Wmultichar
+            -Wno-pedantic # ignored for now, we convert functions to pointers for properties table.
+            -Wreturn-type
+            -Wshadow
+            -Wshift-negative-value
+            -Wsizeof-pointer-memaccess
+            -Wtype-limits
+            -Wundef
+            -Wuninitialized
+            -Wunreachable-code
+            -Wfloat-conversion
+            -Wstrict-aliasing
+        )
+    endif()
 
 if (ASAN)
     message(STATUS "AddressSanitizer enabled")

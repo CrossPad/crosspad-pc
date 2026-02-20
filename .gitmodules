@@ -7,3 +7,9 @@
 [submodule "FreeRTOS"]
 	path = FreeRTOS
 	url = https://github.com/FreeRTOS/FreeRTOS-Kernel.git
+[submodule "crosspad-core"]
+	path = crosspad-core
+	url = https://github.com/CrossPad/crosspad-core.git
+[submodule "crosspad-gui"]
+	path = crosspad-gui
+	url = https://github.com/CrossPad/crosspad-gui.git
