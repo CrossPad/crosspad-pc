@@ -149,6 +149,7 @@ set(CROSSPAD_CORE_SOURCES
     crosspad-core/src/pad/PadAnimator.cpp
     crosspad-core/src/pad/RGBCallbackManager.cpp
     crosspad-core/src/settings/CrosspadSettings.cpp
+    crosspad-core/src/protocol/Stm32MessageHandler.cpp
 )
 
 # ── crosspad-gui sources ──
@@ -283,6 +284,7 @@ target_compile_definitions(main PRIVATE
     USE_LVGL=1
     CP_LCD_HOR_RES=320
     CP_LCD_VER_RES=240
+    PLATFORM_PC=1
 )
 target_include_directories(main PRIVATE
     ${PROJECT_SOURCE_DIR}/src

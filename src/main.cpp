@@ -23,7 +23,8 @@ int main(int argc, char** argv)
 
     lv_init();
     sdl_hal_init(Stm32EmuWindow::WIN_W, Stm32EmuWindow::WIN_H);
-    crosspad_app_init();
+    // crosspad_app_init();
+    // if you seeing this, you would like to run a freertos.cpp version instead
 
     while (1) {
         uint32_t sleep_time_ms = lv_timer_handler();

@@ -8,6 +8,8 @@
 
 #include "PcMidi.hpp"
 #include <cstdio>
+#include <algorithm>
+#include <cctype>
 
 // ── Construction / Destruction ───────────────────────────────────────────
 
@@ -90,6 +92,59 @@ bool PcMidi::begin(unsigned int outPort, unsigned int inPort)
     }
 
     return anyOpen;
+}
+
+bool PcMidi::beginAutoConnect(const std::string& keyword)
+{
+    // Case-insensitive substring search helper
+    auto containsIgnoreCase = [](const std::string& haystack, const std::string& needle) -> bool {
+        if (needle.empty()) return true;
+        std::string h = haystack;
+        std::string n = needle;
+        std::transform(h.begin(), h.end(), h.begin(), ::tolower);
+        std::transform(n.begin(), n.end(), n.begin(), ::tolower);
+        return h.find(n) != std::string::npos;
+    };
+
+    // Find best matching output port
+    unsigned int outPort = 0;
+    bool outFound = false;
+    {
+        RtMidiOut probe;
+        unsigned int count = probe.getPortCount();
+        for (unsigned int i = 0; i < count; i++) {
+            if (containsIgnoreCase(probe.getPortName(i), keyword)) {
+                outPort = i;
+                outFound = true;
+                printf("[MIDI] Auto-connect: found output port [%u] '%s'\n",
+                       i, probe.getPortName(i).c_str());
+                break;
+            }
+        }
+        if (!outFound && count > 0)
+            printf("[MIDI] Auto-connect: no '%s' output found, using port 0\n", keyword.c_str());
+    }
+
+    // Find best matching input port
+    unsigned int inPort = 0;
+    bool inFound = false;
+    {
+        RtMidiIn probe;
+        unsigned int count = probe.getPortCount();
+        for (unsigned int i = 0; i < count; i++) {
+            if (containsIgnoreCase(probe.getPortName(i), keyword)) {
+                inPort = i;
+                inFound = true;
+                printf("[MIDI] Auto-connect: found input port  [%u] '%s'\n",
+                       i, probe.getPortName(i).c_str());
+                break;
+            }
+        }
+        if (!inFound && count > 0)
+            printf("[MIDI] Auto-connect: no '%s' input found, using port 0\n", keyword.c_str());
+    }
+
+    return begin(outPort, inPort);
 }
 
 void PcMidi::end()

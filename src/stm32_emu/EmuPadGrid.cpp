@@ -26,8 +26,8 @@ void EmuPadGrid::create(lv_obj_t* parent, int32_t x, int32_t y,
 
     for (int row = 0; row < 4; row++) {
         for (int col = 0; col < 4; col++) {
-            const int padIdx     = row * 4 + col;
-            const int displayNum = (3 - row) * 4 + col + 1;   // bottom-left = 1
+            const int padIdx     = (3 - row) * 4 + col;       // bottom-left = 0
+            const int displayNum = padIdx + 1;                 // bottom-left = 1
             const int32_t px = x + col * colPitch;
             const int32_t py = y + row * rowPitch;
 
@@ -66,10 +66,11 @@ void EmuPadGrid::create(lv_obj_t* parent, int32_t x, int32_t y,
             lv_obj_t* lbl = lv_label_create(parent);
             lv_label_set_text_fmt(lbl, "PAD %d", displayNum);
             lv_obj_set_pos(lbl, px, py + padSize + LABEL_MARGIN);
-            lv_obj_set_size(lbl, padSize, LABEL_H);
+            lv_obj_set_height(lbl, LABEL_H);
             lv_obj_set_style_text_font(lbl, &lv_font_montserrat_10, 0);
             lv_obj_set_style_text_color(lbl, lv_color_hex(0x1A1A1A), 0);
             lv_obj_set_style_text_align(lbl, LV_TEXT_ALIGN_CENTER, 0);
+            lv_obj_set_style_pad_hor(lbl, 2, 0);
             lv_obj_set_style_bg_color(lbl, lv_color_hex(0xF0EDE6), 0);
             lv_obj_set_style_bg_opa(lbl, LV_OPA_COVER, 0);
             lv_obj_set_style_pad_top(lbl, (LABEL_H - 10) / 2, 0);  // vertically center text

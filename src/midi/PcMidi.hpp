@@ -46,6 +46,14 @@ public:
      */
     bool begin(unsigned int outPort = 0, unsigned int inPort = 0);
 
+    /**
+     * @brief Auto-connect to the first port whose name contains @p keyword
+     *        (case-insensitive). Falls back to port 0 if no match is found.
+     * @param keyword  Substring to search for in port names (e.g. "CrossPad")
+     * @return true if at least one port was opened
+     */
+    bool beginAutoConnect(const std::string& keyword = "CrossPad");
+
     /// Close all ports and release resources
     void end();
 

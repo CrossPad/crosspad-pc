@@ -23,6 +23,15 @@ public:
     /// Call after sdl_hal_init(WIN_W, WIN_H) and pc_platform_init().
     lv_obj_t* init();
 
+    /// Forward a MIDI CC value to the virtual encoder rotation.
+    /// @param value       Current CC value
+    /// @param ccRange     Total distinct CC values before wrap (default 31 for range 0-30)
+    /// @param stepsPerRev Physical detents per revolution (default 18)
+    void handleEncoderCC(uint8_t value, uint8_t ccRange = 31, uint8_t stepsPerRev = 18);
+
+    /// Forward encoder button press/release state.
+    void handleEncoderPress(bool pressed);
+
 private:
     lv_obj_t* screen_       = nullptr;
     lv_obj_t* lcdContainer_ = nullptr;

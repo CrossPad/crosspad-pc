@@ -35,6 +35,8 @@
 
 #ifdef USE_MIDI
 #include "midi/PcMidi.hpp"
+#include "crosspad/protocol/Stm32MessageHandler.hpp"
+#include "crosspad/status/CrosspadStatus.hpp"
 #endif
 
 #ifdef USE_AUDIO
@@ -55,9 +57,12 @@ static lv_obj_t* app_c = nullptr;
 static App* runningApp = nullptr;
 static std::vector<App*> app_shortcuts;
 static crosspad_gui::LauncherConfig s_launcher_config;
+static Stm32EmuWindow stm32Emu;
 
 #ifdef USE_MIDI
 static PcMidi midi;
+static crosspad::Stm32MessageHandler stm32Handler;
+extern CrosspadStatus status;
 #endif
 
 #ifdef USE_AUDIO
@@ -176,21 +181,36 @@ void crosspad_app_init()
     pc_platform_init();
 
     /* STM32 emulator window — returns 320x240 LCD container */
-    static Stm32EmuWindow stm32Emu;
     lv_obj_t* lcdContainer = stm32Emu.init();
 
 #ifdef USE_MIDI
-    midi.begin();
+    // Initialize STM32 message handler — routes real CrossPad SysEx to PadManager
+    stm32Handler.init(crosspad::getPadManager(), status);
+
+    // Auto-connect: scans MIDI port names for "CrossPad", falls back to port 0
+    midi.beginAutoConnect("CrossPad");
     pc_platform_set_midi_output(&midi);
 
     midi.setHandleNoteOn([](uint8_t channel, uint8_t note, uint8_t velocity) {
         printf("[MIDI IN] NoteOn  ch=%u note=%u vel=%u\n", channel + 1, note, velocity);
+        crosspad::getPadManager().handleMidiNoteOn(channel, note, velocity);
     });
     midi.setHandleNoteOff([](uint8_t channel, uint8_t note, uint8_t velocity) {
         printf("[MIDI IN] NoteOff ch=%u note=%u vel=%u\n", channel + 1, note, velocity);
+        crosspad::getPadManager().handleMidiNoteOff(channel, note);
     });
     midi.setHandleControlChange([](uint8_t channel, uint8_t cc, uint8_t value) {
         printf("[MIDI IN] CC      ch=%u cc=%u  val=%u\n", channel + 1, cc, value);
+        // CC1 on ch1 = physical encoder position (0-30)
+        if (channel == 0 && cc == 1) {
+            stm32Emu.handleEncoderCC(value, 31, 18);  // CC range 0-30 (31 vals), 18 detents/rev
+        } else if (channel == 0 && cc == 64) {
+            stm32Emu.handleEncoderPress(value >= 64);  // CC64 = encoder button
+        }
+    });
+    // Route SysEx from real CrossPad hardware → Stm32MessageHandler → PadManager
+    midi.setHandleSystemExclusive([](uint8_t* data, unsigned size) {
+        stm32Handler.handleMessage(data, size);
     });
 #endif
 

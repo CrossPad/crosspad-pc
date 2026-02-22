@@ -118,6 +118,28 @@ void EmuEncoder::handleMiddleButton(bool pressed)
     pressed_ = pressed;
 }
 
+void EmuEncoder::setFromCC(uint8_t value, uint8_t ccRange, uint8_t stepsPerRev)
+{
+    if (ccRange == 0 || stepsPerRev == 0) return;
+
+    // First message — just record position, no rotation yet
+    if (lastCC_ < 0) {
+        lastCC_ = (int8_t)value;
+        return;
+    }
+
+    // Signed delta with wrap-around correction using the CC counter range
+    int delta = (int)value - (int)(uint8_t)lastCC_;
+    const int half = ccRange / 2;
+    if (delta >  half) delta -= ccRange;   // wrapped forward  (e.g. 1 - 30 = -29 → +1)
+    if (delta < -half) delta += ccRange;   // wrapped backward (e.g. 30 - 1 = +29 → -1)
+
+    lastCC_ = (int8_t)value;
+
+    // One physical step = 360° / stepsPerRev; negate for correct visual direction
+    angle_ -= delta * 3600 / stepsPerRev;
+}
+
 /* ── LVGL click callback ─────────────────────────────────────────────── */
 
 void EmuEncoder::onClicked(lv_event_t* e)

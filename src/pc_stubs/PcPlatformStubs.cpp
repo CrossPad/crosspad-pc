@@ -322,6 +322,8 @@ extern "C" void pc_platform_init() {
     s_padAnimator.init(s_ledStrip, s_clock);
     s_padLedController.init(s_ledStrip, s_eventBus, settings);
     s_padManager.init(s_padLedController, s_padAnimator, s_nullMidi, s_eventBus, settings, &status);
+    s_padManager.begin();
+    s_padLedController.begin();
 
     // Register GUI platform
     crosspad_gui::setGuiPlatform(&s_guiPlatform);
@@ -334,6 +336,7 @@ extern "C" void pc_platform_init() {
 void pc_platform_set_midi_output(IMidiOutput* midi) {
     if (midi) {
         s_padManager.init(s_padLedController, s_padAnimator, *midi, s_eventBus, settings, &status);
+        s_padManager.begin();
     }
 }
 

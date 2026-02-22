@@ -74,16 +74,17 @@ void Stm32EmuWindow::buildLayout()
     encoder_.create(screen_, ENC_X, ENC_Y, ENC_SIZE);
     padGrid_.create(screen_, GRID_X, GRID_Y, PAD_SIZE, PAD_GAP);
 
-    // Device label centered between LCD and pad grid
-    lv_obj_t* label = lv_label_create(screen_);
-    lv_label_set_text(label, "CrossPad");
-    lv_obj_set_style_text_color(label, lv_color_hex(0x555555), 0);
-    lv_obj_set_pos(label, 0, LCD_Y + LCD_H);
-    lv_obj_set_size(label, WIN_W, LABEL_GAP);
-    lv_obj_set_style_text_align(label, LV_TEXT_ALIGN_CENTER, 0);
-    const lv_font_t* font = lv_obj_get_style_text_font(label, LV_PART_MAIN);
-    int32_t vpad = (LABEL_GAP - lv_font_get_line_height(font)) / 2;
-    lv_obj_set_style_pad_top(label, vpad, LV_PART_MAIN);
+    // Logo centered between LCD and pad grid
+    lv_obj_t* logo = lv_image_create(screen_);
+    lv_image_set_src(logo, "C:/crosspad-gui/assets/CrossPad_Logo_110w.png");
+    lv_obj_set_pos(logo, (WIN_W - 120) / 2, LCD_Y + LCD_H + (LABEL_GAP - 36) / 2);
+    lv_obj_set_size(logo, 120, 36);
+    
+    // White color tint
+    lv_obj_set_style_img_recolor(logo, lv_color_white(), 0);
+    lv_obj_set_style_img_recolor_opa(logo, LV_OPA_COVER, 0);
+    
+    lv_obj_remove_flag(logo, (lv_obj_flag_t)(LV_OBJ_FLAG_CLICKABLE | LV_OBJ_FLAG_SCROLLABLE));
 }
 
 /* ── LCD container (320x240 — hosts the actual GUI) ──────────────────── */
@@ -113,4 +114,14 @@ void Stm32EmuWindow::onUpdateTimer(lv_timer_t* t)
 
     self->padGrid_.updateLeds();
     self->encoder_.update();
+}
+
+void Stm32EmuWindow::handleEncoderCC(uint8_t value, uint8_t ccRange, uint8_t stepsPerRev)
+{
+    encoder_.setFromCC(value, ccRange, stepsPerRev);
+}
+
+void Stm32EmuWindow::handleEncoderPress(bool pressed)
+{
+    encoder_.handleMiddleButton(pressed);
 }
