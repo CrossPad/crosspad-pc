@@ -3,6 +3,8 @@
 #include "lvgl/lvgl.h"
 #include "EmuEncoder.hpp"
 #include "EmuPadGrid.hpp"
+#include "EmuPowerButton.hpp"
+#include "EmuJackPanel.hpp"
 #include <cstdint>
 
 /**
@@ -17,7 +19,7 @@ public:
     Stm32EmuWindow() = default;
 
     static constexpr int32_t WIN_W = 490;
-    static constexpr int32_t WIN_H = 660;
+    static constexpr int32_t WIN_H = 680;
 
     /// Build device body on the active screen. Returns the 320x240 LCD container.
     /// Call after sdl_hal_init(WIN_W, WIN_H) and pc_platform_init().
@@ -32,12 +34,17 @@ public:
     /// Forward encoder button press/release state.
     void handleEncoderPress(bool pressed);
 
+    /// Access the jack panel for wiring device selection callbacks.
+    EmuJackPanel& getJackPanel() { return jackPanel_; }
+
 private:
     lv_obj_t* screen_       = nullptr;
     lv_obj_t* lcdContainer_ = nullptr;
 
-    EmuEncoder encoder_;
-    EmuPadGrid padGrid_;
+    EmuEncoder     encoder_;
+    EmuPadGrid     padGrid_;
+    EmuPowerButton powerBtn_;
+    EmuJackPanel   jackPanel_;
 
     lv_timer_t* updateTimer_ = nullptr;
 

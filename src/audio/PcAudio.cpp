@@ -101,6 +101,9 @@ bool PcAudioOutput::begin(unsigned int outputDevice, uint32_t sampleRate,
         return false;
     }
 
+    currentDeviceId_ = outDeviceId;
+    currentDeviceName_ = outInfo.name;
+
     printf("[Audio] Stream started: device=[%u] %s, %u Hz, %u frames/buffer\n",
            outDeviceId, outInfo.name.c_str(), sampleRate_, bufferFrames_);
 
@@ -119,6 +122,7 @@ void PcAudioOutput::end() {
     }
     rtAudio_.reset();
     outputRing_.reset();
+    currentDeviceName_.clear();
     printf("[Audio] Shutdown complete.\n");
 }
 
@@ -168,6 +172,19 @@ unsigned int PcAudioOutput::getDefaultOutputDevice() const {
 
 bool PcAudioOutput::isOpen() const {
     return streamOpen_;
+}
+
+bool PcAudioOutput::switchDevice(unsigned int deviceId) {
+    end();
+    return begin(deviceId, sampleRate_, bufferFrames_);
+}
+
+std::string PcAudioOutput::getCurrentDeviceName() const {
+    return currentDeviceName_;
+}
+
+unsigned int PcAudioOutput::getCurrentDeviceId() const {
+    return currentDeviceId_;
 }
 
 // ── RtAudio callback ───────────────────────────────────────────────────

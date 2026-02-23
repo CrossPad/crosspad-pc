@@ -54,6 +54,12 @@ public:
      */
     bool beginAutoConnect(const std::string& keyword = "CrossPad");
 
+    /**
+     * @brief Close all ports and try auto-connect again using the last keyword.
+     * @return true if at least one port was (re)opened
+     */
+    bool reconnect();
+
     /// Close all ports and release resources
     void end();
 
@@ -85,12 +91,18 @@ public:
     bool isOutputOpen() const;
     bool isInputOpen() const;
 
+    /// Returns true if the last beginAutoConnect() found a port matching the keyword.
+    bool isKeywordConnected() const;
+
 private:
     std::unique_ptr<RtMidiOut> midiOut_;
     std::unique_ptr<RtMidiIn>  midiIn_;
 
     bool outputOpen_ = false;
     bool inputOpen_  = false;
+
+    std::string autoConnectKeyword_;
+    bool autoConnectFound_ = false;   // true when keyword match was found
 
     // Callbacks
     NoteOnCallback        noteOnCb_;

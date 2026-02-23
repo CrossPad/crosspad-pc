@@ -87,6 +87,11 @@ bool PcMidi::begin(unsigned int outPort, unsigned int inPort)
         }
     }
 
+    // Re-enable SysEx if a handler was already registered (persistent across reconnects)
+    if (midiIn_ && inputOpen_ && sysExCb_) {
+        midiIn_->ignoreTypes(false, true, true);
+    }
+
     if (!anyOpen) {
         printf("[MIDI] WARNING: No MIDI ports could be opened.\n");
     }
@@ -96,6 +101,9 @@ bool PcMidi::begin(unsigned int outPort, unsigned int inPort)
 
 bool PcMidi::beginAutoConnect(const std::string& keyword)
 {
+    autoConnectKeyword_ = keyword;
+    autoConnectFound_   = false;
+
     // Case-insensitive substring search helper
     auto containsIgnoreCase = [](const std::string& haystack, const std::string& needle) -> bool {
         if (needle.empty()) return true;
@@ -144,7 +152,15 @@ bool PcMidi::beginAutoConnect(const std::string& keyword)
             printf("[MIDI] Auto-connect: no '%s' input found, using port 0\n", keyword.c_str());
     }
 
+    autoConnectFound_ = (outFound || inFound);
     return begin(outPort, inPort);
+}
+
+bool PcMidi::reconnect()
+{
+    printf("[MIDI] Reconnecting (keyword='%s')...\n", autoConnectKeyword_.c_str());
+    end();
+    return beginAutoConnect(autoConnectKeyword_);
 }
 
 void PcMidi::end()
@@ -188,6 +204,7 @@ void PcMidi::sendNoteOn(uint8_t note, uint8_t velocity, uint8_t channel)
                (channel & 0x0F) + 1, note, velocity);
     } catch (RtMidiError& e) {
         printf("[MIDI OUT] Send error: %s\n", e.what());
+        outputOpen_ = false;  // trigger reconnect timer
     }
 }
 
@@ -208,6 +225,7 @@ void PcMidi::sendNoteOff(uint8_t note, uint8_t velocity, uint8_t channel)
                (channel & 0x0F) + 1, note, velocity);
     } catch (RtMidiError& e) {
         printf("[MIDI OUT] Send error: %s\n", e.what());
+        outputOpen_ = false;  // trigger reconnect timer
     }
 }
 
@@ -228,6 +246,7 @@ void PcMidi::sendControlChange(uint8_t cc, uint8_t value, uint8_t channel)
                (channel & 0x0F) + 1, cc, value);
     } catch (RtMidiError& e) {
         printf("[MIDI OUT] Send error: %s\n", e.what());
+        outputOpen_ = false;  // trigger reconnect timer
     }
 }
 
@@ -299,6 +318,11 @@ bool PcMidi::isOutputOpen() const
 bool PcMidi::isInputOpen() const
 {
     return inputOpen_;
+}
+
+bool PcMidi::isKeywordConnected() const
+{
+    return autoConnectFound_ && (outputOpen_ || inputOpen_);
 }
 
 // ── RtMidi callback (static → instance dispatch) ─────────────────────────

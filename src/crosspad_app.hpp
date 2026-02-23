@@ -10,3 +10,6 @@
  */
 
 void crosspad_app_init();
+
+/// Return to the launcher main screen (destroys running app, reloads launcher)
+void crosspad_app_go_home();

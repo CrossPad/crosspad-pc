@@ -19,6 +19,8 @@
 #include "crosspad/platform/IClock.hpp"
 #include "crosspad/midi/IMidiOutput.hpp"
 #include "crosspad/synth/IAudioOutput.hpp"
+#include "crosspad/synth/IAudioInput.hpp"
+#include "crosspad/synth/ISynthEngine.hpp"
 #include "crosspad/led/ILedStrip.hpp"
 #include "crosspad/settings/IKeyValueStore.hpp"
 #include "crosspad/settings/CrosspadSettings.hpp"
@@ -258,11 +260,16 @@ static PadLedController s_padLedController;
 static PadAnimator      s_padAnimator;
 static PadManager       s_padManager;
 
-static IAudioOutput* s_audioOutput = &s_nullAudio;
+static IAudioOutput* s_audioOutput  = &s_nullAudio;
+static IAudioOutput* s_audioOutput2 = &s_nullAudio;
+static IAudioInput*  s_audioInputs[2] = { nullptr, nullptr };
 
 static bool s_initialized = false;
 
 } // anonymous namespace
+
+// Synth engine singleton (outside anonymous namespace for external access)
+static crosspad::ISynthEngine* s_synthEngine = nullptr;
 
 // =============================================================================
 // LED color accessor for STM32 emulator window
@@ -345,4 +352,30 @@ void pc_platform_set_audio_output(IAudioOutput* audio) {
     if (audio) {
         s_audioOutput = audio;
     }
+}
+
+void pc_platform_set_audio_output_2(IAudioOutput* audio) {
+    if (audio) {
+        s_audioOutput2 = audio;
+    }
+}
+
+void pc_platform_set_audio_input(int index, IAudioInput* input) {
+    if (index >= 0 && index < 2) {
+        s_audioInputs[index] = input;
+    }
+}
+
+crosspad::IAudioInput* pc_platform_get_audio_input(int index) {
+    if (index >= 0 && index < 2) return s_audioInputs[index];
+    return nullptr;
+}
+
+// Synth engine getter/setter
+void pc_platform_set_synth_engine(crosspad::ISynthEngine* synth) {
+    s_synthEngine = synth;
+}
+
+crosspad::ISynthEngine* pc_platform_get_synth_engine() {
+    return s_synthEngine;
 }

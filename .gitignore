@@ -10,3 +10,6 @@ bin/
 
 # MacOS file
 .DS_Store
+
+# Dev mode: junctions to local repos (dev-mode.sh / submodule-mode.sh)
+.dev-mode-pins

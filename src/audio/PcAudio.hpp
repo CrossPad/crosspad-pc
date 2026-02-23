@@ -43,6 +43,13 @@ public:
     unsigned int getDefaultOutputDevice() const;
     bool isOpen() const;
 
+    /// Stop current stream and re-open on a different device.
+    bool switchDevice(unsigned int deviceId);
+
+    /// Name of the currently open output device (empty if closed).
+    std::string getCurrentDeviceName() const;
+    unsigned int getCurrentDeviceId() const;
+
 private:
     std::unique_ptr<RtAudio> rtAudio_;
     AudioRingBuffer<int16_t> outputRing_;
@@ -50,6 +57,8 @@ private:
     uint32_t sampleRate_ = 44100;
     uint32_t bufferFrames_ = 256;
     bool streamOpen_ = false;
+    unsigned int currentDeviceId_ = 0;
+    std::string  currentDeviceName_;
 
     std::atomic<int16_t> outPeakL_{0};
     std::atomic<int16_t> outPeakR_{0};

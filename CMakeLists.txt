@@ -170,6 +170,7 @@ set(CROSSPAD_GUI_SOURCES
     crosspad-gui/src/components/vu_meter.cpp
     crosspad-gui/src/components/app_launcher.cpp
     crosspad-gui/src/components/app_lifecycle.cpp
+    crosspad-gui/src/components/volume_overlay.cpp
 )
 
 # ── PC platform stubs (event bus, singletons, interface impls) ──
@@ -183,6 +184,8 @@ set(MAIN_SOURCES src/mouse_cursor_icon.c src/hal/hal.c
     src/stm32_emu/Stm32EmuWindow.cpp
     src/stm32_emu/EmuEncoder.cpp
     src/stm32_emu/EmuPadGrid.cpp
+    src/stm32_emu/EmuPowerButton.cpp
+    src/stm32_emu/EmuJackPanel.cpp
     src/crosspad_app.cpp
     ${CROSSPAD_CORE_SOURCES}
     ${CROSSPAD_GUI_SOURCES}
@@ -218,8 +221,23 @@ endif()
 
 # Audio sources and libraries
 if(USE_AUDIO)
-    list(APPEND MAIN_SOURCES src/audio/PcAudio.cpp)
+    list(APPEND MAIN_SOURCES src/audio/PcAudio.cpp src/audio/PcAudioInput.cpp)
     list(APPEND MAIN_LIBS rtaudio)
+
+    # ML_SynthTools vendored FM synth engine
+    set(ML_SYNTH_SOURCES
+        lib/ml_synth/ml_fm.cpp
+        lib/ml_synth/ml_status_stub.cpp
+        lib/ml_synth/ml_utils_stub.cpp
+    )
+
+    # ML Piano app (own CMakeLists.txt exports ML_PIANO_APP_SOURCES)
+    add_subdirectory(src/apps/ml_piano)
+
+    # Synth engine wrapper (platform-level, like ESP32's audio codec)
+    set(ML_PIANO_SYNTH_SOURCES src/synth/MlPianoSynth.cpp)
+
+    list(APPEND MAIN_SOURCES ${ML_SYNTH_SOURCES} ${ML_PIANO_SYNTH_SOURCES} ${ML_PIANO_APP_SOURCES})
 endif()
 
 # Custom target to run the executable
@@ -290,6 +308,7 @@ target_include_directories(main PRIVATE
     ${PROJECT_SOURCE_DIR}/src
     ${PROJECT_SOURCE_DIR}/crosspad-core/include
     ${PROJECT_SOURCE_DIR}/crosspad-gui/include
+    ${PROJECT_SOURCE_DIR}/lib/ml_synth
 )
 target_link_libraries(main ${MAIN_LIBS})
 
@@ -300,6 +319,22 @@ endif()
 
 if(USE_AUDIO)
     target_compile_definitions(main PRIVATE USE_AUDIO=1)
+    # Suppress warnings for vendored ML_SynthTools code
+    if(MSVC)
+        set_source_files_properties(
+            lib/ml_synth/ml_fm.cpp
+            lib/ml_synth/ml_status_stub.cpp
+            lib/ml_synth/ml_utils_stub.cpp
+            PROPERTIES COMPILE_FLAGS "/w"
+        )
+    else()
+        set_source_files_properties(
+            lib/ml_synth/ml_fm.cpp
+            lib/ml_synth/ml_status_stub.cpp
+            lib/ml_synth/ml_utils_stub.cpp
+            PROPERTIES COMPILE_FLAGS "-w"
+        )
+    endif()
 endif()
 
 # On Windows, GUI applications do not show a console by default,

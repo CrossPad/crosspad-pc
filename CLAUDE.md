@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project Overview
 
-CrossPad PC — a desktop simulator for the CrossPad embedded device. Based on LVGL's lv_port_pc_vscode, extended with CrossPad-specific submodules. Runs LVGL GUI on desktop via SDL2 for rapid development and testing before deploying to ESP32-S3 hardware.
+CrossPad PC — a desktop simulator for the CrossPad embedded device. Runs the same LVGL GUI + crosspad-core/crosspad-gui libraries on desktop via SDL2, with MIDI I/O (RtMidi), audio output (RtAudio/WASAPI), and an STM32 hardware emulator window (4x4 pad grid + rotary encoder). Used for rapid development before deploying to ESP32-S3 hardware.
 
 ## Build
 
@@ -12,9 +12,9 @@ Windows with MSVC (Visual Studio 2022 Community):
 ```
 build.bat
 ```
-This calls vcvarsall.bat x64, then cmake+ninja with vcpkg toolchain. Output: `bin/main.exe`.
+This calls `vcvarsall.bat x64`, then cmake+ninja with vcpkg toolchain. Enables FreeRTOS by default. Output: `bin/main.exe`.
 
-Manual build:
+Manual build (incremental — without wiping build dir):
 ```bash
 cmake -B build -G Ninja -DCMAKE_TOOLCHAIN_FILE=C:/vcpkg/scripts/buildsystems/vcpkg.cmake -DCMAKE_BUILD_TYPE=Debug
 cmake --build build
@@ -28,51 +28,125 @@ Run: `bin/main.exe`
 
 | Option | Default | Description |
 |---|---|---|
-| `USE_FREERTOS` | OFF | Enable FreeRTOS multitasking mode |
+| `USE_FREERTOS` | OFF | FreeRTOS multitasking (recommended ON for full app init) |
+| `USE_MIDI` | ON | MIDI I/O via RtMidi (FetchContent) |
+| `USE_AUDIO` | ON | Audio output via RtAudio + FM synth (FetchContent) |
 | `LV_USE_DRAW_SDL` | OFF | SDL GPU-accelerated drawing |
 | `LV_USE_LIBPNG` | OFF | PNG decoding |
 | `LV_USE_LIBJPEG_TURBO` | OFF | JPEG decoding |
 | `LV_USE_FFMPEG` | OFF | Video playback |
 | `LV_USE_FREETYPE` | OFF | FreeType font rendering |
-| `ASAN` | OFF | AddressSanitizer (Debug only) |
+| `ASAN` | OFF | AddressSanitizer (Debug, non-MSVC only) |
+
+### Compile Defines
+
+The `main` target gets: `PLATFORM_PC=1`, `USE_LVGL=1`, `CP_LCD_HOR_RES=320`, `CP_LCD_VER_RES=240`, plus `USE_MIDI=1` and `USE_AUDIO=1` when those options are ON.
 
 ## Architecture
 
+### Entry Points & Init Flow
+
+- **Standard mode** (`USE_FREERTOS=OFF`): `src/main.cpp` — single-threaded `lv_timer_handler()` loop. Note: `crosspad_app_init()` is currently commented out in this mode.
+- **FreeRTOS mode** (`USE_FREERTOS=ON`): `src/freertos_main.cpp` — creates LVGL task (priority 1), calls `crosspad_app_init()`, then starts scheduler.
+
+Both modes share `crosspad_app_init()` in `src/crosspad_app.cpp`, which orchestrates the full init sequence:
+1. `pc_platform_init()` — creates singletons (EventBus, Clock, PadManager, LedController, Settings, GuiPlatform)
+2. `stm32Emu.init()` — builds emulator window, returns 320x240 LCD container
+3. MIDI setup — auto-connect to "CrossPad" port, route NoteOn/Off → PadManager, CC → Encoder, SysEx → Stm32MessageHandler
+4. Audio setup — RtAudio init, FM synth thread, VU meter timer
+5. App registration — enumerate `AppRegistry`, create `App` wrappers
+6. `initStyles()` + `LoadMainScreen()` — crosspad-gui theme and launcher
+
+### Source Layout
+
 ```
-main.exe
-  ├── src/main.c          — entry point, LVGL init + main loop
-  ├── src/hal/hal.c       — SDL2 HAL: display, mouse, keyboard, mousewheel
-  ├── lvgl/               — LVGL v9.x graphics library (submodule)
-  ├── crosspad-gui/       — CrossPad UI: theme, widgets, components (submodule)
-  ├── crosspad-core/      — CrossPad portable core: events, settings, pads, protocol (submodule)
-  └── FreeRTOS/           — FreeRTOS kernel (submodule, optional)
+src/
+  main.cpp / freertos_main.cpp  — entry points
+  crosspad_app.cpp              — shared init (MIDI, audio, apps, launcher)
+  hal/hal.c                     — SDL2 HAL (display 490x660, mouse, keyboard, mousewheel)
+  stm32_emu/                    — device body visualization
+    Stm32EmuWindow.cpp          — LCD (320x240), encoder, pad grid layout
+    EmuEncoder.cpp              — rotary encoder knob (mouse wheel + middle click)
+    EmuPadGrid.cpp              — 4x4 clickable pads with LED color readback
+  midi/PcMidi.cpp               — RtMidi wrapper, IMidiOutput impl, auto-connect
+  audio/
+    PcAudio.cpp                 — RtAudio/WASAPI output, AudioRingBuffer, peak metering
+  synth/MlPianoSynth.cpp        — ISynthEngine impl wrapping ML_SynthTools FM engine
+  apps/ml_piano/                — ML Piano app (pad grid, preset selector, param controls)
+  pc_stubs/
+    PcPlatformStubs.cpp         — PC impls: PcClock, PcLedStrip, PcKeyValueStore, PcGuiPlatform, etc.
+    PcEventBus.cpp              — synchronous event dispatch (vs. ESP-IDF's async queue)
+    PcApp.cpp                   — lightweight App class for launcher (no sequencer/CLI)
+    pc_platform.h               — public API: pc_platform_init(), set_midi/audio/synth
+lib/ml_synth/                   — vendored ML_SynthTools FM synth engine
 ```
-
-### Entry Points
-
-- **Standard mode** (`USE_FREERTOS=OFF`): `src/main.c` — single-threaded `lv_timer_handler()` loop
-- **FreeRTOS mode** (`USE_FREERTOS=ON`): `src/freertos_main.c` — RTOS tasks with POSIX port
-
-### HAL Layer (`src/hal/hal.c`)
-
-`sdl_hal_init(width, height)` creates SDL window and registers input devices (mouse with cursor, mousewheel, keyboard) into LVGL's default focus group.
 
 ### Submodules
 
-- **crosspad-core** (`CrossPad/crosspad-core`): Portable C++ library — app registry, event bus, settings (IKeyValueStore), pad/LED management, STM32 SysEx protocol, platform abstractions (IClock, IUART, etc.). Originally an ESP-IDF component.
-- **crosspad-gui** (`CrossPad/crosspad-gui`): LVGL-based UI components — CrossPad theme, styles, custom widgets (keypad buttons, radial menu, VU meter, file explorer, DFU panel, status bar, toast/modal). Originally an ESP-IDF component depending on lvgl and crosspad-core.
+- **crosspad-core**: Portable C++ library — AppRegistry, IEventBus, PadManager, PadLedController, CrosspadSettings (IKeyValueStore), Stm32MessageHandler, platform interfaces (IClock, IMidiOutput, ILedStrip, IAudioOutput, ISynthEngine). Originally an ESP-IDF component; sources are listed manually in CMakeLists.txt.
+- **crosspad-gui**: LVGL UI components — theme, styles, launcher, status bar, widgets (keypad buttons, spinbox, radial menu, VU meter, file explorer, DFU panel, modals/toasts). Originally an ESP-IDF component; sources listed manually.
 - **lvgl**: LVGL v9.x graphics library
-- **FreeRTOS**: FreeRTOS Kernel with POSIX port for desktop simulation
+- **FreeRTOS**: FreeRTOS Kernel (MSVC-MingW port on Windows, GCC POSIX on Linux/Mac)
 
-### Key Configuration Files
+### Platform Abstraction Pattern
 
-- `lv_conf.h` — LVGL feature toggles (color depth 32-bit, FS drivers, widgets, etc.)
-- `config/FreeRTOSConfig.h` — FreeRTOS settings (512 MB heap for desktop simulation)
-- `CMakeLists.txt` — GCC warning flags are wrapped in `if(NOT MSVC)` for Windows MSVC compatibility
+crosspad-core defines portable interfaces; this repo provides PC implementations:
+
+| Interface | PC Implementation | Notes |
+|---|---|---|
+| `IClock` | `PcClock` (std::chrono) | |
+| `IEventBus` | `PcEventBus` | Synchronous dispatch (not queued) |
+| `ILedStrip` | `PcLedStrip` | 16 virtual RGB pixels, readable via `pc_get_led_color()` |
+| `IMidiOutput` | `PcMidi` / `NullMidiOutput` | Swappable at runtime via `pc_platform_set_midi_output()` |
+| `IAudioOutput` | `PcAudioOutput` / `NullAudioOutput` | Swappable via `pc_platform_set_audio_output()` |
+| `ISynthEngine` | `MlPianoSynth` | FM synth, swappable via `pc_platform_set_synth_engine()` |
+| `IKeyValueStore` | `PcKeyValueStore` | Filesystem-backed persistence |
+| `IGuiPlatform` | `PcGuiPlatform` | Display dimensions, update notifications |
+
+Singletons accessed via `crosspad::getPadManager()`, `crosspad::getEventBus()`, etc. — initialized in `pc_platform_init()`.
+
+### App System
+
+Apps are registered via crosspad-core's `AppRegistry` using static `AppRegistrar` constructors. The PC `App` class (`src/pc_stubs/PcApp.hpp`) is a lightweight wrapper — no sequencer, CLI, or kit loader — supporting lifecycle (`start`/`pause`/`resume`/`destroyApp`) and launcher integration. Apps receive pad/MIDI events through the EventBus → AppManagerBase → IApp callback chain.
+
+**Adding a new app:** Create a registration function (like `_register_MLPiano_app()`) that calls `AppRegistrar` with `createLVGL`/`destroyLVGL` function pointers, then call it from `crosspad_app_init()`.
+
+### Event & Input Flow
+
+```
+Pad click (EmuPadGrid) or MIDI NoteOn → PadManager::handlePadPress()
+  ├→ PadLedController (LED animation)
+  ├→ IEventBus::postPadPressed() → subscribed apps' onPadPressed()
+  └→ IPadLogicHandler::onPadPressed() (if active logic set)
+
+MIDI CC1 → Stm32EmuWindow::handleEncoderCC() → encoder rotation
+MIDI CC64 → encoder button press
+MIDI SysEx → Stm32MessageHandler → PadManager LED updates
+```
+
+### Audio Pipeline
+
+```
+App noteOn/noteOff → MlPianoSynth (ISynthEngine)
+  → Audio thread: fmSynth.process() → pcAudio.write() (ring buffer)
+  → RtAudio callback: ring buffer → WASAPI → speakers
+  → VU meter timer: pcAudio.getOutputLevel() → crosspad_gui::vu_set_levels()
+```
+
+## Compatibility with ESP32-S3
+
+This simulator must stay compatible with the ESP32-S3 target (`C:\Users\Mateusz\GIT\ESP32-S3`). Key constraints:
+
+- **App interface:** All apps implement crosspad-core's `IApp` interface (business-logic callbacks: `onNoteOn`, `onPadPressed`, etc.). The PC `App` class can be simpler than ESP32's (no sequencer/CLI), but must support the same lifecycle and AppRegistry pattern.
+- **PadManager is the single source of truth** for pad state, note mapping, and LED coordination. Always route pad events through PadManager, not directly to apps.
+- **Settings persistence** uses `IKeyValueStore` abstraction — ESP32 uses NVS, PC uses filesystem. `CrosspadSettings` singleton must be loaded/saved through this interface.
+- **crosspad-gui components** are shared — launcher, status bar, styles. The PC simulator sets `IGuiPlatform` for display dimensions and hooks.
+- **LCD resolution** is 320x240 (`CP_LCD_HOR_RES`/`CP_LCD_VER_RES`), matching hardware. The SDL window is larger (490x660) to include the emulator body.
 
 ## Important Notes
 
-- crosspad-core and crosspad-gui use `idf_component_register()` in their CMakeLists.txt (ESP-IDF build system). To integrate them into this PC simulator, their build needs to be adapted or their sources included manually in the top-level CMakeLists.txt.
-- Display resolution is set in `src/main.c`: `sdl_hal_init(320, 480)` — matches the CrossPad hardware display.
-- To switch demos, change the function call in `src/main.c` (e.g., `lv_demo_widgets()`, `lv_example_file_explorer_1()`).
+- crosspad-core and crosspad-gui use `idf_component_register()` in their own CMakeLists.txt (ESP-IDF build system). This project bypasses that by listing their sources manually in the top-level CMakeLists.txt.
+- Third-party code (LVGL, RtMidi, RtAudio, ml_synth) is compiled with warnings suppressed (`/w` on MSVC). Project code uses default warning levels.
 - `LV_USE_FS_WIN32` is enabled with driver letter `'C'` for Windows file system access.
+- FreeRTOS heap is 512 MB (desktop simulation). The MSVC-MingW port uses Windows threads under the hood.
+- FetchContent pulls ArduinoJson 7.3.0 (required by crosspad-core settings), RtMidi 6.0.0, and RtAudio 6.0.0.
