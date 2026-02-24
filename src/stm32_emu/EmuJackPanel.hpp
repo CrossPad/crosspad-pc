@@ -5,8 +5,8 @@
  * @brief Visual audio/MIDI jack connectors for the CrossPad PC emulator.
  *
  * Renders thick bars on the device body edges representing physical jack
- * connectors, with labels showing the connected device/port name.
- * Clickable jacks show a dropdown for device selection.
+ * connectors. When connected, audio jack bars become live VU meters showing
+ * real-time signal levels. All jacks are clickable for device selection.
  */
 
 #include "lvgl/lvgl.h"
@@ -42,6 +42,10 @@ public:
     /// Update a jack's connection status (green = connected, gray = none).
     void setConnected(JackId id, bool connected);
 
+    /// Set stereo audio levels for a jack (used when connected).
+    /// Values are int16 amplitude (0-32767). Only meaningful for audio jacks.
+    void setLevel(JackId id, int16_t left, int16_t right);
+
     /// Populate a jack's dropdown device list.
     /// @param devices  List of device names (index 0 should be "(None)")
     /// @param currentIndex  Currently selected index (-1 for none)
@@ -58,11 +62,15 @@ public:
 private:
     struct Jack {
         lv_obj_t* bar      = nullptr;
+        lv_obj_t* vuBarL   = nullptr;   // VU meter left channel (child of bar)
+        lv_obj_t* vuBarR   = nullptr;   // VU meter right channel (child of bar)
         lv_obj_t* label    = nullptr;
-        lv_obj_t* dropdown = nullptr;   // nullptr for read-only jacks
+        lv_obj_t* dropdown = nullptr;
         bool      connected = false;
-        bool      clickable = false;
+        bool      vertical  = false;    // true for AUDIO_OUT1/OUT2 (vertical bars)
         JackId    id = AUDIO_OUT1;
+        int16_t   levelL = 0;
+        int16_t   levelR = 0;
     };
 
     Jack jacks_[JACK_COUNT] = {};
@@ -76,7 +84,11 @@ private:
                     lv_dir_t dropdownDir);
 
     void applyBarStyle(Jack& jack);
+    void updateVuBars(Jack& jack);
+    void closeAllDropdowns(int exceptJackId = -1);
 
     static void onBarClicked(lv_event_t* e);
     static void onDropdownChanged(lv_event_t* e);
+    static void onScreenClicked(lv_event_t* e);
+    static void onDropdownListCreated(lv_event_t* e);
 };

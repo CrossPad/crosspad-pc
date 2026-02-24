@@ -14,6 +14,9 @@
 #include <vector>
 #include <thread>
 #include <chrono>
+#include <fstream>
+#include <filesystem>
+#include <string>
 
 #include "lvgl/lvgl.h"
 
@@ -45,8 +48,12 @@
 #include "audio/PcAudioInput.hpp"
 #include "crosspad-gui/components/vu_meter.h"
 #include "synth/MlPianoSynth.hpp"
+#include "apps/mixer/AudioMixerEngine.hpp"
+#include "apps/mixer/MixerPadLogic.hpp"
 #include <RtAudio.h>
 #endif
+
+#include <ArduinoJson.h>
 
 /* ── Constants ────────────────────────────────────────────────────────── */
 
@@ -76,6 +83,167 @@ static PcAudioOutput pcAudio2;     // OUT2
 static PcAudioInput  pcAudioIn1;   // IN1
 static PcAudioInput  pcAudioIn2;   // IN2
 static MlPianoSynth fmSynth;
+static AudioMixerEngine s_mixerEngine;
+static std::shared_ptr<MixerPadLogic> s_mixerPadLogic;
+#endif
+
+/* ── Device Preferences ──────────────────────────────────────────────── */
+
+struct DevicePreferences {
+    std::string audioOut1;
+    std::string audioOut2;
+    std::string audioIn1;
+    std::string audioIn2;
+    std::string midiOut;
+    std::string midiIn;
+};
+
+static DevicePreferences s_devicePrefs;
+
+static std::string getDevicePrefsPath() {
+    const char* dir = pc_platform_get_profile_dir();
+    return std::string(dir) + "/device_preferences.json";
+}
+
+static std::string getMixerStatePath() {
+    const char* dir = pc_platform_get_profile_dir();
+    return std::string(dir) + "/mixer_state.json";
+}
+
+static void loadDevicePrefs() {
+    std::string path = getDevicePrefsPath();
+    std::ifstream f(path);
+    if (!f.is_open()) {
+        printf("[DevPrefs] No saved preferences at %s\n", path.c_str());
+        return;
+    }
+
+    JsonDocument doc;
+    DeserializationError err = deserializeJson(doc, f);
+    if (err) {
+        printf("[DevPrefs] Parse error: %s\n", err.c_str());
+        return;
+    }
+
+    if (doc["audio_out1"].is<const char*>()) s_devicePrefs.audioOut1 = doc["audio_out1"].as<const char*>();
+    if (doc["audio_out2"].is<const char*>()) s_devicePrefs.audioOut2 = doc["audio_out2"].as<const char*>();
+    if (doc["audio_in1"].is<const char*>())  s_devicePrefs.audioIn1  = doc["audio_in1"].as<const char*>();
+    if (doc["audio_in2"].is<const char*>())  s_devicePrefs.audioIn2  = doc["audio_in2"].as<const char*>();
+    if (doc["midi_out"].is<const char*>())   s_devicePrefs.midiOut   = doc["midi_out"].as<const char*>();
+    if (doc["midi_in"].is<const char*>())    s_devicePrefs.midiIn    = doc["midi_in"].as<const char*>();
+
+    printf("[DevPrefs] Loaded: out1='%s' out2='%s' in1='%s' in2='%s' midiOut='%s' midiIn='%s'\n",
+           s_devicePrefs.audioOut1.c_str(), s_devicePrefs.audioOut2.c_str(),
+           s_devicePrefs.audioIn1.c_str(), s_devicePrefs.audioIn2.c_str(),
+           s_devicePrefs.midiOut.c_str(), s_devicePrefs.midiIn.c_str());
+}
+
+static void saveDevicePrefs() {
+    std::string path = getDevicePrefsPath();
+    JsonDocument doc;
+    doc["audio_out1"] = s_devicePrefs.audioOut1;
+    doc["audio_out2"] = s_devicePrefs.audioOut2;
+    doc["audio_in1"]  = s_devicePrefs.audioIn1;
+    doc["audio_in2"]  = s_devicePrefs.audioIn2;
+    doc["midi_out"]   = s_devicePrefs.midiOut;
+    doc["midi_in"]    = s_devicePrefs.midiIn;
+
+    std::ofstream f(path);
+    if (!f.is_open()) {
+        printf("[DevPrefs] Failed to write %s\n", path.c_str());
+        return;
+    }
+    serializeJsonPretty(doc, f);
+    printf("[DevPrefs] Saved to %s\n", path.c_str());
+}
+
+/* ── Audio/MIDI device enumeration helpers ───────────────────────────── */
+
+#ifdef USE_AUDIO
+struct AudioDeviceEntry {
+    unsigned int rtAudioId;
+    std::string name;
+};
+
+/// Enumerate output devices with 2+ output channels.
+static std::vector<AudioDeviceEntry> enumerateAudioOutputDevices() {
+    std::vector<AudioDeviceEntry> result;
+    RtAudio probe;
+    for (unsigned int id : probe.getDeviceIds()) {
+        RtAudio::DeviceInfo info = probe.getDeviceInfo(id);
+        if (info.outputChannels >= 2) {
+            result.push_back({id, info.name});
+        }
+    }
+    return result;
+}
+
+/// Enumerate input devices with 2+ input channels.
+static std::vector<AudioDeviceEntry> enumerateAudioInputDevices() {
+    std::vector<AudioDeviceEntry> result;
+    RtAudio probe;
+    for (unsigned int id : probe.getDeviceIds()) {
+        RtAudio::DeviceInfo info = probe.getDeviceInfo(id);
+        if (info.inputChannels >= 2) {
+            result.push_back({id, info.name});
+        }
+    }
+    return result;
+}
+
+/// Find device ID by name in a list. Returns 0 (default) if not found.
+static unsigned int findDeviceByName(const std::vector<AudioDeviceEntry>& devices,
+                                      const std::string& name) {
+    if (name.empty()) return 0;
+    for (auto& d : devices) {
+        if (d.name == name) return d.rtAudioId;
+    }
+    return 0;
+}
+
+/// Find dropdown index (1-based, 0 = None) for a device name.
+static int findDropdownIndex(const std::vector<std::string>& list, const std::string& name) {
+    if (name.empty()) return 0;
+    for (size_t i = 1; i < list.size(); i++) {
+        if (list[i] == name) return (int)i;
+    }
+    return 0;
+}
+#endif
+
+#ifdef USE_MIDI
+/// Find port index by name substring (case-insensitive).
+static int findMidiPortByName(const std::string& name, bool isOutput) {
+    if (name.empty()) return -1;
+
+    std::string lower = name;
+    std::transform(lower.begin(), lower.end(), lower.begin(), ::tolower);
+
+    if (isOutput) {
+        RtMidiOut probe;
+        for (unsigned int i = 0; i < probe.getPortCount(); i++) {
+            std::string pn = probe.getPortName(i);
+            std::string pnLower = pn;
+            std::transform(pnLower.begin(), pnLower.end(), pnLower.begin(), ::tolower);
+            if (pnLower.find(lower) != std::string::npos || lower.find(pnLower) != std::string::npos
+                || pn == name) {
+                return (int)i;
+            }
+        }
+    } else {
+        RtMidiIn probe;
+        for (unsigned int i = 0; i < probe.getPortCount(); i++) {
+            std::string pn = probe.getPortName(i);
+            std::string pnLower = pn;
+            std::transform(pnLower.begin(), pnLower.end(), pnLower.begin(), ::tolower);
+            if (pnLower.find(lower) != std::string::npos || lower.find(pnLower) != std::string::npos
+                || pn == name) {
+                return (int)i;
+            }
+        }
+    }
+    return -1;
+}
 #endif
 
 /* ── Launcher callbacks ───────────────────────────────────────────────── */
@@ -107,7 +275,7 @@ static void LoadMainScreen(lv_obj_t* parent) {
     }
 
     lv_obj_clean(parent);
-    crosspad::getPadManager().setActivePadLogic("");
+    crosspad::getPadManager().setActivePadLogic("Mixer");
     lv_obj_remove_flag(parent, LV_OBJ_FLAG_SCROLLABLE);
     lv_obj_set_scrollbar_mode(parent, LV_SCROLLBAR_MODE_OFF);
     lv_obj_set_style_bg_color(parent, lv_color_black(), 0);
@@ -117,6 +285,7 @@ static void LoadMainScreen(lv_obj_t* parent) {
     if (!status_c) {
         printf("[ERROR] Status bar creation failed!\n");
     }
+    crosspad_app_update_pad_icon();
 
     app_c = lv_obj_create(parent);
     lv_obj_add_style(app_c, &styleAppContainer, 0);
@@ -184,13 +353,14 @@ void crosspad_app_init()
     /* Platform stubs (event bus, settings, pad manager, GUI) */
     pc_platform_init();
 
+    /* Load saved device preferences */
+    loadDevicePrefs();
+
     /* STM32 emulator window — returns 320x240 LCD container */
     lv_obj_t* lcdContainer = stm32Emu.init();
     s_lcdContainer = lcdContainer;
 
-    /* Overlay layer on lv_layer_top(), positioned over the LCD area.
-     * Using layer_top avoids the LCD container's flex layout that breaks
-     * LV_ALIGN_CENTER for overlays. */
+    /* Overlay layer on lv_layer_top(), positioned over the LCD area. */
     lv_obj_t* overlayLayer = lv_obj_create(lv_layer_top());
     lv_obj_remove_style_all(overlayLayer);
     lv_obj_set_pos(overlayLayer, (Stm32EmuWindow::WIN_W - 320) / 2, 20);
@@ -199,19 +369,31 @@ void crosspad_app_init()
     crosspad_gui::setOverlayParent(overlayLayer);
 
 #ifdef USE_MIDI
-    // Initialize STM32 message handler — routes real CrossPad SysEx to PadManager
+    // Initialize STM32 message handler
     stm32Handler.init(crosspad::getPadManager(), status);
 
-    // Auto-connect: scans MIDI port names for "CrossPad", falls back to port 0
-    midi.beginAutoConnect("CrossPad");
-    pc_platform_set_midi_output(&midi);
+    // Auto-connect MIDI from saved preferences or fall back to "CrossPad" keyword
+    {
+        int outPort = findMidiPortByName(s_devicePrefs.midiOut, true);
+        int inPort  = findMidiPortByName(s_devicePrefs.midiIn, false);
+
+        if (outPort >= 0 || inPort >= 0) {
+            // We have saved preferences — connect to those specific ports
+            midi.begin(outPort >= 0 ? (unsigned)outPort : 0,
+                       inPort >= 0  ? (unsigned)inPort  : 0);
+            printf("[MIDI] Connected from saved prefs: out=%d in=%d\n", outPort, inPort);
+        } else {
+            // No saved prefs — use auto-connect keyword
+            midi.beginAutoConnect("CrossPad");
+        }
+        pc_platform_set_midi_output(&midi);
+    }
 
     midi.setHandleNoteOn([](uint8_t channel, uint8_t note, uint8_t velocity) {
         printf("[MIDI IN] NoteOn  ch=%u note=%u vel=%u\n", channel + 1, note, velocity);
         auto& pm = crosspad::getPadManager();
         uint8_t padIdx = pm.getPadForMidiNote(note);
         if (padIdx < 16) {
-            // Route through handlePadPress so active PadLogic (e.g. PianoPadLogic) processes it
             pm.handlePadPress(padIdx, velocity);
         } else {
             pm.handleMidiNoteOn(channel, note, velocity);
@@ -229,79 +411,134 @@ void crosspad_app_init()
     });
     midi.setHandleControlChange([](uint8_t channel, uint8_t cc, uint8_t value) {
         printf("[MIDI IN] CC      ch=%u cc=%u  val=%u\n", channel + 1, cc, value);
-        // CC1 on ch1 = physical encoder position (0-30)
         if (channel == 0 && cc == 1) {
-            stm32Emu.handleEncoderCC(value, 31, 18);  // CC range 0-30 (31 vals), 18 detents/rev
+            stm32Emu.handleEncoderCC(value, 31, 18);
         } else if (channel == 0 && cc == 64) {
-            stm32Emu.handleEncoderPress(value >= 64);  // CC64 = encoder button
+            stm32Emu.handleEncoderPress(value >= 64);
         }
     });
-    // Route SysEx from real CrossPad hardware → Stm32MessageHandler → PadManager
     midi.setHandleSystemExclusive([](uint8_t* data, unsigned size) {
         stm32Handler.handleMessage(data, size);
     });
 
-    // Periodic MIDI reconnect timer: every 3 s tries to re-find "CrossPad" port.
-    // Also reconnects when output port is down (e.g. after a send error) even if
-    // the input port is still technically open (WinMM doesn't report disconnection).
+    // Periodic MIDI reconnect timer (3s)
     lv_timer_create([](lv_timer_t*) {
         bool connected = midi.isKeywordConnected() && midi.isOutputOpen();
         if (!connected) {
-            printf("[MIDI] CrossPad not found or output down — attempting reconnect...\n");
+            printf("[MIDI] Attempting reconnect...\n");
             midi.reconnect();
+
+            // Update jack panel after reconnect
+            auto& jp = stm32Emu.getJackPanel();
+            if (midi.isOutputOpen()) {
+                RtMidiOut probe;
+                for (unsigned int i = 0; i < probe.getPortCount(); i++) {
+                    jp.setDeviceName(EmuJackPanel::MIDI_OUT, probe.getPortName(i));
+                    break;
+                }
+                jp.setConnected(EmuJackPanel::MIDI_OUT, true);
+            }
+            if (midi.isInputOpen()) {
+                RtMidiIn probe;
+                for (unsigned int i = 0; i < probe.getPortCount(); i++) {
+                    jp.setDeviceName(EmuJackPanel::MIDI_IN, probe.getPortName(i));
+                    break;
+                }
+                jp.setConnected(EmuJackPanel::MIDI_IN, true);
+            }
         }
     }, 3000, nullptr);
 #endif
 
 #ifdef USE_AUDIO
-    pcAudio.begin();
-    pc_platform_set_audio_output(&pcAudio);
+    // ── Audio OUT1: auto-connect saved device or default ──
+    {
+        auto outDevices = enumerateAudioOutputDevices();
+        unsigned int dev1 = findDeviceByName(outDevices, s_devicePrefs.audioOut1);
+        pcAudio.begin(dev1);
+        pc_platform_set_audio_output(&pcAudio);
 
-    // OUT2 — second independent output (starts on default device, no routing yet)
-    pcAudio2.begin();
-    pc_platform_set_audio_output_2(&pcAudio2);
+        // Save actual device name if we connected
+        if (pcAudio.isOpen()) {
+            s_devicePrefs.audioOut1 = pcAudio.getCurrentDeviceName();
+        }
+    }
 
-    // IN1 + IN2 — audio inputs (not started yet; user selects device via jack panel)
+    // ── Audio OUT2: auto-connect saved device or default ──
+    {
+        auto outDevices = enumerateAudioOutputDevices();
+        unsigned int dev2 = findDeviceByName(outDevices, s_devicePrefs.audioOut2);
+        pcAudio2.begin(dev2);
+        pc_platform_set_audio_output_2(&pcAudio2);
+
+        if (pcAudio2.isOpen()) {
+            s_devicePrefs.audioOut2 = pcAudio2.getCurrentDeviceName();
+        }
+    }
+
+    // ── Audio IN1/IN2: auto-connect saved devices ──
     pc_platform_set_audio_input(0, &pcAudioIn1);
     pc_platform_set_audio_input(1, &pcAudioIn2);
+
+    {
+        auto inDevices = enumerateAudioInputDevices();
+        if (!s_devicePrefs.audioIn1.empty()) {
+            unsigned int devId = findDeviceByName(inDevices, s_devicePrefs.audioIn1);
+            if (devId != 0) {
+                pcAudioIn1.begin(devId);
+                if (pcAudioIn1.isOpen()) {
+                    printf("[Audio] IN1 auto-connected: %s\n", pcAudioIn1.getCurrentDeviceName().c_str());
+                }
+            }
+        }
+        if (!s_devicePrefs.audioIn2.empty()) {
+            unsigned int devId = findDeviceByName(inDevices, s_devicePrefs.audioIn2);
+            if (devId != 0) {
+                pcAudioIn2.begin(devId);
+                if (pcAudioIn2.isOpen()) {
+                    printf("[Audio] IN2 auto-connected: %s\n", pcAudioIn2.getCurrentDeviceName().c_str());
+                }
+            }
+        }
+    }
 
     // Initialize FM synth engine at the audio device's actual sample rate
     fmSynth.setSampleRate(pcAudio.getSampleRate());
     fmSynth.init();
     pc_platform_set_synth_engine(&fmSynth);
 
-    // Audio thread: FM synth -> ring buffer -> RtAudio WASAPI
-    std::thread([]() {
-        const uint32_t chunk = 256;
-        std::vector<int16_t> buf(chunk * 2);
+    // Load mixer state from preferences (or set defaults)
+    s_mixerEngine.loadState(getMixerStatePath());
 
-        printf("[Audio] FM synth audio thread started (sr=%u)\n", pcAudio.getSampleRate());
-        fflush(stdout);
+    // Register mixer pad logic globally (always available)
+    s_mixerPadLogic = std::make_shared<MixerPadLogic>(s_mixerEngine);
+    s_mixerPadLogic->setOnStateChanged([]() {
+        // Save mixer state on every pad-driven change
+        s_mixerEngine.saveState(getMixerStatePath());
+    });
+    crosspad::getPadManager().registerPadLogic("Mixer", s_mixerPadLogic);
+    crosspad::getPadManager().setActivePadLogic("Mixer");
 
-        while (true) {
-            fmSynth.process(buf.data(), chunk);
+    // Start the mixer engine (replaces the old default synth-only audio thread)
+    s_mixerEngine.start();
 
-            uint32_t offset = 0;
-            uint32_t remaining = chunk;
-            while (remaining > 0) {
-                uint32_t written = pcAudio.write(buf.data() + offset * 2, remaining);
-                offset += written;
-                remaining -= written;
-                if (remaining > 0) {
-                    std::this_thread::sleep_for(std::chrono::milliseconds(1));
-                }
-            }
-        }
-    }).detach();
+    // Save preferences now that we know actual connected device names
+    saveDevicePrefs();
 #endif
 
-
-
-    /* Register ML Piano app */
+    /* Register apps */
+    {
+        extern void _register_Settings_app();
+        _register_Settings_app();
+    }
 #ifdef USE_AUDIO
     {
         extern void _register_MLPiano_app();
         _register_MLPiano_app();
+    }
+    {
+        extern void _register_Mixer_app();
+        _register_Mixer_app();
     }
 #endif
 
@@ -315,36 +552,49 @@ void crosspad_app_init()
         auto& jp = stm32Emu.getJackPanel();
 
 #ifdef USE_AUDIO
-        // Audio OUT labels (read-only)
+        // Audio OUT1/OUT2 — show device name and connection status
         jp.setDeviceName(EmuJackPanel::AUDIO_OUT1, pcAudio.getCurrentDeviceName());
         jp.setConnected(EmuJackPanel::AUDIO_OUT1, pcAudio.isOpen());
 
         jp.setDeviceName(EmuJackPanel::AUDIO_OUT2, pcAudio2.getCurrentDeviceName());
         jp.setConnected(EmuJackPanel::AUDIO_OUT2, pcAudio2.isOpen());
 
-        // Enumerate audio input devices for IN1/IN2 dropdowns
+        // Audio IN1/IN2 — show device name and connection status
+        jp.setDeviceName(EmuJackPanel::AUDIO_IN1, pcAudioIn1.getCurrentDeviceName());
+        jp.setConnected(EmuJackPanel::AUDIO_IN1, pcAudioIn1.isOpen());
+
+        jp.setDeviceName(EmuJackPanel::AUDIO_IN2, pcAudioIn2.getCurrentDeviceName());
+        jp.setConnected(EmuJackPanel::AUDIO_IN2, pcAudioIn2.isOpen());
+
+        // Populate device lists for all audio jacks
         {
-            RtAudio probe;
-            std::vector<std::string> inputDevices;
-            inputDevices.push_back("(None)");
-            for (unsigned int id : probe.getDeviceIds()) {
-                RtAudio::DeviceInfo info = probe.getDeviceInfo(id);
-                if (info.inputChannels >= 2) {
-                    inputDevices.push_back(info.name);
-                }
-            }
-            jp.setDeviceList(EmuJackPanel::AUDIO_IN1, inputDevices, 0);
-            jp.setDeviceList(EmuJackPanel::AUDIO_IN2, inputDevices, 0);
+            auto outDevices = enumerateAudioOutputDevices();
+            std::vector<std::string> outNames;
+            outNames.push_back("(None)");
+            for (auto& d : outDevices) outNames.push_back(d.name);
+
+            jp.setDeviceList(EmuJackPanel::AUDIO_OUT1, outNames,
+                             findDropdownIndex(outNames, pcAudio.getCurrentDeviceName()));
+            jp.setDeviceList(EmuJackPanel::AUDIO_OUT2, outNames,
+                             findDropdownIndex(outNames, pcAudio2.getCurrentDeviceName()));
+
+            auto inDevices = enumerateAudioInputDevices();
+            std::vector<std::string> inNames;
+            inNames.push_back("(None)");
+            for (auto& d : inDevices) inNames.push_back(d.name);
+
+            jp.setDeviceList(EmuJackPanel::AUDIO_IN1, inNames,
+                             findDropdownIndex(inNames, pcAudioIn1.getCurrentDeviceName()));
+            jp.setDeviceList(EmuJackPanel::AUDIO_IN2, inNames,
+                             findDropdownIndex(inNames, pcAudioIn2.getCurrentDeviceName()));
         }
 #endif
 
 #ifdef USE_MIDI
-        // MIDI jack labels
+        // MIDI jack labels — show currently connected ports
         if (midi.isOutputOpen()) {
-            // Find the currently connected output port name
             RtMidiOut probe;
             for (unsigned int i = 0; i < probe.getPortCount(); i++) {
-                // Use the first port that was opened (port 0 or auto-connected)
                 jp.setDeviceName(EmuJackPanel::MIDI_OUT, probe.getPortName(i));
                 break;
             }
@@ -375,38 +625,65 @@ void crosspad_app_init()
         }
 #endif
 
-        // Device selection callback
+        // Device selection callback — handles all jack types
         jp.setOnDeviceSelected([](int jackId, unsigned int deviceIndex) {
             auto& jp = stm32Emu.getJackPanel();
 
             switch (jackId) {
 #ifdef USE_AUDIO
+            case EmuJackPanel::AUDIO_OUT1:
+            case EmuJackPanel::AUDIO_OUT2: {
+                auto& output = (jackId == EmuJackPanel::AUDIO_OUT1) ? pcAudio : pcAudio2;
+                auto jid = static_cast<EmuJackPanel::JackId>(jackId);
+
+                if (deviceIndex == 0) {
+                    output.end();
+                    jp.setConnected(jid, false);
+                    jp.setDeviceName(jid, "");
+                    if (jackId == EmuJackPanel::AUDIO_OUT1) s_devicePrefs.audioOut1.clear();
+                    else s_devicePrefs.audioOut2.clear();
+                } else {
+                    auto outDevices = enumerateAudioOutputDevices();
+                    unsigned int realIdx = deviceIndex - 1;
+                    if (realIdx < outDevices.size()) {
+                        output.switchDevice(outDevices[realIdx].rtAudioId);
+                        jp.setConnected(jid, output.isOpen());
+                        jp.setDeviceName(jid, output.getCurrentDeviceName());
+                        if (jackId == EmuJackPanel::AUDIO_OUT1)
+                            s_devicePrefs.audioOut1 = output.getCurrentDeviceName();
+                        else
+                            s_devicePrefs.audioOut2 = output.getCurrentDeviceName();
+                    }
+                }
+                saveDevicePrefs();
+                break;
+            }
+
             case EmuJackPanel::AUDIO_IN1:
             case EmuJackPanel::AUDIO_IN2: {
                 auto& input = (jackId == EmuJackPanel::AUDIO_IN1) ? pcAudioIn1 : pcAudioIn2;
                 auto jid = static_cast<EmuJackPanel::JackId>(jackId);
 
                 if (deviceIndex == 0) {
-                    // "(None)" — disconnect
                     input.end();
                     jp.setConnected(jid, false);
                     jp.setDeviceName(jid, "");
+                    if (jackId == EmuJackPanel::AUDIO_IN1) s_devicePrefs.audioIn1.clear();
+                    else s_devicePrefs.audioIn2.clear();
                 } else {
-                    // Map dropdown index to actual RtAudio device ID
-                    RtAudio probe;
-                    std::vector<unsigned int> inputIds;
-                    for (unsigned int id : probe.getDeviceIds()) {
-                        RtAudio::DeviceInfo info = probe.getDeviceInfo(id);
-                        if (info.inputChannels >= 2)
-                            inputIds.push_back(id);
-                    }
+                    auto inDevices = enumerateAudioInputDevices();
                     unsigned int realIdx = deviceIndex - 1;
-                    if (realIdx < inputIds.size()) {
-                        input.switchDevice(inputIds[realIdx]);
+                    if (realIdx < inDevices.size()) {
+                        input.switchDevice(inDevices[realIdx].rtAudioId);
                         jp.setConnected(jid, input.isOpen());
                         jp.setDeviceName(jid, input.getCurrentDeviceName());
+                        if (jackId == EmuJackPanel::AUDIO_IN1)
+                            s_devicePrefs.audioIn1 = input.getCurrentDeviceName();
+                        else
+                            s_devicePrefs.audioIn2 = input.getCurrentDeviceName();
                     }
                 }
+                saveDevicePrefs();
                 break;
             }
 #endif
@@ -414,18 +691,22 @@ void crosspad_app_init()
 #ifdef USE_MIDI
             case EmuJackPanel::MIDI_OUT: {
                 if (deviceIndex == 0) {
-                    // Disconnect output (keep input as-is via reconnect with invalid keyword)
                     printf("[JackPanel] MIDI OUT disconnected\n");
                     jp.setConnected(EmuJackPanel::MIDI_OUT, false);
                     jp.setDeviceName(EmuJackPanel::MIDI_OUT, "");
+                    s_devicePrefs.midiOut.clear();
                 } else {
                     unsigned int portIdx = deviceIndex - 1;
                     midi.end();
-                    midi.begin(portIdx, 0);  // reconnect output on new port, keep input port 0
+                    midi.begin(portIdx, 0);
                     jp.setConnected(EmuJackPanel::MIDI_OUT, midi.isOutputOpen());
-                    if (midi.isOutputOpen())
-                        jp.setDeviceName(EmuJackPanel::MIDI_OUT, midi.getOutputPortName(portIdx));
+                    if (midi.isOutputOpen()) {
+                        std::string name = midi.getOutputPortName(portIdx);
+                        jp.setDeviceName(EmuJackPanel::MIDI_OUT, name);
+                        s_devicePrefs.midiOut = name;
+                    }
                 }
+                saveDevicePrefs();
                 break;
             }
             case EmuJackPanel::MIDI_IN: {
@@ -433,14 +714,19 @@ void crosspad_app_init()
                     printf("[JackPanel] MIDI IN disconnected\n");
                     jp.setConnected(EmuJackPanel::MIDI_IN, false);
                     jp.setDeviceName(EmuJackPanel::MIDI_IN, "");
+                    s_devicePrefs.midiIn.clear();
                 } else {
                     unsigned int portIdx = deviceIndex - 1;
                     midi.end();
-                    midi.begin(0, portIdx);  // keep output port 0, reconnect input on new port
+                    midi.begin(0, portIdx);
                     jp.setConnected(EmuJackPanel::MIDI_IN, midi.isInputOpen());
-                    if (midi.isInputOpen())
-                        jp.setDeviceName(EmuJackPanel::MIDI_IN, midi.getInputPortName(portIdx));
+                    if (midi.isInputOpen()) {
+                        std::string name = midi.getInputPortName(portIdx);
+                        jp.setDeviceName(EmuJackPanel::MIDI_IN, name);
+                        s_devicePrefs.midiIn = name;
+                    }
                 }
+                saveDevicePrefs();
                 break;
             }
 #endif
@@ -452,17 +738,71 @@ void crosspad_app_init()
     }
 
 #ifdef USE_AUDIO
+    // ── VU meter timer: feed levels to jack panel bars + main VU meter ──
     static int16_t s_vuDecayL = 0, s_vuDecayR = 0;
-    lv_timer_create([](lv_timer_t* t) {
-        auto* a = static_cast<PcAudioOutput*>(lv_timer_get_user_data(t));
-        int16_t rawL, rawR;
-        a->getOutputLevel(rawL, rawR);
-        s_vuDecayL = static_cast<int16_t>((s_vuDecayL * 238) / 256);
-        s_vuDecayR = static_cast<int16_t>((s_vuDecayR * 238) / 256);
-        if (rawL > s_vuDecayL) s_vuDecayL = rawL;
-        if (rawR > s_vuDecayR) s_vuDecayR = rawR;
-        crosspad_gui::vu_set_levels(s_vuDecayL, s_vuDecayR);
-    }, 16, &pcAudio);
+    // Decay factors for jack panel VU bars (smoother than raw peaks)
+    static int16_t s_jpOut1L = 0, s_jpOut1R = 0;
+    static int16_t s_jpOut2L = 0, s_jpOut2R = 0;
+    static int16_t s_jpIn1L = 0, s_jpIn1R = 0;
+    static int16_t s_jpIn2L = 0, s_jpIn2R = 0;
+
+    lv_timer_create([](lv_timer_t*) {
+        auto& jp = stm32Emu.getJackPanel();
+        constexpr int DECAY = 230;  // 230/256 ≈ 0.90
+
+        // OUT1 levels → main VU meter + jack panel
+        {
+            int16_t rawL, rawR;
+            pcAudio.getOutputLevel(rawL, rawR);
+
+            // Main VU meter (existing behavior)
+            s_vuDecayL = static_cast<int16_t>((s_vuDecayL * 238) / 256);
+            s_vuDecayR = static_cast<int16_t>((s_vuDecayR * 238) / 256);
+            if (rawL > s_vuDecayL) s_vuDecayL = rawL;
+            if (rawR > s_vuDecayR) s_vuDecayR = rawR;
+            crosspad_gui::vu_set_levels(s_vuDecayL, s_vuDecayR);
+
+            // Jack panel VU bar
+            s_jpOut1L = static_cast<int16_t>((s_jpOut1L * DECAY) / 256);
+            s_jpOut1R = static_cast<int16_t>((s_jpOut1R * DECAY) / 256);
+            if (rawL > s_jpOut1L) s_jpOut1L = rawL;
+            if (rawR > s_jpOut1R) s_jpOut1R = rawR;
+            jp.setLevel(EmuJackPanel::AUDIO_OUT1, s_jpOut1L, s_jpOut1R);
+        }
+
+        // OUT2 levels → jack panel
+        {
+            int16_t rawL, rawR;
+            pcAudio2.getOutputLevel(rawL, rawR);
+            s_jpOut2L = static_cast<int16_t>((s_jpOut2L * DECAY) / 256);
+            s_jpOut2R = static_cast<int16_t>((s_jpOut2R * DECAY) / 256);
+            if (rawL > s_jpOut2L) s_jpOut2L = rawL;
+            if (rawR > s_jpOut2R) s_jpOut2R = rawR;
+            jp.setLevel(EmuJackPanel::AUDIO_OUT2, s_jpOut2L, s_jpOut2R);
+        }
+
+        // IN1 levels → jack panel
+        if (pcAudioIn1.isOpen()) {
+            int16_t rawL, rawR;
+            pcAudioIn1.getInputLevel(rawL, rawR);
+            s_jpIn1L = static_cast<int16_t>((s_jpIn1L * DECAY) / 256);
+            s_jpIn1R = static_cast<int16_t>((s_jpIn1R * DECAY) / 256);
+            if (rawL > s_jpIn1L) s_jpIn1L = rawL;
+            if (rawR > s_jpIn1R) s_jpIn1R = rawR;
+            jp.setLevel(EmuJackPanel::AUDIO_IN1, s_jpIn1L, s_jpIn1R);
+        }
+
+        // IN2 levels → jack panel
+        if (pcAudioIn2.isOpen()) {
+            int16_t rawL, rawR;
+            pcAudioIn2.getInputLevel(rawL, rawR);
+            s_jpIn2L = static_cast<int16_t>((s_jpIn2L * DECAY) / 256);
+            s_jpIn2R = static_cast<int16_t>((s_jpIn2R * DECAY) / 256);
+            if (rawL > s_jpIn2L) s_jpIn2L = rawL;
+            if (rawR > s_jpIn2R) s_jpIn2R = rawR;
+            jp.setLevel(EmuJackPanel::AUDIO_IN2, s_jpIn2L, s_jpIn2R);
+        }
+    }, 16, nullptr);
 #endif
 
     printf("[CrossPad] App init complete\n");
@@ -472,3 +812,49 @@ void crosspad_app_go_home()
 {
     LoadMainScreen(s_lcdContainer);
 }
+
+void crosspad_app_update_pad_icon()
+{
+    std::string active = crosspad::getPadManager().getActivePadLogic();
+
+    if (active == "Mixer") {
+        crosspad_gui::statusbar_add_icon("pad_logic", LV_SYMBOL_SHUFFLE,
+                                          lv_color_hex(0x0099AA),
+                                          crosspad_gui::StatusIconSide::Right);
+    } else if (active == "MLPiano") {
+        crosspad_gui::statusbar_add_icon("pad_logic", LV_SYMBOL_KEYBOARD,
+                                          lv_color_hex(0x9966FF),
+                                          crosspad_gui::StatusIconSide::Right);
+    } else if (active.empty()) {
+        crosspad_gui::statusbar_remove_icon("pad_logic");
+    } else {
+        // Unknown pad logic — show generic icon with name
+        crosspad_gui::statusbar_add_icon("pad_logic", LV_SYMBOL_LIST,
+                                          lv_color_hex(0xAAAAAA),
+                                          crosspad_gui::StatusIconSide::Right);
+    }
+}
+
+/* ── Audio device accessors & global mixer ────────────────────────────── */
+
+#ifdef USE_AUDIO
+PcAudioOutput* pc_platform_get_audio_output(int index)
+{
+    if (index == 0) return &pcAudio;
+    if (index == 1) return &pcAudio2;
+    return nullptr;
+}
+
+AudioMixerEngine& getMixerEngine()
+{
+    return s_mixerEngine;
+}
+
+void pc_platform_save_mixer_state()
+{
+    s_mixerEngine.saveState(getMixerStatePath());
+}
+#else
+PcAudioOutput* pc_platform_get_audio_output(int /*index*/) { return nullptr; }
+void pc_platform_save_mixer_state() {}
+#endif

@@ -19,6 +19,7 @@
 #include <crosspad/pad/PadManager.hpp>
 #include "crosspad-gui/components/app_lifecycle.h"
 #include "crosspad-gui/platform/IGuiPlatform.h"
+#include "crosspad_app.hpp"
 
 #include "lvgl.h"
 
@@ -345,9 +346,11 @@ lv_obj_t* MlPiano_create(lv_obj_t* parent, App* a)
     if (a) {
         a->setOnShow([](lv_obj_t*) {
             crosspad::getPadManager().setActivePadLogic("MLPiano");
+            crosspad_app_update_pad_icon();
         });
         a->setOnHide([](lv_obj_t*) {
             crosspad::getPadManager().setActivePadLogic("");
+            crosspad_app_update_pad_icon();
         });
     }
 
@@ -359,6 +362,7 @@ void MlPiano_destroy(lv_obj_t* app_obj)
 {
     crosspad::getPadManager().setActivePadLogic("");
     crosspad::getPadManager().unregisterPadLogic("MLPiano");
+    crosspad_app_update_pad_icon();
     s_padLogic = nullptr;
     s_padLogicShared.reset();
     s_octaveLabel = nullptr;

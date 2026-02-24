@@ -55,4 +55,14 @@ void pc_platform_save_settings();
 /// Get user profile directory path (~/.crosspad)
 const char* pc_platform_get_profile_dir();
 
+// Forward declarations for PC audio devices
+class PcAudioOutput;
+class PcAudioInput;
+
+/// Get a PC audio output by index (0=OUT1, 1=OUT2). Returns nullptr if invalid.
+PcAudioOutput* pc_platform_get_audio_output(int index);
+
+/// Save the current mixer state to ~/.crosspad/mixer_state.json
+void pc_platform_save_mixer_state();
+
 #endif

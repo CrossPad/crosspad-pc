@@ -241,11 +241,18 @@ if(USE_AUDIO)
     # ML Piano app (own CMakeLists.txt exports ML_PIANO_APP_SOURCES)
     add_subdirectory(src/apps/ml_piano)
 
+    # Audio Mixer app
+    add_subdirectory(src/apps/mixer)
+
     # Synth engine wrapper (platform-level, like ESP32's audio codec)
     set(ML_PIANO_SYNTH_SOURCES src/synth/MlPianoSynth.cpp)
 
-    list(APPEND MAIN_SOURCES ${ML_SYNTH_SOURCES} ${ML_PIANO_SYNTH_SOURCES} ${ML_PIANO_APP_SOURCES})
+    list(APPEND MAIN_SOURCES ${ML_SYNTH_SOURCES} ${ML_PIANO_SYNTH_SOURCES} ${ML_PIANO_APP_SOURCES} ${MIXER_APP_SOURCES})
 endif()
+
+# Settings app (always available)
+add_subdirectory(src/apps/settings)
+list(APPEND MAIN_SOURCES ${SETTINGS_APP_SOURCES})
 
 # Custom target to run the executable
 add_custom_target(run COMMAND ${EXECUTABLE_OUTPUT_PATH}/main DEPENDS main)

@@ -5,6 +5,11 @@
  * Runs the same CrossPad GUI as main.cpp but under FreeRTOS scheduler.
  */
 
+#ifdef _MSC_VER
+  #include <Windows.h>
+#else
+  #include <unistd.h>
+#endif
 #include <SDL.h>
 #include "lvgl/lvgl.h"
 
@@ -27,7 +32,7 @@ void vApplicationMallocFailedHook(void)
     for (;;);
 }
 
-void vApplicationIdleHook(void) {}
+void vApplicationIdleHook(void) { Sleep(1); }
 
 void vApplicationStackOverflowHook(TaskHandle_t xTask, char* pcTaskName)
 {
