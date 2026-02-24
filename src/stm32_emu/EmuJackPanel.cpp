@@ -9,24 +9,24 @@
 /* ── Layout constants ────────────────────────────────────────────────── */
 
 // Audio OUT jacks — vertical bars on LEFT edge, at LCD height
-static constexpr int32_t AOUT1_BAR_X = 8,   AOUT1_BAR_Y = 70;
-static constexpr int32_t AOUT2_BAR_X = 8,   AOUT2_BAR_Y = 180;
-static constexpr int32_t AOUT_BAR_W  = 8,   AOUT_BAR_H  = 55;
-static constexpr int32_t AOUT_LBL_X  = 14;  // label to the right of bar
-static constexpr int32_t AOUT_LBL_W  = 68;  // width becomes height when rotated 90°
+static constexpr int32_t AOUT1_BAR_X = 2,   AOUT1_BAR_Y = 110;
+static constexpr int32_t AOUT2_BAR_X = 2,   AOUT2_BAR_Y = 210;
+static constexpr int32_t AOUT_BAR_W  = 8,   AOUT_BAR_H  = 50;
+static constexpr int32_t AOUT_LBL_X  = 24;  // label to the right of bar
+static constexpr int32_t AOUT_LBL_W  = 64;  // width becomes height when rotated 90°
 
 // Audio IN jacks — horizontal bars on TOP edge, left side (closer together)
 static constexpr int32_t AIN1_BAR_X = 50,   AIN1_BAR_Y = 2;
 static constexpr int32_t AIN2_BAR_X = 120,  AIN2_BAR_Y = 2;
 static constexpr int32_t AIN_BAR_W  = 50,   AIN_BAR_H  = 8;
 static constexpr int32_t AIN_LBL_Y  = 13;   // label below bar
-static constexpr int32_t AIN_LBL_W  = 60;
+static constexpr int32_t AIN_LBL_W  = 52;
 
 // MIDI jacks — horizontal bars on TOP edge, right side (closer together)
-static constexpr int32_t MIDI_OUT_BAR_X = 330, MIDI_OUT_BAR_Y = 2;
+static constexpr int32_t MIDI_OUT_BAR_X = 320, MIDI_OUT_BAR_Y = 2;
 static constexpr int32_t MIDI_IN_BAR_X  = 385, MIDI_IN_BAR_Y  = 2;
 static constexpr int32_t MIDI_BAR_W     = 50,  MIDI_BAR_H     = 8;
-static constexpr int32_t MIDI_LBL_Y     = 13;  // label below bar
+static constexpr int32_t MIDI_LBL_Y     = 10;  // label below bar
 static constexpr int32_t MIDI_LBL_W     = 60;
 
 // Colors

@@ -12,8 +12,12 @@
 #include <string>
 #include <vector>
 #include <map>
+#include <fstream>
+#include <filesystem>
 
 #include "lvgl.h"
+
+#include <ArduinoJson.h>
 
 // crosspad-core interfaces (BEFORE Windows.h to avoid ERROR macro conflict)
 #include "crosspad/platform/IClock.hpp"
@@ -119,23 +123,37 @@ public:
 };
 
 // =============================================================================
-// PcKeyValueStore — IKeyValueStore in-memory stub (returns defaults)
+// PcKeyValueStore — IKeyValueStore backed by ~/.crosspad/preferences.json
 // =============================================================================
 
 class PcKeyValueStore : public IKeyValueStore {
 public:
-    bool init() override { return true; }
+    bool init() override {
+        profileDir_ = resolveProfileDir();
+        filePath_ = profileDir_ + "/preferences.json";
+
+        // Ensure ~/.crosspad/ and ~/.crosspad/cache/ exist
+        std::filesystem::create_directories(profileDir_);
+        std::filesystem::create_directories(profileDir_ + "/cache");
+
+        load();
+        printf("[KVStore] Profile dir: %s\n", profileDir_.c_str());
+        return true;
+    }
 
     void saveBool(const char* ns, const char* key, bool value) override {
         store_[makeKey(ns, key)] = value ? 1 : 0;
+        flush();
     }
 
     void saveU8(const char* ns, const char* key, uint8_t value) override {
         store_[makeKey(ns, key)] = value;
+        flush();
     }
 
     void saveI32(const char* ns, const char* key, int32_t value) override {
         store_[makeKey(ns, key)] = value;
+        flush();
     }
 
     bool readBool(const char* ns, const char* key, bool defaultVal) override {
@@ -153,14 +171,62 @@ public:
         return it != store_.end() ? it->second : defaultVal;
     }
 
-    void eraseAll() override { store_.clear(); }
+    void eraseAll() override {
+        store_.clear();
+        flush();
+    }
+
+    const std::string& getProfileDir() const { return profileDir_; }
 
 private:
+    std::map<std::string, int32_t> store_;
+    std::string profileDir_;
+    std::string filePath_;
+
     std::string makeKey(const char* ns, const char* key) {
         return std::string(ns) + "/" + key;
     }
 
-    std::map<std::string, int32_t> store_;
+    static std::string resolveProfileDir() {
+#ifdef _MSC_VER
+        const char* userProfile = std::getenv("USERPROFILE");
+        if (userProfile) return std::string(userProfile) + "/.crosspad";
+#endif
+        const char* home = std::getenv("HOME");
+        if (home) return std::string(home) + "/.crosspad";
+        return ".crosspad";
+    }
+
+    void load() {
+        std::ifstream f(filePath_);
+        if (!f.is_open()) return;
+
+        JsonDocument doc;
+        DeserializationError err = deserializeJson(doc, f);
+        if (err) {
+            printf("[KVStore] Failed to parse %s: %s\n", filePath_.c_str(), err.c_str());
+            return;
+        }
+
+        for (JsonPair kv : doc.as<JsonObject>()) {
+            store_[kv.key().c_str()] = kv.value().as<int32_t>();
+        }
+        printf("[KVStore] Loaded %zu keys from %s\n", store_.size(), filePath_.c_str());
+    }
+
+    void flush() {
+        JsonDocument doc;
+        for (auto it = store_.begin(); it != store_.end(); ++it) {
+            doc[it->first] = it->second;
+        }
+
+        std::ofstream f(filePath_);
+        if (!f.is_open()) {
+            printf("[KVStore] Failed to write %s\n", filePath_.c_str());
+            return;
+        }
+        serializeJsonPretty(doc, f);
+    }
 };
 
 // =============================================================================
@@ -322,8 +388,13 @@ extern "C" void pc_platform_init() {
     // Event bus
     s_eventBus.init();
 
-    // Settings singleton
+    // Key-value store (creates ~/.crosspad/ and loads preferences.json)
+    s_kvStore.init();
+
+    // Settings singleton — load persisted values
     settings = CrosspadSettings::getInstance();
+    settings->loadFrom(s_kvStore);
+    settings->saveTo(s_kvStore);   // persist defaults on first run
 
     // Initialize pad subsystem
     s_padAnimator.init(s_ledStrip, s_clock);
@@ -378,4 +449,16 @@ void pc_platform_set_synth_engine(crosspad::ISynthEngine* synth) {
 
 crosspad::ISynthEngine* pc_platform_get_synth_engine() {
     return s_synthEngine;
+}
+
+// Save current settings to ~/.crosspad/preferences.json
+void pc_platform_save_settings() {
+    if (settings) {
+        settings->saveTo(s_kvStore);
+    }
+}
+
+// Get user profile directory (~/.crosspad)
+const char* pc_platform_get_profile_dir() {
+    return s_kvStore.getProfileDir().c_str();
 }

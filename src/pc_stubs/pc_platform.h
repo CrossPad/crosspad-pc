@@ -49,4 +49,10 @@ void pc_platform_set_synth_engine(crosspad::ISynthEngine* synth);
 /// Get the global synth engine (used by MlPianoApp for audio routing)
 crosspad::ISynthEngine* pc_platform_get_synth_engine();
 
+/// Save current CrosspadSettings to ~/.crosspad/preferences.json
+void pc_platform_save_settings();
+
+/// Get user profile directory path (~/.crosspad)
+const char* pc_platform_get_profile_dir();
+
 #endif
