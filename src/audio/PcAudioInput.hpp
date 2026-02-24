@@ -10,7 +10,7 @@
 
 #include <crosspad/synth/IAudioInput.hpp>
 #include <RtAudio.h>
-#include "AudioRingBuffer.hpp"
+#include <crosspad/audio/AudioRingBuffer.hpp>
 
 #include <atomic>
 #include <memory>
@@ -50,7 +50,7 @@ public:
 
 private:
     std::unique_ptr<RtAudio> rtAudio_;
-    AudioRingBuffer<int16_t> inputRing_;
+    crosspad::AudioRingBuffer<int16_t> inputRing_;
 
     uint32_t sampleRate_    = 44100;
     uint32_t bufferFrames_  = 256;

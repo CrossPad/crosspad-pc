@@ -12,42 +12,31 @@ set(LVGL_PRO_PROJECT_DIR
     ""
     CACHE PATH "Path to LVGL Pro Project folder")
 
-option(USE_FREERTOS "Enable FreeRTOS" OFF) # Turn this on to enable FreeRTOS
 option(USE_MIDI "Enable MIDI input/output via RtMidi" ON)
 option(USE_AUDIO "Enable system audio output via RtAudio" ON)
 
-if(USE_FREERTOS)
-    message(STATUS "FreeRTOS is enabled")
+# FreeRTOS — always enabled (required for crosspad-core event bus & LVGL OSAL)
+add_library(freertos_config INTERFACE)
+target_include_directories(freertos_config SYSTEM INTERFACE ${PROJECT_SOURCE_DIR}/config)
+target_compile_definitions(freertos_config INTERFACE projCOVERAGE_TEST=0)
 
-    # FreeRTOS integration when USE_FREERTOS is enabled
-    add_library(freertos_config INTERFACE)
-    target_include_directories(freertos_config SYSTEM INTERFACE ${PROJECT_SOURCE_DIR}/config)
-    target_compile_definitions(freertos_config INTERFACE projCOVERAGE_TEST=0)
+add_subdirectory(FreeRTOS)
 
-    # Add FreeRTOS as a subdirectory
-    add_subdirectory(FreeRTOS)
+include_directories(${PROJECT_SOURCE_DIR}/FreeRTOS/include)
+include_directories(${PROJECT_SOURCE_DIR}/config)
 
-    # FreeRTOS-specific include directories
-    include_directories(${PROJECT_SOURCE_DIR}/FreeRTOS/include)
-    include_directories(${PROJECT_SOURCE_DIR}/config)
-
-    if(MSVC OR MINGW)
-        set(FREERTOS_PORT_DIR ${PROJECT_SOURCE_DIR}/FreeRTOS/portable/MSVC-MingW)
-    else()
-        set(FREERTOS_PORT_DIR ${PROJECT_SOURCE_DIR}/FreeRTOS/portable/ThirdParty/GCC/Posix)
-    endif()
-    include_directories(${FREERTOS_PORT_DIR})
-
-    # Add FreeRTOS sources
-    file(GLOB FREERTOS_SOURCES
-        "${PROJECT_SOURCE_DIR}/FreeRTOS/*.c"
-        "${PROJECT_SOURCE_DIR}/FreeRTOS/portable/MemMang/heap_4.c"
-        "${FREERTOS_PORT_DIR}/*.c"
-    )
+if(MSVC OR MINGW)
+    set(FREERTOS_PORT_DIR ${PROJECT_SOURCE_DIR}/FreeRTOS/portable/MSVC-MingW)
 else()
-    message(STATUS "FreeRTOS is disabled")
-    set(FREERTOS_SOURCES "")  # No FreeRTOS sources if FreeRTOS is disabled
+    set(FREERTOS_PORT_DIR ${PROJECT_SOURCE_DIR}/FreeRTOS/portable/ThirdParty/GCC/Posix)
 endif()
+include_directories(${FREERTOS_PORT_DIR})
+
+file(GLOB FREERTOS_SOURCES
+    "${PROJECT_SOURCE_DIR}/FreeRTOS/*.c"
+    "${PROJECT_SOURCE_DIR}/FreeRTOS/portable/MemMang/heap_4.c"
+    "${FREERTOS_PORT_DIR}/*.c"
+)
 
 # Main include files of the project
 include_directories(${PROJECT_SOURCE_DIR}/main/inc)
@@ -140,42 +129,18 @@ if(MSVC)
     set(CMAKE_CXX_FLAGS "${_SAVED_CXX_FLAGS}")
 endif()
 
-# ── crosspad-core portable sources (excluding ESP-IDF / FreeRTOS specific) ──
-set(CROSSPAD_CORE_SOURCES
-    crosspad-core/src/app/AppRegistry.cpp
-    crosspad-core/src/music/MusicTheory.cpp
-    crosspad-core/src/pad/PadManager.cpp
-    crosspad-core/src/pad/PadLedController.cpp
-    crosspad-core/src/pad/PadAnimator.cpp
-    crosspad-core/src/pad/RGBCallbackManager.cpp
-    crosspad-core/src/settings/CrosspadSettings.cpp
-    crosspad-core/src/protocol/Stm32MessageHandler.cpp
-)
+# ── crosspad-core portable sources (auto-discover, excluding platform-specific) ──
+file(GLOB_RECURSE CROSSPAD_CORE_SOURCES crosspad-core/src/*.cpp)
+list(FILTER CROSSPAD_CORE_SOURCES EXCLUDE REGEX "EspEventBus\\.cpp$")
+list(FILTER CROSSPAD_CORE_SOURCES EXCLUDE REGEX "SyncEventBus\\.cpp$")
+list(FILTER CROSSPAD_CORE_SOURCES EXCLUDE REGEX "Stm32Manager\\.cpp$")
+# FreeRtosEventBus.cpp stays — used as the event bus implementation
 
-# ── crosspad-gui sources ──
-set(CROSSPAD_GUI_SOURCES
-    crosspad-gui/src/platform/GuiPlatform.cpp
-    crosspad-gui/src/styles/styles.cpp
-    crosspad-gui/src/widgets/gui_helpers.cpp
-    crosspad-gui/src/widgets/keypad_buttons.cpp
-    crosspad-gui/src/widgets/footer_button.cpp
-    crosspad-gui/src/widgets/spinbox_helpers.cpp
-    crosspad-gui/src/widgets/settings_widgets.cpp
-    crosspad-gui/src/components/dfu_panel.cpp
-    crosspad-gui/src/components/file_explorer.cpp
-    crosspad-gui/src/components/radial_menu.cpp
-    crosspad-gui/src/components/status_bar.cpp
-    crosspad-gui/src/components/ui_modal.cpp
-    crosspad-gui/src/components/ui_toast.cpp
-    crosspad-gui/src/components/vu_meter.cpp
-    crosspad-gui/src/components/app_launcher.cpp
-    crosspad-gui/src/components/app_lifecycle.cpp
-    crosspad-gui/src/components/volume_overlay.cpp
-)
+# ── crosspad-gui sources (auto-discover) ──
+file(GLOB_RECURSE CROSSPAD_GUI_SOURCES crosspad-gui/src/*.cpp)
 
 # ── PC platform stubs (event bus, singletons, interface impls) ──
 set(PC_STUB_SOURCES
-    src/pc_stubs/PcEventBus.cpp
     src/pc_stubs/PcPlatformStubs.cpp
     src/pc_stubs/PcApp.cpp
 )
@@ -200,17 +165,13 @@ set(MAIN_SOURCES ${WIN_RESOURCES} src/mouse_cursor_icon.c src/hal/hal.c
 )
 set(MAIN_LIBS lvgl lvgl::examples lvgl::demos lvgl::thorvg ${SDL2_LIBRARIES} ArduinoJson)
 
-# Create the main executable, depending on the FreeRTOS option
-if(USE_FREERTOS)
-    if(MSVC OR MINGW)
-        list(APPEND MAIN_SOURCES src/freertos_main.cpp src/freertos/freertos_win32_port.c ${FREERTOS_SOURCES})
-    else()
-        list(APPEND MAIN_SOURCES src/freertos_main.cpp src/freertos/freertos_posix_port.c ${FREERTOS_SOURCES})
-    endif()
-    list(APPEND MAIN_LIBS freertos_config freertos_kernel)
+# FreeRTOS entry point + platform port
+if(MSVC OR MINGW)
+    list(APPEND MAIN_SOURCES src/freertos_main.cpp src/freertos/freertos_win32_port.c ${FREERTOS_SOURCES})
 else()
-    list(APPEND MAIN_SOURCES src/main.cpp)
+    list(APPEND MAIN_SOURCES src/freertos_main.cpp src/freertos/freertos_posix_port.c ${FREERTOS_SOURCES})
 endif()
+list(APPEND MAIN_LIBS freertos_config freertos_kernel)
 
 
 if(NOT MSVC)
@@ -253,6 +214,12 @@ endif()
 # Settings app (always available)
 add_subdirectory(src/apps/settings)
 list(APPEND MAIN_SOURCES ${SETTINGS_APP_SOURCES})
+
+# Auto-generate app registry initialization
+include(cmake/generate_registry.cmake)
+set(APP_REGISTRY_FILE "${CMAKE_BINARY_DIR}/app_registry_init.cpp")
+generate_app_registry("${APP_REGISTRY_FILE}" "${PROJECT_SOURCE_DIR}/src/apps")
+list(APPEND MAIN_SOURCES "${APP_REGISTRY_FILE}")
 
 # Custom target to run the executable
 add_custom_target(run COMMAND ${EXECUTABLE_OUTPUT_PATH}/main DEPENDS main)
@@ -325,6 +292,8 @@ target_include_directories(main PRIVATE
     ${PROJECT_SOURCE_DIR}/lib/ml_synth
 )
 target_link_libraries(main ${MAIN_LIBS})
+
+target_compile_definitions(main PRIVATE USE_FREERTOS=1)
 
 # MIDI compile definition
 if(USE_MIDI)

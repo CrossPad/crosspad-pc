@@ -20,6 +20,7 @@
 #include <ArduinoJson.h>
 
 // crosspad-core interfaces (BEFORE Windows.h to avoid ERROR macro conflict)
+#include "crosspad/platform/CrosspadPlatformInit.hpp"
 #include "crosspad/platform/IClock.hpp"
 #include "crosspad/midi/IMidiOutput.hpp"
 #include "crosspad/synth/IAudioOutput.hpp"
@@ -44,8 +45,7 @@
 #include "crosspad-gui/platform/IGuiPlatform.h"
 #include "crosspad-gui/platform/IFileSystem.h"
 
-// PC event bus
-#include "PcEventBus.hpp"
+#include "crosspad/event/FreeRtosEventBus.hpp"
 
 using namespace crosspad;
 
@@ -272,26 +272,66 @@ private:
     std::string assetPrefix_ = "C:/";
 
     void initAssetPath() {
-#ifdef _MSC_VER
-        char exePath[MAX_PATH];
-        DWORD len = GetModuleFileNameA(NULL, exePath, MAX_PATH);
-        if (len == 0 || len >= MAX_PATH) return;
+        namespace fs = std::filesystem;
+        fs::path exeDir;
 
-        std::string path(exePath, len);
-        // Remove exe filename → bin directory
-        size_t pos = path.find_last_of("\\/");
-        if (pos == std::string::npos) return;
-        path = path.substr(0, pos);
-        // Go up one level → project root
-        pos = path.find_last_of("\\/");
-        if (pos == std::string::npos) return;
-        path = path.substr(0, pos);
-        // Convert backslashes to forward slashes (LVGL convention)
-        for (char& c : path) {
-            if (c == '\\') c = '/';
+#ifdef _MSC_VER
+        char buf[MAX_PATH];
+        DWORD len = GetModuleFileNameA(NULL, buf, MAX_PATH);
+        if (len > 0 && len < MAX_PATH) {
+            exeDir = fs::path(buf).parent_path();
         }
-        assetPrefix_ = path + "/crosspad-gui/assets/";
+#elif defined(__linux__)
+        char buf[4096];
+        ssize_t len = readlink("/proc/self/exe", buf, sizeof(buf) - 1);
+        if (len > 0) {
+            buf[len] = '\0';
+            exeDir = fs::path(buf).parent_path();
+        }
+#elif defined(__APPLE__)
+        char buf[4096];
+        uint32_t size = sizeof(buf);
+        if (_NSGetExecutablePath(buf, &size) == 0) {
+            exeDir = fs::path(buf).parent_path();
+        }
 #endif
+
+        // Try exe-relative: exe_dir/../crosspad-gui/assets/
+        if (!exeDir.empty()) {
+            fs::path candidate = exeDir / ".." / "crosspad-gui" / "assets";
+            std::error_code ec;
+            if (fs::exists(candidate, ec)) {
+                std::string resolved = fs::canonical(candidate, ec).string();
+                for (char& c : resolved) { if (c == '\\') c = '/'; }
+                assetPrefix_ = resolved + "/";
+                return;
+            }
+        }
+
+        // Fallback: CROSSPAD_ASSETS env var
+        const char* envPath = std::getenv("CROSSPAD_ASSETS");
+        if (envPath && fs::exists(envPath)) {
+            std::string p(envPath);
+            for (char& c : p) { if (c == '\\') c = '/'; }
+            if (!p.empty() && p.back() != '/') p += '/';
+            assetPrefix_ = p;
+            return;
+        }
+
+        // Fallback: cwd-relative
+        {
+            std::error_code ec;
+            fs::path candidate = fs::current_path(ec) / "crosspad-gui" / "assets";
+            if (fs::exists(candidate, ec)) {
+                std::string resolved = fs::canonical(candidate, ec).string();
+                for (char& c : resolved) { if (c == '\\') c = '/'; }
+                assetPrefix_ = resolved + "/";
+                return;
+            }
+        }
+
+        // Last resort
+        assetPrefix_ = "C:/";
     }
 };
 
@@ -302,10 +342,21 @@ private:
 class PcFileSystem : public crosspad_gui::IFileSystem {
 public:
     bool listDirectory(const std::string& path, std::vector<crosspad_gui::FileItem>& outEntries) override {
-        (void)path;
         outEntries.clear();
-        // Stub: return empty listing. Can be extended to use std::filesystem.
-        return false;
+        std::error_code ec;
+        for (auto& entry : std::filesystem::directory_iterator(path, ec)) {
+            if (ec) break;
+            crosspad_gui::FileItem item;
+            item.path = entry.path().string();
+            item.name = entry.path().filename().string();
+            item.isFolder = entry.is_directory(ec);
+            // Normalize backslashes to forward slashes for LVGL
+            for (char& c : item.path) {
+                if (c == '\\') c = '/';
+            }
+            outEntries.push_back(std::move(item));
+        }
+        return !outEntries.empty();
     }
 };
 
@@ -317,7 +368,7 @@ static PcClock         s_clock;
 static PcLedStrip      s_ledStrip;
 static NullMidiOutput  s_nullMidi;
 static NullAudioOutput s_nullAudio;
-static PcEventBus      s_eventBus;
+static FreeRtosEventBus s_eventBus;
 static PcKeyValueStore s_kvStore;
 static PcGuiPlatform   s_guiPlatform;
 static PcFileSystem    s_fileSystem;
@@ -385,25 +436,25 @@ extern "C" void pc_platform_init() {
     if (s_initialized) return;
     s_initialized = true;
 
-    // Event bus
-    s_eventBus.init();
-
-    // Key-value store (creates ~/.crosspad/ and loads preferences.json)
-    s_kvStore.init();
-
-    // Settings singleton — load persisted values
+    // Settings pointer for global access
     settings = CrosspadSettings::getInstance();
-    settings->loadFrom(s_kvStore);
-    settings->saveTo(s_kvStore);   // persist defaults on first run
 
-    // Initialize pad subsystem
-    s_padAnimator.init(s_ledStrip, s_clock);
-    s_padLedController.init(s_ledStrip, s_eventBus, settings);
-    s_padManager.init(s_padLedController, s_padAnimator, s_nullMidi, s_eventBus, settings, &status);
-    s_padManager.begin();
-    s_padLedController.begin();
+    // Common crosspad-core initialization
+    crosspad::CrosspadPlatformConfig config;
+    config.eventBus        = &s_eventBus;
+    config.clock           = &s_clock;
+    config.ledStrip        = &s_ledStrip;
+    config.midiOutput      = &s_nullMidi;
+    config.padManager      = &s_padManager;
+    config.padLedController = &s_padLedController;
+    config.padAnimator     = &s_padAnimator;
+    config.kvStore         = &s_kvStore;
+    config.settings        = settings;
+    config.status          = &status;
 
-    // Register GUI platform
+    crosspad::crosspad_platform_init(config);
+
+    // Register GUI platform (crosspad-gui specific, not in crosspad-core)
     crosspad_gui::setGuiPlatform(&s_guiPlatform);
     crosspad_gui::setFileSystem(&s_fileSystem);
 
@@ -413,8 +464,7 @@ extern "C" void pc_platform_init() {
 // Allow main.cpp to swap in PcMidi as the MIDI output
 void pc_platform_set_midi_output(IMidiOutput* midi) {
     if (midi) {
-        s_padManager.init(s_padLedController, s_padAnimator, *midi, s_eventBus, settings, &status);
-        s_padManager.begin();
+        crosspad::crosspad_platform_set_midi(*midi);
     }
 }
 
