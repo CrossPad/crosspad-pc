@@ -334,6 +334,9 @@ void crosspad_app_init()
     /* Platform stubs (event bus, settings, pad manager, GUI) */
     pc_platform_init();
 
+    /* Register go-home callback for shared Settings UI */
+    pc_platform_set_go_home([]() { LoadMainScreen(s_lcdContainer); });
+
     /* Load saved device preferences */
     loadDevicePrefs();
 

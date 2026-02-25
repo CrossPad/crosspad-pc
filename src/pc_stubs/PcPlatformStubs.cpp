@@ -29,6 +29,7 @@
 #include "crosspad/led/ILedStrip.hpp"
 #include "crosspad/settings/IKeyValueStore.hpp"
 #include "crosspad/settings/CrosspadSettings.hpp"
+#include "crosspad/settings/ISettingsUI.hpp"
 #include "crosspad/status/CrosspadStatus.hpp"
 #include "crosspad/pad/PadManager.hpp"
 #include "crosspad/pad/PadLedController.hpp"
@@ -389,6 +390,34 @@ static bool s_initialized = false;
 static crosspad::ISynthEngine* s_synthEngine = nullptr;
 
 // =============================================================================
+// ISettingsUI — PC implementation
+// =============================================================================
+
+static void (*s_goHomeFn)() = nullptr;  // set via pc_platform_set_go_home()
+
+class PcSettingsUI : public crosspad::ISettingsUI {
+public:
+    void saveSettings() override {
+        if (settings) {
+            settings->saveTo(s_kvStore);
+        }
+    }
+    void exitToHome() override {
+        if (s_goHomeFn) s_goHomeFn();
+    }
+    const char* getPlatformName() override { return "PC Simulator"; }
+    const char* getPlatformInfo() override {
+        return s_kvStore.getProfileDir().c_str();
+    }
+};
+
+static PcSettingsUI s_pcSettingsUI;
+
+void pc_platform_set_go_home(void (*fn)()) {
+    s_goHomeFn = fn;
+}
+
+// =============================================================================
 // LED color accessor for STM32 emulator window
 // =============================================================================
 
@@ -457,6 +486,9 @@ extern "C" void pc_platform_init() {
     // Register GUI platform (crosspad-gui specific, not in crosspad-core)
     crosspad_gui::setGuiPlatform(&s_guiPlatform);
     crosspad_gui::setFileSystem(&s_fileSystem);
+
+    // Register settings UI callback for shared settings UI in crosspad-gui
+    crosspad::setSettingsUI(&s_pcSettingsUI);
 
     printf("[PC] Platform stubs initialized\n");
 }

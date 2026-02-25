@@ -55,6 +55,9 @@ void pc_platform_save_settings();
 /// Get user profile directory path (~/.crosspad)
 const char* pc_platform_get_profile_dir();
 
+/// Set the go-home callback (used by ISettingsUI to navigate back to launcher)
+void pc_platform_set_go_home(void (*fn)());
+
 // Forward declarations for PC audio devices
 class PcAudioOutput;
 class PcAudioInput;

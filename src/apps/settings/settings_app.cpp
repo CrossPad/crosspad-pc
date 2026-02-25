@@ -1,16 +1,11 @@
 #if USE_LVGL
 
 #include "settings_app.h"
-#include "settings_nav.h"
 #include "crosspad/app/AppRegistrar.hpp"
-#include "pc_stubs/pc_platform.h"
-
-extern CrosspadSettings * settings;
-
-static App * s_app = NULL;
+#include "crosspad-gui/components/settings_ui.h"
 
 lv_obj_t * lv_CreateSettings(lv_obj_t * parent, App * a) {
-    s_app = a;
+    (void)a;
 
     // Main container
     lv_obj_t * container = lv_obj_create(parent);
@@ -33,16 +28,15 @@ lv_obj_t * lv_CreateSettings(lv_obj_t * parent, App * a) {
     lv_obj_add_flag(content, LV_OBJ_FLAG_SCROLLABLE);
     lv_obj_set_scrollbar_mode(content, LV_SCROLLBAR_MODE_AUTO);
 
-    settings_nav_init(content, nullptr);
-    settings_nav_show_categories();
+    // Delegate to shared settings UI in crosspad-gui
+    crosspad_gui::settings_ui_create(content, nullptr);
 
     return container;
 }
 
 void lv_DestroySettings(lv_obj_t * obj) {
-    pc_platform_save_settings();
-    settings_nav_cleanup();
-    s_app = NULL;
+    (void)obj;
+    crosspad_gui::settings_ui_destroy();
 }
 
 REGISTER_APP(Settings, nullptr, "gear.png",
