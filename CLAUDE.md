@@ -105,6 +105,22 @@ crosspad-core defines portable interfaces; this repo provides PC implementations
 
 Singletons accessed via `crosspad::getPadManager()`, `crosspad::getEventBus()`, etc. — initialized in `pc_platform_init()`.
 
+### Platform Capabilities
+
+crosspad-core provides a bitflag-based capability query system (`crosspad/platform/PlatformCapabilities.hpp`). Platforms declare what they support; apps query at runtime instead of null-checking interface pointers.
+
+**Available flags** (`enum class Capability : uint32_t`): `Midi`, `AudioOut`, `AudioIn`, `Synth`, `Pads`, `Leds`, `Encoder`, `Display`, `Persistence`, `Vibration`, `WiFi`, `Bluetooth`, `Usb`, `Imu`, `Stm32`, `Sequencer`.
+
+**API:**
+- `setPlatformCapabilities(caps)` — set all flags at once (call during init)
+- `addPlatformCapability(cap)` / `removePlatformCapability(cap)` — modify at runtime
+- `hasCapability(cap)` — true if ALL specified flags are present
+- `hasAnyCapability(caps)` — true if ANY specified flag is present
+
+**PC sets:** base caps (Pads, Leds, Encoder, Display, Persistence) in `pc_platform_init()`, then adds Midi/AudioOut/AudioIn/Synth as devices connect in `crosspad_app_init()`.
+
+**ESP32-S3 sets:** full caps (all hardware) in `ArduinoCrosspadPlatform_Init()`, adds Vibration when driver registers.
+
 ### App System
 
 Apps are registered via crosspad-core's `AppRegistry` using static `AppRegistrar` constructors. The PC `App` class (`src/pc_stubs/PcApp.hpp`) is a lightweight wrapper — no sequencer, CLI, or kit loader — supporting lifecycle (`start`/`pause`/`resume`/`destroyApp`) and launcher integration. Apps receive pad/MIDI events through the EventBus → AppManagerBase → IApp callback chain.

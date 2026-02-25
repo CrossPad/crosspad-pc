@@ -3,8 +3,8 @@
  * @brief CrossPad device body with embedded LCD — single LVGL window.
  *
  * Assembles the full device visualization (LCD, encoder, pad grid, label)
- * on the active LVGL screen. Component details live in EmuEncoder and
- * EmuPadGrid.
+ * on the active LVGL screen. Uses shared VirtualEncoder, VirtualPadGrid,
+ * and VirtualPowerButton from crosspad-gui. SDL input wiring lives here.
  */
 
 #include "Stm32EmuWindow.hpp"
@@ -12,7 +12,34 @@
 #include <cstdio>
 #include <cstdint>
 
+#include <SDL2/SDL.h>
 #include "crosspad-gui/platform/IGuiPlatform.h"
+
+/* ── SDL event watcher (encoder mouse-wheel + middle-click) ──────────── */
+
+static int encoderSdlWatcher(void* userdata, SDL_Event* event)
+{
+    auto* self = static_cast<Stm32EmuWindow*>(userdata);
+    switch (event->type) {
+        case SDL_MOUSEWHEEL:
+            self->handleEncoderWheel(event->wheel.y);
+            break;
+        case SDL_MOUSEBUTTONDOWN:
+            if (event->button.button == SDL_BUTTON_MIDDLE)
+                self->handleEncoderPress(true);
+            break;
+        case SDL_MOUSEBUTTONUP:
+            if (event->button.button == SDL_BUTTON_MIDDLE)
+                self->handleEncoderPress(false);
+            break;
+    }
+    return 1;
+}
+
+Stm32EmuWindow::~Stm32EmuWindow()
+{
+    SDL_DelEventWatch(encoderSdlWatcher, this);
+}
 
 /* ── Layout constants ────────────────────────────────────────────────── */
 
@@ -25,7 +52,7 @@ static constexpr int32_t PAD_SIZE_SCALE = 5;  // overall size multiplier for emu
 static constexpr int32_t PAD_SIZE = 12 * PAD_SIZE_SCALE;
 static constexpr int32_t PAD_GAP  = 4 * PAD_SIZE_SCALE;
 static constexpr int32_t GRID_W   = 4 * PAD_SIZE + 3 * PAD_GAP;
-static constexpr int32_t GRID_H   = EmuPadGrid::gridHeight(PAD_SIZE, PAD_GAP*2/3);
+static constexpr int32_t GRID_H   = crosspad_gui::VirtualPadGrid::gridHeight(PAD_SIZE, PAD_GAP*2/3);
 
 // LCD centered horizontally in window
 static constexpr int32_t LCD_X = (Stm32EmuWindow::WIN_W - LCD_W) / 2;
@@ -92,6 +119,9 @@ lv_obj_t* Stm32EmuWindow::init()
     lv_sdl_window_set_title(disp, "CrossPad");
 
     buildLayout();
+
+    // Register SDL event watcher for encoder mouse-wheel + middle-click input
+    SDL_AddEventWatch(encoderSdlWatcher, this);
 
     // Ensure the LCD container (and its children like the embedded status bar)
     // is drawn above other screen children so it isn't occluded.
@@ -196,5 +226,10 @@ void Stm32EmuWindow::handleEncoderCC(uint8_t value, uint8_t ccRange, uint8_t ste
 
 void Stm32EmuWindow::handleEncoderPress(bool pressed)
 {
-    encoder_.handleMiddleButton(pressed);
+    encoder_.handleButtonPress(pressed);
+}
+
+void Stm32EmuWindow::handleEncoderWheel(int dy)
+{
+    encoder_.handleWheelDelta(dy);
 }

@@ -1,9 +1,9 @@
 #pragma once
 
 #include "lvgl/lvgl.h"
-#include "EmuEncoder.hpp"
-#include "EmuPadGrid.hpp"
-#include "EmuPowerButton.hpp"
+#include "crosspad-gui/virtual_device/VirtualEncoder.h"
+#include "crosspad-gui/virtual_device/VirtualPadGrid.h"
+#include "crosspad-gui/virtual_device/VirtualPowerButton.h"
 #include "EmuJackPanel.hpp"
 #include <cstdint>
 
@@ -17,6 +17,7 @@
 class Stm32EmuWindow {
 public:
     Stm32EmuWindow() = default;
+    ~Stm32EmuWindow();
 
     static constexpr int32_t WIN_W = 490;
     static constexpr int32_t WIN_H = 680;
@@ -34,6 +35,9 @@ public:
     /// Forward encoder button press/release state.
     void handleEncoderPress(bool pressed);
 
+    /// Forward mouse wheel delta to the virtual encoder rotation.
+    void handleEncoderWheel(int dy);
+
     /// Access the jack panel for wiring device selection callbacks.
     EmuJackPanel& getJackPanel() { return jackPanel_; }
 
@@ -41,9 +45,9 @@ private:
     lv_obj_t* screen_       = nullptr;
     lv_obj_t* lcdContainer_ = nullptr;
 
-    EmuEncoder     encoder_;
-    EmuPadGrid     padGrid_;
-    EmuPowerButton powerBtn_;
+    crosspad_gui::VirtualEncoder     encoder_;
+    crosspad_gui::VirtualPadGrid     padGrid_;
+    crosspad_gui::VirtualPowerButton powerBtn_;
     EmuJackPanel   jackPanel_;
 
     lv_timer_t* updateTimer_ = nullptr;

@@ -26,6 +26,7 @@
 // crosspad-core
 #include "crosspad/app/AppRegistry.hpp"
 #include "crosspad/pad/PadManager.hpp"
+#include "crosspad/platform/PlatformCapabilities.hpp"
 
 // STM32 hardware emulator window
 #include "stm32_emu/Stm32EmuWindow.hpp"
@@ -371,6 +372,7 @@ void crosspad_app_init()
             midi.beginAutoConnect("CrossPad");
         }
         pc_platform_set_midi_output(&midi);
+        crosspad::addPlatformCapability(crosspad::Capability::Midi);
     }
 
     midi.setHandleNoteOn([](uint8_t channel, uint8_t note, uint8_t velocity) {
@@ -445,6 +447,7 @@ void crosspad_app_init()
         // Save actual device name if we connected
         if (pcAudio.isOpen()) {
             s_devicePrefs.audioOut1 = pcAudio.getCurrentDeviceName();
+            crosspad::addPlatformCapability(crosspad::Capability::AudioOut);
         }
     }
 
@@ -472,6 +475,7 @@ void crosspad_app_init()
                 pcAudioIn1.begin(devId);
                 if (pcAudioIn1.isOpen()) {
                     printf("[Audio] IN1 auto-connected: %s\n", pcAudioIn1.getCurrentDeviceName().c_str());
+                    crosspad::addPlatformCapability(crosspad::Capability::AudioIn);
                 }
             }
         }
@@ -490,6 +494,7 @@ void crosspad_app_init()
     fmSynth.setSampleRate(pcAudio.getSampleRate());
     fmSynth.init();
     pc_platform_set_synth_engine(&fmSynth);
+    crosspad::addPlatformCapability(crosspad::Capability::Synth);
 
     // Load mixer state from preferences (or set defaults)
     s_mixerEngine.loadState(getMixerStatePath());

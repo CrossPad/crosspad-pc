@@ -154,9 +154,6 @@ endif()
 
 set(MAIN_SOURCES ${WIN_RESOURCES} src/mouse_cursor_icon.c src/hal/hal.c
     src/stm32_emu/Stm32EmuWindow.cpp
-    src/stm32_emu/EmuEncoder.cpp
-    src/stm32_emu/EmuPadGrid.cpp
-    src/stm32_emu/EmuPowerButton.cpp
     src/stm32_emu/EmuJackPanel.cpp
     src/crosspad_app.cpp
     ${CROSSPAD_CORE_SOURCES}

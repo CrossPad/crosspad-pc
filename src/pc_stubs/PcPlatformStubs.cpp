@@ -21,6 +21,7 @@
 
 // crosspad-core interfaces (BEFORE Windows.h to avoid ERROR macro conflict)
 #include "crosspad/platform/CrosspadPlatformInit.hpp"
+#include "crosspad/platform/PlatformCapabilities.hpp"
 #include "crosspad/platform/IClock.hpp"
 #include "crosspad/midi/IMidiOutput.hpp"
 #include "crosspad/synth/IAudioOutput.hpp"
@@ -489,6 +490,12 @@ extern "C" void pc_platform_init() {
 
     // Register settings UI callback for shared settings UI in crosspad-gui
     crosspad::setSettingsUI(&s_pcSettingsUI);
+
+    // Declare base platform capabilities (MIDI/Audio added later in crosspad_app.cpp)
+    using crosspad::Capability;
+    crosspad::setPlatformCapabilities(
+        Capability::Pads | Capability::Leds | Capability::Encoder |
+        Capability::Display | Capability::Persistence);
 
     printf("[PC] Platform stubs initialized\n");
 }
