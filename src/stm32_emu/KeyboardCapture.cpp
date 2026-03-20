@@ -139,6 +139,23 @@ bool KeyboardCapture::handleKey(int keycode, bool pressed, bool isRepeat)
     // Ignore key repeats
     if (pressed && isRepeat) return false;
 
+    // ── Navigation shortcuts (fire on key-down only) ────────────
+    if (pressed) {
+        switch (keycode) {
+            case SDLK_ESCAPE:
+                if (onEscape_) onEscape_();
+                return true;
+            case SDLK_SPACE:
+                if (onPower_) onPower_();
+                return true;
+            case SDLK_LCTRL:
+            case SDLK_RCTRL:
+                if (onPower_) onPower_();
+                return true;
+        }
+    }
+
+    // ── Pad keys ────────────────────────────────────────────────
     int padIdx = keyToPad(keycode);
     if (padIdx < 0) return false;
 

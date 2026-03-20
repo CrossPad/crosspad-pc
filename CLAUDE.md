@@ -73,12 +73,15 @@ src/
     PcAudio.cpp                 — RtAudio/WASAPI output, AudioRingBuffer, peak metering
   synth/MlPianoSynth.cpp        — ISynthEngine impl wrapping ML_SynthTools FM engine
   apps/ml_piano/                — ML Piano app (pad grid, preset selector, param controls)
+  remote/
+    RemoteControl.cpp           — TCP server (localhost:19840) for MCP integration
   pc_stubs/
     PcPlatformStubs.cpp         — PC impls: PcClock, PcLedStrip, PcKeyValueStore, PcGuiPlatform, etc.
     PcEventBus.cpp              — synchronous event dispatch (vs. ESP-IDF's async queue)
     PcApp.cpp                   — lightweight App class for launcher (no sequencer/CLI)
     pc_platform.h               — public API: pc_platform_init(), set_midi/audio/synth
 lib/ml_synth/                   — vendored ML_SynthTools FM synth engine
+tools/mcp-server/               — MCP development server (TypeScript, 16 tools)
 ```
 
 ### Submodules
@@ -158,6 +161,100 @@ This simulator must stay compatible with the ESP32-S3 target (`C:\Users\Mateusz\
 - **Settings persistence** uses `IKeyValueStore` abstraction — ESP32 uses NVS, PC uses filesystem. `CrosspadSettings` singleton must be loaded/saved through this interface.
 - **crosspad-gui components** are shared — launcher, status bar, styles. The PC simulator sets `IGuiPlatform` for display dimensions and hooks.
 - **LCD resolution** is 320x240 (`CP_LCD_HOR_RES`/`CP_LCD_VER_RES`), matching hardware. The SDL window is larger (490x660) to include the emulator body.
+
+### Remote Control Server
+
+The simulator includes a built-in TCP server (`src/remote/RemoteControl.cpp`) on `localhost:19840` for external automation. Started automatically with the simulator. Protocol: newline-delimited JSON.
+
+Commands: `ping`, `screenshot`, `click`, `pad_press`, `pad_release`, `encoder_rotate`, `encoder_press`, `encoder_release`, `key`, `stats`, `settings_get`, `settings_set`.
+
+Used by the MCP server tools — see `tools/mcp-server/` below.
+
+## MCP Development Server
+
+A Model Context Protocol server at `tools/mcp-server/` provides 16 tools for Claude Code integration. Configured in `.claude/settings.local.json`.
+
+### Setup
+
+```bash
+cd tools/mcp-server
+npm install
+npm run build
+```
+
+Restart Claude Code / VS Code after building to pick up the server.
+
+### Tools Reference
+
+**Build & Run:**
+
+| Tool | Description |
+|---|---|
+| `crosspad_build` | Build simulator (incremental / clean / reconfigure) |
+| `crosspad_run` | Launch `bin/main.exe`, return PID |
+| `crosspad_build_check` | Quick health check: stale exe, new source files, submodule drift |
+| `crosspad_log` | Launch exe, capture stdout/stderr for N seconds, kill it |
+
+**Testing:**
+
+| Tool | Description |
+|---|---|
+| `crosspad_test` | Build and run Catch2 test suite (with filter support) |
+| `crosspad_test_scaffold` | Generate test infrastructure (CMakeLists.txt + sample test) |
+
+**Repos & Submodules:**
+
+| Tool | Description |
+|---|---|
+| `crosspad_repos_status` | Git status across all 5 CrossPad repos, dev-mode detection |
+| `crosspad_diff_core` | Changes in crosspad-core/gui vs pinned commit (essential for dev-mode) |
+
+**Code & Architecture:**
+
+| Tool | Description |
+|---|---|
+| `crosspad_search_symbols` | Find class/function/macro/enum definitions across all repos |
+| `crosspad_scaffold_app` | Generate boilerplate for a new CrossPad app |
+| `crosspad_interfaces` | Query crosspad-core interfaces, implementations, capabilities |
+| `crosspad_apps` | List registered apps per platform |
+
+**Simulator Interaction (requires running simulator):**
+
+| Tool | Description |
+|---|---|
+| `crosspad_screenshot` | Capture simulator framebuffer → BMP file or base64 |
+| `crosspad_input` | Send click, pad press/release, encoder, key events |
+| `crosspad_stats` | Runtime diagnostics: pads, capabilities, apps, heap, settings |
+| `crosspad_settings` | Read/write CrossPad settings (auto-saves to preferences.json) |
+
+### Architecture
+
+```
+tools/mcp-server/
+  src/
+    index.ts              — tool registrations (McpServer)
+    config.ts             — paths: repos, vcvarsall, vcpkg, build dir
+    utils/
+      exec.ts             — runCommand(), runWithMsvc(), spawnDetached()
+      git.ts              — getRepoStatus(), getSubmodulePin(), getHead()
+      remote-client.ts    — TCP client for simulator remote control
+    tools/
+      build.ts            — crosspad_build, crosspad_run
+      build-check.ts      — crosspad_build_check
+      repos.ts            — crosspad_repos_status
+      diff-core.ts        — crosspad_diff_core
+      symbols.ts          — crosspad_search_symbols
+      scaffold.ts         — crosspad_scaffold_app
+      architecture.ts     — crosspad_interfaces, crosspad_apps
+      log.ts              — crosspad_log
+      test.ts             — crosspad_test, crosspad_test_scaffold
+      screenshot.ts       — crosspad_screenshot
+      input.ts            — crosspad_input
+      settings.ts         — crosspad_settings (get/set)
+      stats.ts            — crosspad_stats
+```
+
+The MCP server communicates with the simulator via TCP (`localhost:19840`). Static tools (build, repos, symbols) work without the simulator running. Interactive tools (screenshot, input, stats, settings) require it.
 
 ## Important Notes
 

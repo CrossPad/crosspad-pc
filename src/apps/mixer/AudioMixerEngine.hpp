@@ -13,6 +13,7 @@
 #include <cstdint>
 #include <thread>
 #include <string>
+#include <crosspad/audio/AudioRingBuffer.hpp>
 
 static constexpr int MIXER_NUM_INPUTS  = 3;  // IN1, IN2, SYNTH
 static constexpr int MIXER_NUM_OUTPUTS = 2;  // OUT1, OUT2
@@ -91,12 +92,22 @@ public:
     // Set defaults (SYNTH->OUT1 enabled) without loading from file
     void setDefaults();
 
+    // ── Tap buffer for audio capture (CI testing) ────────────────
+    /// Set a ring buffer to receive a copy of OUT1 audio.
+    /// Pass nullptr to disable. Caller owns the buffer.
+    void setTapBuffer(crosspad::AudioRingBuffer<int16_t>* buf) { tapBuffer_.store(buf); }
+
+    /// Which output to tap (default: OUT1)
+    void setTapOutput(MixerOutput out) { tapOutput_.store(static_cast<uint8_t>(out)); }
+
 private:
     MixerRoute     routes_[MIXER_NUM_INPUTS][MIXER_NUM_OUTPUTS];
     MixerChannel   channels_[MIXER_NUM_INPUTS];
     MixerOutputBus outputs_[MIXER_NUM_OUTPUTS];
 
     std::atomic<bool> running_{false};
+    std::atomic<crosspad::AudioRingBuffer<int16_t>*> tapBuffer_{nullptr};
+    std::atomic<uint8_t> tapOutput_{0};  // MixerOutput::OUT1
 
     void mixerThreadFunc();
 };

@@ -58,13 +58,14 @@ bool PcAudioInput::begin(unsigned int inputDevice, uint32_t sampleRate,
         return false;
     }
 
-    // Use device's preferred sample rate if available
-    if (inInfo.preferredSampleRate > 0) {
-        sampleRate_ = inInfo.preferredSampleRate;
+    // Log if requested rate differs from device preferred rate
+    if (inInfo.preferredSampleRate > 0 && inInfo.preferredSampleRate != sampleRate_) {
+        printf("[AudioIn] Requesting %u Hz (device prefers %u Hz)\n",
+               sampleRate_, inInfo.preferredSampleRate);
     }
 
-    // Size ring buffer: 8 buffers worth of stereo samples
-    inputRing_.resize(bufferFrames_ * 2 * 8);
+    // Size ring buffer: 32 buffers worth of stereo samples (~170ms at 48kHz)
+    inputRing_.resize(bufferFrames_ * 2 * 32);
 
     // Setup stream parameters — input only
     RtAudio::StreamParameters inParams;

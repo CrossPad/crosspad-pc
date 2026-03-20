@@ -15,7 +15,13 @@
 #include <fstream>
 #include <filesystem>
 
+#ifdef USE_FREERTOS
+#include "FreeRTOS.h"
+#include "portable.h"
+#endif
+
 #include "lvgl.h"
+#include "src/misc/lv_timer_private.h"
 
 #include <ArduinoJson.h>
 
@@ -223,8 +229,33 @@ public:
     }
 
     crosspad_gui::HeapStats getHeapStats() override {
-        // Simulated values for PC
-        return {512 * 1024 * 1024, 512 * 1024 * 1024, 0, 0};
+#ifdef USE_FREERTOS
+        uint32_t total = configTOTAL_HEAP_SIZE;
+        uint32_t free  = (uint32_t)xPortGetFreeHeapSize();
+        return {free, total, 0, 0};
+#else
+        return {32 * 1024 * 1024, 32 * 1024 * 1024, 0, 0};
+#endif
+    }
+
+    crosspad_gui::PerfStats getPerfStats() override {
+        crosspad_gui::PerfStats ps = {};
+
+        // CPU: LVGL timer idle percentage
+        ps.cpu0_pct = 100 - lv_timer_get_idle();
+
+        // FPS: derive from LVGL display refresh timer period
+        lv_timer_t * refr = lv_display_get_refr_timer(NULL);
+        if (refr && refr->period > 0) {
+            ps.fps = 1000 / refr->period;
+        }
+
+#ifdef USE_FREERTOS
+        uint32_t total = configTOTAL_HEAP_SIZE;
+        uint32_t free  = (uint32_t)xPortGetFreeHeapSize();
+        ps.sram_pct = total ? ((total - free) * 100 / total) : 0;
+#endif
+        return ps;
     }
 
     uint32_t millis() override {

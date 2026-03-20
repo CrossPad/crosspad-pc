@@ -21,6 +21,8 @@
 
 class KeyboardCapture {
 public:
+    using ActionCallback = void(*)();
+
     enum class Mode : uint8_t {
         Off    = 0,
         Focus  = 1,
@@ -49,12 +51,20 @@ public:
     /// @return true if the event was consumed (mapped to a pad)
     bool handleKey(int keycode, bool pressed, bool isRepeat);
 
+    /// Set callback for Escape key (go home / close app).
+    void setEscapeCallback(ActionCallback cb) { onEscape_ = cb; }
+
+    /// Set callback for power button (Ctrl key → volume overlay toggle).
+    void setPowerCallback(ActionCallback cb) { onPower_ = cb; }
+
     /// Process Windows messages for global hotkeys (call from a timer or message pump).
     /// Only relevant in Global mode on Windows.
     void processGlobalHotkeys();
 
 private:
     Mode mode_ = Mode::Off;
+    ActionCallback onEscape_ = nullptr;
+    ActionCallback onPower_  = nullptr;
 
     /// Map SDL keycode to pad index (0-15), or -1 if unmapped.
     static int keyToPad(int keycode);

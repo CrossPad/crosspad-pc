@@ -184,6 +184,31 @@ void AudioMixerEngine::mixerThreadFunc()
     const auto chunkDuration = std::chrono::microseconds(
         (uint64_t)CHUNK * 1000000 / sampleRate);
 
+    // Drain stale input data accumulated before mixer started
+    {
+        int16_t junk[512];
+        for (int idx = 0; idx < 2; idx++) {
+            auto* in = pc_platform_get_audio_input(idx);
+            if (in) {
+                while (in->read(junk, 256) > 0) {}
+            }
+        }
+    }
+
+    // Check for sample rate mismatches between inputs and outputs
+    auto* audioIn1 = pc_platform_get_audio_input(0);
+    auto* audioIn2 = pc_platform_get_audio_input(1);
+    if (audioIn1 && static_cast<PcAudioInput*>(audioIn1)->isOpen()) {
+        uint32_t inRate = audioIn1->getSampleRate();
+        if (inRate != sampleRate)
+            printf("[Mixer] WARNING: IN1 rate %u Hz != output rate %u Hz\n", inRate, sampleRate);
+    }
+    if (audioIn2 && static_cast<PcAudioInput*>(audioIn2)->isOpen()) {
+        uint32_t inRate = audioIn2->getSampleRate();
+        if (inRate != sampleRate)
+            printf("[Mixer] WARNING: IN2 rate %u Hz != output rate %u Hz\n", inRate, sampleRate);
+    }
+
     while (running_.load()) {
         auto iterStart = std::chrono::steady_clock::now();
 
@@ -295,27 +320,40 @@ void AudioMixerEngine::mixerThreadFunc()
             outputs_[out].peakL.store(maxL, std::memory_order_relaxed);
             outputs_[out].peakR.store(maxR, std::memory_order_relaxed);
 
-            // Write to audio output
+            // Write to audio output — wait for ring space (paced by output callback)
             auto* pcOut = pc_platform_get_audio_output(out);
             if (pcOut && pcOut->isOpen()) {
                 uint32_t offset = 0;
                 uint32_t remaining = CHUNK;
+                int retries = 0;
                 while (remaining > 0 && running_.load()) {
                     uint32_t written = pcOut->write(outBuf.data() + offset * 2, remaining);
                     offset += written;
                     remaining -= written;
                     if (remaining > 0) {
-                        std::this_thread::sleep_for(std::chrono::milliseconds(1));
+                        // Output ring full — wait for callback to drain it.
+                        // Use short sleep (1ms) — output callback runs every ~5ms.
+                        std::this_thread::sleep_for(std::chrono::microseconds(500));
+                        if (++retries > 20) break; // safety: don't block forever
                     }
+                }
+            }
+
+            // Write to tap buffer (for CI audio capture)
+            if (out == tapOutput_.load(std::memory_order_relaxed)) {
+                auto* tap = tapBuffer_.load(std::memory_order_relaxed);
+                if (tap) {
+                    tap->write(outBuf.data(), STEREO_SAMPLES);
                 }
             }
         }
 
-        // ── 7. Pace to real-time ──
-        // Sleep for the remainder of the chunk period so we don't spin the CPU.
+        // ── 7. Pace to real-time (fallback if no output provided backpressure) ──
         auto elapsed = std::chrono::steady_clock::now() - iterStart;
-        if (elapsed < chunkDuration) {
-            std::this_thread::sleep_for(chunkDuration - elapsed);
+        auto minChunkTime = std::chrono::microseconds(
+            (uint64_t)CHUNK * 1000000 / sampleRate / 2); // half chunk time minimum
+        if (elapsed < minChunkTime) {
+            std::this_thread::sleep_for(minChunkTime - elapsed);
         }
     }
 

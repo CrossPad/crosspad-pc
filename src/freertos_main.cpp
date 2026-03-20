@@ -19,6 +19,7 @@
 #include "hal/hal.h"
 #include "stm32_emu/Stm32EmuWindow.hpp"
 #include "crosspad_app.hpp"
+#include "remote/RemoteControl.hpp"
 
 #include <cstdio>
 
@@ -51,11 +52,15 @@ static void lvgl_task(void* pvParameters)
     (void)pvParameters;
     printf("Starting LVGL task\n");
     lv_init();
-    sdl_hal_init(Stm32EmuWindow::WIN_W, Stm32EmuWindow::WIN_H);
+    lv_display_t* disp = sdl_hal_init(Stm32EmuWindow::WIN_W, Stm32EmuWindow::WIN_H);
     crosspad_app_init();
+
+    // Start remote control server (TCP localhost:19840) for MCP integration
+    remote::start(disp);
 
     while (true) {
         lv_timer_handler();
+        remote::process_pending();
         vTaskDelay(pdMS_TO_TICKS(5));
     }
 }

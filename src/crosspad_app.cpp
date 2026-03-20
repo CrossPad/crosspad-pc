@@ -40,6 +40,7 @@
 #include "crosspad-gui/components/app_launcher.h"
 #include "crosspad-gui/components/main_screen.h"
 #include "crosspad-gui/components/app_orchestrator.h"
+#include "crosspad-gui/components/volume_overlay.h"
 
 #ifdef USE_MIDI
 #include "midi/PcMidi.hpp"
@@ -309,6 +310,10 @@ void crosspad_app_init()
     lv_obj_t* lcdContainer = stm32Emu.init();
     s_lcdContainer = lcdContainer;
 
+    /* Wire keyboard shortcuts: Escape→go home, Space/Ctrl→volume overlay */
+    stm32Emu.getKeyboardCapture().setEscapeCallback(crosspad_app_go_home);
+    stm32Emu.getKeyboardCapture().setPowerCallback(crosspad_gui::volume_overlay_toggle);
+
     /* Overlay layer on lv_layer_top(), positioned over the LCD area. */
     lv_obj_t* overlayLayer = lv_obj_create(lv_layer_top());
     lv_obj_remove_style_all(overlayLayer);
@@ -420,6 +425,8 @@ void crosspad_app_init()
     }
 
     // ── Audio IN1/IN2: auto-connect saved devices ──
+    // Use output sample rate so mixer doesn't need sample rate conversion
+    uint32_t outSampleRate = pcAudio.isOpen() ? pcAudio.getSampleRate() : 44100;
     pc_platform_set_audio_input(0, &pcAudioIn1);
     pc_platform_set_audio_input(1, &pcAudioIn2);
 
@@ -428,9 +435,10 @@ void crosspad_app_init()
         if (!s_devicePrefs.audioIn1.empty()) {
             unsigned int devId = findDeviceByName(inDevices, s_devicePrefs.audioIn1);
             if (devId != 0) {
-                pcAudioIn1.begin(devId);
+                pcAudioIn1.begin(devId, outSampleRate);
                 if (pcAudioIn1.isOpen()) {
-                    printf("[Audio] IN1 auto-connected: %s\n", pcAudioIn1.getCurrentDeviceName().c_str());
+                    printf("[Audio] IN1 auto-connected: %s @ %u Hz\n",
+                           pcAudioIn1.getCurrentDeviceName().c_str(), pcAudioIn1.getSampleRate());
                     crosspad::getPlatformServices().setAudioInput(&pcAudioIn1);
                 }
             }
@@ -438,9 +446,10 @@ void crosspad_app_init()
         if (!s_devicePrefs.audioIn2.empty()) {
             unsigned int devId = findDeviceByName(inDevices, s_devicePrefs.audioIn2);
             if (devId != 0) {
-                pcAudioIn2.begin(devId);
+                pcAudioIn2.begin(devId, outSampleRate);
                 if (pcAudioIn2.isOpen()) {
-                    printf("[Audio] IN2 auto-connected: %s\n", pcAudioIn2.getCurrentDeviceName().c_str());
+                    printf("[Audio] IN2 auto-connected: %s @ %u Hz\n",
+                           pcAudioIn2.getCurrentDeviceName().c_str(), pcAudioIn2.getSampleRate());
                 }
             }
         }
