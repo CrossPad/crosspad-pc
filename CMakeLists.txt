@@ -187,7 +187,7 @@ endif()
 
 # Audio sources and libraries
 if(USE_AUDIO)
-    list(APPEND MAIN_SOURCES src/audio/PcAudio.cpp src/audio/PcAudioInput.cpp)
+    list(APPEND MAIN_SOURCES src/audio/PcAudio.cpp src/audio/PcAudioInput.cpp src/audio/PcAudioModule.cpp)
     list(APPEND MAIN_LIBS rtaudio)
 
     # ML_SynthTools vendored FM synth engine
