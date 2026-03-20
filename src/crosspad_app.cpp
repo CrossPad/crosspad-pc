@@ -26,6 +26,7 @@
 // crosspad-core
 #include "crosspad/app/AppRegistry.hpp"
 #include "crosspad/pad/PadManager.hpp"
+#include "crosspad/platform/PlatformServices.hpp"
 #include "crosspad/platform/PlatformCapabilities.hpp"
 
 // STM32 hardware emulator window
@@ -37,6 +38,7 @@
 #include "crosspad-gui/components/status_bar.h"
 #include "crosspad-gui/components/app_launcher.h"
 #include "crosspad-gui/components/main_screen.h"
+#include "crosspad-gui/components/app_orchestrator.h"
 
 #ifdef USE_MIDI
 #include "midi/PcMidi.hpp"
@@ -68,8 +70,6 @@ extern lv_obj_t* status_c;
 
 static lv_obj_t* app_c = nullptr;
 static lv_obj_t* s_lcdContainer = nullptr;
-static App* runningApp = nullptr;
-static std::vector<App*> app_shortcuts;
 static Stm32EmuWindow stm32Emu;
 
 #ifdef USE_MIDI
@@ -247,85 +247,48 @@ static int findMidiPortByName(const std::string& name, bool isOutput) {
 }
 #endif
 
-/* ── Launcher callbacks ───────────────────────────────────────────────── */
+/* ── App Orchestrator setup ───────────────────────────────────────────── */
 
 static void LoadMainScreen(lv_obj_t* parent);
 
-static void on_app_selected(void* app_ptr, lv_obj_t* app_container) {
-    App* app = (App*)app_ptr;
-    if (!app) return;
-    printf("[GUI] Launching app: %s\n", app->getName());
-    app->start(app_container);
-    app->resume();
-    runningApp = app;
+/// PC app factory — creates App instances for the orchestrator
+static crosspad_gui::ILvglApp* pc_app_factory(
+    lv_obj_t* container, const char* name, const char* icon,
+    lv_obj_t* (*createLVGL)(lv_obj_t*, App*),
+    void (*destroyLVGL)(lv_obj_t*))
+{
+    return new App(container, name, icon, createLVGL, destroyLVGL);
 }
 
-static void on_popup_close(void* app_ptr) {
-    App* app = (App*)app_ptr;
-    if (app) app->destroyApp();
+static void InitializeOrchestrator() {
+    crosspad_gui::OrchestratorConfig config;
+    config.app_factory = pc_app_factory;
+    // PC has no pre-launch hook (no kit selector) and no icon resolver needed
+    crosspad_gui::AppOrchestrator::getInstance().init(config);
 }
-
-/* ── Main screen ──────────────────────────────────────────────────────── */
 
 static void LoadMainScreen(lv_obj_t* parent) {
     if (parent == nullptr) parent = lv_screen_active();
 
-    if (runningApp != nullptr && runningApp->isStarted()) {
-        runningApp->destroyApp();
-        runningApp = nullptr;
-    }
-
     crosspad::getPadManager().setActivePadLogic("Mixer");
 
-    std::vector<crosspad_gui::LauncherAppInfo> infos;
-    for (App* a : app_shortcuts) {
-        if (a) infos.push_back({a->getName(), a->getIcon(), a});
-    }
+    auto& orch = crosspad_gui::AppOrchestrator::getInstance();
 
     crosspad_gui::MainScreenConfig config;
-    config.on_select      = on_app_selected;
-    config.on_close       = on_popup_close;
+    config.on_select      = crosspad_gui::AppOrchestrator::onAppSelected;
+    config.on_close       = crosspad_gui::AppOrchestrator::onPopupClose;
     config.button_size    = APP_BUTTON_SIZE;
     config.button_spacing = 10;
     config.show_names     = APP_BUTTON_NAME_VISIBLE;
     config.bg_color       = lv_color_black();
 
-    auto result = crosspad_gui::build_main_screen(
-        parent, infos.data(), infos.size(), config);
+    auto result = orch.loadMainScreen(parent, config);
 
     status_c = result.status_bar;
     app_c    = result.app_container;
 
     crosspad_app_update_pad_icon();
-    printf("[GUI] Main screen loaded with %zu apps\n", infos.size());
-}
-
-/* ── App registration ─────────────────────────────────────────────────── */
-
-static void InitializeApps() {
-    crosspad_gui::launcher_register_power_off();
-
-    app_shortcuts.clear();
-    auto& registry = crosspad::AppRegistry::getInstance();
-    const auto* apps = registry.getApps();
-    size_t count = registry.getAppCount();
-
-    printf("[GUI] Found %zu registered apps\n", count);
-
-    for (size_t i = 0; i < count; i++) {
-        const auto& entry = apps[i];
-        if (entry.createLVGL == nullptr) continue;
-
-        App* app = new App(app_c, entry.name, entry.icon, entry.createLVGL, entry.destroyLVGL);
-        if (!app) continue;
-
-        if (strcmp(entry.name, "Power OFF") == 0) {
-            app->AddFlag(crosspad::APP_FLAG_MSGBOX);
-        }
-        app_shortcuts.push_back(app);
-    }
-
-    printf("[GUI] Created %zu app shortcuts\n", app_shortcuts.size());
+    printf("[GUI] Main screen loaded with %zu apps\n", orch.getAppInfos().size());
 }
 
 /* ── Public API ───────────────────────────────────────────────────────── */
@@ -371,8 +334,7 @@ void crosspad_app_init()
             // No saved prefs — use auto-connect keyword
             midi.beginAutoConnect("CrossPad");
         }
-        pc_platform_set_midi_output(&midi);
-        crosspad::addPlatformCapability(crosspad::Capability::Midi);
+        crosspad::getPlatformServices().setMidiOutput(&midi);
     }
 
     midi.setHandleNoteOn([](uint8_t channel, uint8_t note, uint8_t velocity) {
@@ -442,12 +404,11 @@ void crosspad_app_init()
         auto outDevices = enumerateAudioOutputDevices();
         unsigned int dev1 = findDeviceByName(outDevices, s_devicePrefs.audioOut1);
         pcAudio.begin(dev1);
-        pc_platform_set_audio_output(&pcAudio);
+        crosspad::getPlatformServices().setAudioOutput(&pcAudio);
 
         // Save actual device name if we connected
         if (pcAudio.isOpen()) {
             s_devicePrefs.audioOut1 = pcAudio.getCurrentDeviceName();
-            crosspad::addPlatformCapability(crosspad::Capability::AudioOut);
         }
     }
 
@@ -475,7 +436,7 @@ void crosspad_app_init()
                 pcAudioIn1.begin(devId);
                 if (pcAudioIn1.isOpen()) {
                     printf("[Audio] IN1 auto-connected: %s\n", pcAudioIn1.getCurrentDeviceName().c_str());
-                    crosspad::addPlatformCapability(crosspad::Capability::AudioIn);
+                    crosspad::getPlatformServices().setAudioInput(&pcAudioIn1);
                 }
             }
         }
@@ -493,8 +454,7 @@ void crosspad_app_init()
     // Initialize FM synth engine at the audio device's actual sample rate
     fmSynth.setSampleRate(pcAudio.getSampleRate());
     fmSynth.init();
-    pc_platform_set_synth_engine(&fmSynth);
-    crosspad::addPlatformCapability(crosspad::Capability::Synth);
+    crosspad::getPlatformServices().setSynthEngine(&fmSynth);
 
     // Load mixer state from preferences (or set defaults)
     s_mixerEngine.loadState(getMixerStatePath());
@@ -520,10 +480,12 @@ void crosspad_app_init()
         extern void AppRegistry_InitAll();
         AppRegistry_InitAll();
     }
+    crosspad_gui::launcher_register_power_off();
 
-    /* Styles, apps, main screen */
+    /* Styles, orchestrator, main screen */
     initStyles();
-    InitializeApps();
+    InitializeOrchestrator();
+    crosspad_gui::AppOrchestrator::getInstance().populateApps(app_c);
     LoadMainScreen(lcdContainer);
 
     /* ── Jack panel wiring ────────────────────────────────────────────── */

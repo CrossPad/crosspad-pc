@@ -21,9 +21,11 @@
 
 // crosspad-core interfaces (BEFORE Windows.h to avoid ERROR macro conflict)
 #include "crosspad/platform/CrosspadPlatformInit.hpp"
+#include "crosspad/platform/PlatformServices.hpp"
 #include "crosspad/platform/PlatformCapabilities.hpp"
 #include "crosspad/platform/IClock.hpp"
 #include "crosspad/midi/IMidiOutput.hpp"
+// NullMidiOutput no longer instantiated here — PlatformServices provides default
 #include "crosspad/synth/IAudioOutput.hpp"
 #include "crosspad/synth/IAudioInput.hpp"
 #include "crosspad/synth/ISynthEngine.hpp"
@@ -101,27 +103,6 @@ public:
 private:
     static constexpr uint16_t PIXEL_COUNT = 16;
     RgbColor pixels_[PIXEL_COUNT]{};
-};
-
-// =============================================================================
-// NullMidiOutput — fallback IMidiOutput when PcMidi is not available
-// =============================================================================
-
-class NullMidiOutput : public IMidiOutput {
-public:
-    void sendNoteOn(uint8_t note, uint8_t channel) override { (void)note; (void)channel; }
-    void sendNoteOff(uint8_t note, uint8_t channel) override { (void)note; (void)channel; }
-};
-
-// =============================================================================
-// NullAudioOutput — fallback IAudioOutput when PcAudio is not available
-// =============================================================================
-
-class NullAudioOutput : public IAudioOutput {
-public:
-    uint32_t write(const int16_t*, uint32_t frameCount) override { return frameCount; }
-    uint32_t getSampleRate() const override { return 44100; }
-    uint32_t getBufferSize() const override { return 256; }
 };
 
 // =============================================================================
@@ -366,29 +347,24 @@ public:
 // Static singletons
 // =============================================================================
 
-static PcClock         s_clock;
-static PcLedStrip      s_ledStrip;
-static NullMidiOutput  s_nullMidi;
-static NullAudioOutput s_nullAudio;
+static PcClock          s_clock;
+static PcLedStrip       s_ledStrip;
 static FreeRtosEventBus s_eventBus;
-static PcKeyValueStore s_kvStore;
-static PcGuiPlatform   s_guiPlatform;
-static PcFileSystem    s_fileSystem;
+static PcKeyValueStore  s_kvStore;
+static PcGuiPlatform    s_guiPlatform;
+static PcFileSystem     s_fileSystem;
 
 static PadLedController s_padLedController;
 static PadAnimator      s_padAnimator;
 static PadManager       s_padManager;
 
-static IAudioOutput* s_audioOutput  = &s_nullAudio;
-static IAudioOutput* s_audioOutput2 = &s_nullAudio;
+// PC-specific: dual audio outputs/inputs (managed by crosspad_app.cpp mixer)
+static IAudioOutput* s_audioOutput2 = nullptr;
 static IAudioInput*  s_audioInputs[2] = { nullptr, nullptr };
 
 static bool s_initialized = false;
 
 } // anonymous namespace
-
-// Synth engine singleton (outside anonymous namespace for external access)
-static crosspad::ISynthEngine* s_synthEngine = nullptr;
 
 // =============================================================================
 // ISettingsUI — PC implementation
@@ -427,38 +403,6 @@ crosspad::RgbColor pc_get_led_color(uint16_t idx) {
 }
 
 // =============================================================================
-// crosspad-core singleton getters
-// =============================================================================
-
-namespace crosspad {
-
-IClock& getClock() {
-    return s_clock;
-}
-
-IMidiOutput& getMidiOutput() {
-    return s_nullMidi;
-}
-
-PadManager& getPadManager() {
-    return s_padManager;
-}
-
-PadLedController& getPadLedController() {
-    return s_padLedController;
-}
-
-PadAnimator& getPadAnimator() {
-    return s_padAnimator;
-}
-
-IAudioOutput& getAudioOutput() {
-    return *s_audioOutput;
-}
-
-} // namespace crosspad
-
-// =============================================================================
 // PC platform initialization — call from main() before GUI
 // =============================================================================
 
@@ -469,12 +413,12 @@ extern "C" void pc_platform_init() {
     // Settings pointer for global access
     settings = CrosspadSettings::getInstance();
 
-    // Common crosspad-core initialization
+    // Common crosspad-core initialization (populates PlatformServices)
     crosspad::CrosspadPlatformConfig config;
     config.eventBus        = &s_eventBus;
     config.clock           = &s_clock;
     config.ledStrip        = &s_ledStrip;
-    config.midiOutput      = &s_nullMidi;
+    config.midiOutput      = crosspad::getPlatformServices().midiOutput;  // NullMidiOutput from PlatformServices
     config.padManager      = &s_padManager;
     config.padLedController = &s_padLedController;
     config.padAnimator     = &s_padAnimator;
@@ -488,10 +432,10 @@ extern "C" void pc_platform_init() {
     crosspad_gui::setGuiPlatform(&s_guiPlatform);
     crosspad_gui::setFileSystem(&s_fileSystem);
 
-    // Register settings UI callback for shared settings UI in crosspad-gui
+    // Register settings UI callback
     crosspad::setSettingsUI(&s_pcSettingsUI);
 
-    // Declare base platform capabilities (MIDI/Audio added later in crosspad_app.cpp)
+    // Declare base platform capabilities (MIDI/Audio added later via PlatformServices setters)
     using crosspad::Capability;
     crosspad::setPlatformCapabilities(
         Capability::Pads | Capability::Leds | Capability::Encoder |
@@ -500,24 +444,12 @@ extern "C" void pc_platform_init() {
     printf("[PC] Platform stubs initialized\n");
 }
 
-// Allow main.cpp to swap in PcMidi as the MIDI output
-void pc_platform_set_midi_output(IMidiOutput* midi) {
-    if (midi) {
-        crosspad::crosspad_platform_set_midi(*midi);
-    }
-}
-
-// Allow main.cpp to swap in PcAudioOutput as the audio output
-void pc_platform_set_audio_output(IAudioOutput* audio) {
-    if (audio) {
-        s_audioOutput = audio;
-    }
-}
+// =============================================================================
+// PC-specific device management (dual outputs/inputs not in PlatformServices)
+// =============================================================================
 
 void pc_platform_set_audio_output_2(IAudioOutput* audio) {
-    if (audio) {
-        s_audioOutput2 = audio;
-    }
+    s_audioOutput2 = audio;
 }
 
 void pc_platform_set_audio_input(int index, IAudioInput* input) {
@@ -531,13 +463,8 @@ crosspad::IAudioInput* pc_platform_get_audio_input(int index) {
     return nullptr;
 }
 
-// Synth engine getter/setter
-void pc_platform_set_synth_engine(crosspad::ISynthEngine* synth) {
-    s_synthEngine = synth;
-}
-
 crosspad::ISynthEngine* pc_platform_get_synth_engine() {
-    return s_synthEngine;
+    return crosspad::getPlatformServices().synthEngine;
 }
 
 // Save current settings to ~/.crosspad/preferences.json

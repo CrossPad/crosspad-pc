@@ -156,6 +156,7 @@ set(MAIN_SOURCES ${WIN_RESOURCES} src/mouse_cursor_icon.c src/hal/hal.c
     src/stm32_emu/Stm32EmuWindow.cpp
     src/stm32_emu/EmuJackPanel.cpp
     src/crosspad_app.cpp
+    src/remote/RemoteControl.cpp
     ${CROSSPAD_CORE_SOURCES}
     ${CROSSPAD_GUI_SOURCES}
     ${PC_STUB_SOURCES}
@@ -289,6 +290,11 @@ target_include_directories(main PRIVATE
     ${PROJECT_SOURCE_DIR}/lib/ml_synth
 )
 target_link_libraries(main ${MAIN_LIBS})
+
+# Winsock for remote control server
+if(WIN32)
+    target_link_libraries(main ws2_32)
+endif()
 
 target_compile_definitions(main PRIVATE USE_FREERTOS=1)
 
