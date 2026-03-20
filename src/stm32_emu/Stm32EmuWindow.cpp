@@ -15,11 +15,21 @@
 #include <SDL2/SDL.h>
 #include "crosspad-gui/platform/IGuiPlatform.h"
 
-/* ── SDL event watcher (encoder mouse-wheel + middle-click) ──────────── */
+/* ── SDL event watcher (encoder + keyboard capture) ──────────────────── */
 
-static int encoderSdlWatcher(void* userdata, SDL_Event* event)
+static int sdlEventWatcher(void* userdata, SDL_Event* event)
 {
     auto* self = static_cast<Stm32EmuWindow*>(userdata);
+
+    // Keyboard capture (pad playing via PC keyboard)
+    if (event->type == SDL_KEYDOWN || event->type == SDL_KEYUP) {
+        bool pressed = (event->type == SDL_KEYDOWN);
+        bool isRepeat = (event->key.repeat != 0);
+        if (self->getKeyboardCapture().handleKey(event->key.keysym.sym, pressed, isRepeat))
+            return 0;  // consumed — don't pass to LVGL
+    }
+
+    // Encoder: mouse wheel + middle click
     switch (event->type) {
         case SDL_MOUSEWHEEL:
             self->handleEncoderWheel(event->wheel.y);
@@ -38,7 +48,7 @@ static int encoderSdlWatcher(void* userdata, SDL_Event* event)
 
 Stm32EmuWindow::~Stm32EmuWindow()
 {
-    SDL_DelEventWatch(encoderSdlWatcher, this);
+    SDL_DelEventWatch(sdlEventWatcher, this);
 }
 
 /* ── Layout constants ────────────────────────────────────────────────── */
@@ -120,8 +130,11 @@ lv_obj_t* Stm32EmuWindow::init()
 
     buildLayout();
 
-    // Register SDL event watcher for encoder mouse-wheel + middle-click input
-    SDL_AddEventWatch(encoderSdlWatcher, this);
+    // Initialize keyboard capture
+    kbCapture_.init();
+
+    // Register SDL event watcher for encoder + keyboard input
+    SDL_AddEventWatch(sdlEventWatcher, this);
 
     // Ensure the LCD container (and its children like the embedded status bar)
     // is drawn above other screen children so it isn't occluded.
@@ -165,6 +178,9 @@ void Stm32EmuWindow::buildLayout()
     lv_obj_set_style_img_recolor_opa(logo, LV_OPA_COVER, 0);
     
     lv_obj_remove_flag(logo, (lv_obj_flag_t)(LV_OBJ_FLAG_CLICKABLE | LV_OBJ_FLAG_SCROLLABLE));
+
+    // Keyboard capture toggle button (left of encoder)
+    buildKeyboardButton(screen_);
 
     // Audio/MIDI jack connectors on device edges
     jackPanel_.create(screen_);
@@ -217,7 +233,92 @@ void Stm32EmuWindow::onUpdateTimer(lv_timer_t* t)
     self->padGrid_.updateLeds();
     self->encoder_.update();
     self->jackPanel_.update();
+
+    // Poll Windows global hotkeys (no-op when not in Global mode)
+    self->kbCapture_.processGlobalHotkeys();
 }
+
+/* ── Keyboard capture toggle button ───────────────────────────────────── */
+
+// Position: left edge, below Audio OUT2 jack (OUT2 is at y=210, h=50)
+static constexpr int32_t KB_BTN_W = 40;
+static constexpr int32_t KB_BTN_H = 50;
+static constexpr int32_t KB_BTN_X = 5;
+static constexpr int32_t KB_BTN_Y = 320;
+
+void Stm32EmuWindow::buildKeyboardButton(lv_obj_t* parent)
+{
+    kbButton_ = lv_obj_create(parent);
+    lv_obj_set_pos(kbButton_, KB_BTN_X, KB_BTN_Y);
+    lv_obj_set_size(kbButton_, KB_BTN_W, KB_BTN_H);
+
+    lv_obj_set_style_radius(kbButton_, 6, 0);
+    lv_obj_set_style_bg_color(kbButton_, lv_color_hex(0x2A2A2A), 0);
+    lv_obj_set_style_bg_opa(kbButton_, LV_OPA_COVER, 0);
+    lv_obj_set_style_border_width(kbButton_, 1, 0);
+    lv_obj_set_style_border_color(kbButton_, lv_color_hex(0x555555), 0);
+    lv_obj_set_style_pad_all(kbButton_, 2, 0);
+
+    lv_obj_add_flag(kbButton_, LV_OBJ_FLAG_CLICKABLE);
+    lv_obj_remove_flag(kbButton_, LV_OBJ_FLAG_SCROLLABLE);
+
+    // Pressed visual feedback
+    lv_obj_set_style_bg_color(kbButton_, lv_color_hex(0x444444), LV_STATE_PRESSED);
+
+    // Keyboard icon (using Unicode keyboard symbol ⌨ approximation)
+    kbIcon_ = lv_label_create(kbButton_);
+    lv_label_set_text(kbIcon_, LV_SYMBOL_KEYBOARD);
+    lv_obj_set_style_text_font(kbIcon_, &lv_font_montserrat_16, 0);
+    lv_obj_set_style_text_color(kbIcon_, lv_color_hex(0x666666), 0);
+    lv_obj_align(kbIcon_, LV_ALIGN_TOP_MID, 0, 4);
+
+    // Mode label below icon
+    kbModeLabel_ = lv_label_create(kbButton_);
+    lv_label_set_text(kbModeLabel_, "OFF");
+    lv_obj_set_style_text_font(kbModeLabel_, &lv_font_montserrat_10, 0);
+    lv_obj_set_style_text_color(kbModeLabel_, lv_color_hex(0x666666), 0);
+    lv_obj_align(kbModeLabel_, LV_ALIGN_BOTTOM_MID, 0, -2);
+
+    // Click callback
+    lv_obj_add_event_cb(kbButton_, onKbButtonClicked, LV_EVENT_CLICKED, this);
+
+    updateKeyboardButtonVisual();
+}
+
+void Stm32EmuWindow::updateKeyboardButtonVisual()
+{
+    auto mode = kbCapture_.mode();
+
+    switch (mode) {
+        case KeyboardCapture::Mode::Off:
+            lv_obj_set_style_text_color(kbIcon_, lv_color_hex(0x666666), 0);
+            lv_obj_set_style_border_color(kbButton_, lv_color_hex(0x555555), 0);
+            lv_label_set_text(kbModeLabel_, "OFF");
+            lv_obj_set_style_text_color(kbModeLabel_, lv_color_hex(0x666666), 0);
+            break;
+        case KeyboardCapture::Mode::Focus:
+            lv_obj_set_style_text_color(kbIcon_, lv_color_hex(0x00CC66), 0);
+            lv_obj_set_style_border_color(kbButton_, lv_color_hex(0x00CC66), 0);
+            lv_label_set_text(kbModeLabel_, "FOCUS");
+            lv_obj_set_style_text_color(kbModeLabel_, lv_color_hex(0x00CC66), 0);
+            break;
+        case KeyboardCapture::Mode::Global:
+            lv_obj_set_style_text_color(kbIcon_, lv_color_hex(0xFF6600), 0);
+            lv_obj_set_style_border_color(kbButton_, lv_color_hex(0xFF6600), 0);
+            lv_label_set_text(kbModeLabel_, "GLOBAL");
+            lv_obj_set_style_text_color(kbModeLabel_, lv_color_hex(0xFF6600), 0);
+            break;
+    }
+}
+
+void Stm32EmuWindow::onKbButtonClicked(lv_event_t* e)
+{
+    auto* self = (Stm32EmuWindow*)lv_event_get_user_data(e);
+    self->kbCapture_.cycleMode();
+    self->updateKeyboardButtonVisual();
+}
+
+/* ── Encoder forwarding ──────────────────────────────────────────────── */
 
 void Stm32EmuWindow::handleEncoderCC(uint8_t value, uint8_t ccRange, uint8_t stepsPerRev)
 {

@@ -5,6 +5,7 @@
 #include "crosspad-gui/virtual_device/VirtualPadGrid.h"
 #include "crosspad-gui/virtual_device/VirtualPowerButton.h"
 #include "EmuJackPanel.hpp"
+#include "KeyboardCapture.hpp"
 #include <cstdint>
 
 /**
@@ -41,6 +42,9 @@ public:
     /// Access the jack panel for wiring device selection callbacks.
     EmuJackPanel& getJackPanel() { return jackPanel_; }
 
+    /// Access keyboard capture for external configuration.
+    KeyboardCapture& getKeyboardCapture() { return kbCapture_; }
+
 private:
     lv_obj_t* screen_       = nullptr;
     lv_obj_t* lcdContainer_ = nullptr;
@@ -49,11 +53,19 @@ private:
     crosspad_gui::VirtualPadGrid     padGrid_;
     crosspad_gui::VirtualPowerButton powerBtn_;
     EmuJackPanel   jackPanel_;
+    KeyboardCapture kbCapture_;
+
+    lv_obj_t* kbButton_     = nullptr;   ///< 3-state keyboard toggle button
+    lv_obj_t* kbIcon_       = nullptr;   ///< keyboard icon label (LV_SYMBOL)
+    lv_obj_t* kbModeLabel_  = nullptr;   ///< mode text below icon
 
     lv_timer_t* updateTimer_ = nullptr;
 
     void buildLayout();
     lv_obj_t* buildLcdContainer(lv_obj_t* parent);
+    void buildKeyboardButton(lv_obj_t* parent);
+    void updateKeyboardButtonVisual();
 
     static void onUpdateTimer(lv_timer_t* t);
+    static void onKbButtonClicked(lv_event_t* e);
 };

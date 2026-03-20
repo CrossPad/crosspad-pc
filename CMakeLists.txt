@@ -155,6 +155,7 @@ endif()
 set(MAIN_SOURCES ${WIN_RESOURCES} src/mouse_cursor_icon.c src/hal/hal.c
     src/stm32_emu/Stm32EmuWindow.cpp
     src/stm32_emu/EmuJackPanel.cpp
+    src/stm32_emu/KeyboardCapture.cpp
     src/crosspad_app.cpp
     src/remote/RemoteControl.cpp
     ${CROSSPAD_CORE_SOURCES}
@@ -293,6 +294,7 @@ target_include_directories(main PRIVATE
     ${PROJECT_SOURCE_DIR}/crosspad-gui/include
     ${PROJECT_SOURCE_DIR}/lib/ml_synth
     ${PROJECT_SOURCE_DIR}/lib
+    ${PROJECT_SOURCE_DIR}/lvgl/src
 )
 target_link_libraries(main ${MAIN_LIBS})
 
