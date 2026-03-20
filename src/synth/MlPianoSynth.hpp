@@ -13,6 +13,7 @@
 #include <cstdint>
 #include <atomic>
 #include <mutex>
+#include <vector>
 
 class MlPianoSynth : public crosspad::ISynthEngine {
 public:
@@ -71,6 +72,7 @@ private:
     uint8_t midiChannel_ = 0;
     bool initialized_ = false;
     std::mutex mutex_;
+    std::vector<float> monoBuf_;  ///< Pre-allocated temp buffer for FmSynth_Process
     std::atomic<int16_t> peakL_{0};
     std::atomic<int16_t> peakR_{0};
 };

@@ -64,8 +64,10 @@ bool PcAudioOutput::begin(unsigned int outputDevice, uint32_t sampleRate,
         sampleRate_ = outInfo.preferredSampleRate;
     }
 
-    // Size ring buffer: 8 buffers worth of stereo samples
-    outputRing_.resize(bufferFrames_ * 2 * 8);
+    // Size ring buffer: 32 buffers worth of stereo samples.
+    // Larger buffer tolerates timing jitter from Windows sleep granularity
+    // and synth mutex contention without causing underruns.
+    outputRing_.resize(bufferFrames_ * 2 * 32);
 
     // Setup stream parameters
     RtAudio::StreamParameters outParams;

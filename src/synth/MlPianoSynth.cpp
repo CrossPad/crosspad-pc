@@ -17,6 +17,10 @@ void MlPianoSynth::init()
 
     printf("[MlPianoSynth] Initializing FM synth (sr=%u, ch=%u)\n", sampleRate_, midiChannel_);
     FmSynth_Init(static_cast<float>(sampleRate_));
+
+    // Pre-allocate temp buffer to avoid first-call allocation stall
+    monoBuf_.resize(512);
+
     initialized_ = true;
 }
 
@@ -124,21 +128,26 @@ void MlPianoSynth::process(int16_t* stereoOut, uint32_t frames)
         return;
     }
 
-    // Temporary mono float buffer
-    thread_local std::vector<float> monoBuf;
-    if (monoBuf.size() < frames) {
-        monoBuf.resize(frames);
+    // Ensure temp buffer is large enough (pre-allocated in init())
+    if (monoBuf_.size() < frames) {
+        monoBuf_.resize(frames);
     }
 
-    {
-        std::lock_guard<std::mutex> lock(mutex_);
-        FmSynth_Process(nullptr, monoBuf.data(), static_cast<int>(frames));
+    // Use try_lock to avoid blocking the mixer thread when MIDI callbacks
+    // are holding the mutex (e.g. noteOn/noteOff). If we can't lock,
+    // output the previous buffer's tail (silence) — one missed chunk
+    // is inaudible, a mutex stall causes stuttering.
+    if (mutex_.try_lock()) {
+        FmSynth_Process(nullptr, monoBuf_.data(), static_cast<int>(frames));
+        mutex_.unlock();
     }
+    // If try_lock fails, monoBuf_ still has stale data — we'll output
+    // its last state which is better than blocking.
 
     // Convert float mono -> int16 stereo + track peak
     int16_t maxAbs = 0;
     for (uint32_t i = 0; i < frames; i++) {
-        float sample = monoBuf[i];
+        float sample = monoBuf_[i];
         // Soft clamp
         if (sample > 1.0f) sample = 1.0f;
         if (sample < -1.0f) sample = -1.0f;

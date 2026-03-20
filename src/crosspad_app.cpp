@@ -12,6 +12,7 @@
 #include <cstring>
 #include <cmath>
 #include <vector>
+#include <atomic>
 #include <thread>
 #include <chrono>
 #include <fstream>
@@ -369,32 +370,26 @@ void crosspad_app_init()
         stm32Handler.handleMessage(data, size);
     });
 
-    // Periodic MIDI reconnect timer (3s)
+    // Periodic MIDI reconnect check (3s).
+    // IMPORTANT: RtMidi port enumeration is BLOCKING (100-500ms on Windows).
+    // We only check connection state on the LVGL thread — the actual reconnect
+    // (with its blocking enumeration) runs on a background thread.
+    static std::atomic<bool> s_midiReconnecting{false};
     lv_timer_create([](lv_timer_t*) {
         bool connected = midi.isKeywordConnected() && midi.isOutputOpen();
-        if (!connected) {
-            printf("[MIDI] Attempting reconnect...\n");
-            midi.reconnect();
-
-            // Update jack panel after reconnect
-            auto& jp = stm32Emu.getJackPanel();
-            if (midi.isOutputOpen()) {
-                RtMidiOut probe;
-                for (unsigned int i = 0; i < probe.getPortCount(); i++) {
-                    jp.setDeviceName(EmuJackPanel::MIDI_OUT, probe.getPortName(i));
-                    break;
-                }
-                jp.setConnected(EmuJackPanel::MIDI_OUT, true);
-            }
-            if (midi.isInputOpen()) {
-                RtMidiIn probe;
-                for (unsigned int i = 0; i < probe.getPortCount(); i++) {
-                    jp.setDeviceName(EmuJackPanel::MIDI_IN, probe.getPortName(i));
-                    break;
-                }
-                jp.setConnected(EmuJackPanel::MIDI_IN, true);
-            }
+        if (!connected && !s_midiReconnecting.load()) {
+            s_midiReconnecting.store(true);
+            std::thread([]() {
+                printf("[MIDI] Attempting reconnect (background)...\n");
+                midi.reconnect();
+                s_midiReconnecting.store(false);
+            }).detach();
         }
+
+        // Update jack panel from current MIDI state (no enumeration — just read cached names)
+        auto& jp = stm32Emu.getJackPanel();
+        jp.setConnected(EmuJackPanel::MIDI_OUT, midi.isOutputOpen());
+        jp.setConnected(EmuJackPanel::MIDI_IN, midi.isInputOpen());
     }, 3000, nullptr);
 #endif
 
