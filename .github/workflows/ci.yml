@@ -1,0 +1,45 @@
+name: CI
+
+on:
+  push:
+    branches: [master]
+    paths-ignore: ['**.md', 'docs/**', 'screenshots/**']
+  pull_request:
+    branches: [master]
+  workflow_dispatch:
+
+jobs:
+  build-and-test:
+    runs-on: windows-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Set up vcpkg
+        uses: lukka/run-vcpkg@v11
+        with:
+          vcpkgGitCommitId: 'dd930e314f'
+
+      - name: Install SDL2
+        run: vcpkg install sdl2:x64-windows
+
+      - name: Set up MSVC
+        uses: ilammy/msvc-dev-cmd@v1
+        with:
+          arch: x64
+
+      - name: Configure
+        run: >
+          cmake -B build -G Ninja
+          -DCMAKE_TOOLCHAIN_FILE="${{ env.VCPKG_ROOT }}\scripts\buildsystems\vcpkg.cmake"
+          -DCMAKE_BUILD_TYPE=Debug
+          -DBUILD_TESTING=ON
+
+      - name: Build
+        run: cmake --build build
+
+      - name: Test (unit + e2e, headless)
+        run: ctest --test-dir build --output-on-failure -LE gui

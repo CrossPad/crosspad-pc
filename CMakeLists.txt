@@ -213,6 +213,10 @@ endif()
 add_subdirectory(src/apps/settings)
 list(APPEND MAIN_SOURCES ${SETTINGS_APP_SOURCES})
 
+# CI Test app (audio pipeline integration tests)
+add_subdirectory(src/apps/citest)
+list(APPEND MAIN_SOURCES ${CITEST_APP_SOURCES})
+
 # Auto-generate app registry initialization
 include(cmake/generate_registry.cmake)
 set(APP_REGISTRY_FILE "${CMAKE_BINARY_DIR}/app_registry_init.cpp")
@@ -288,6 +292,7 @@ target_include_directories(main PRIVATE
     ${PROJECT_SOURCE_DIR}/crosspad-core/include
     ${PROJECT_SOURCE_DIR}/crosspad-gui/include
     ${PROJECT_SOURCE_DIR}/lib/ml_synth
+    ${PROJECT_SOURCE_DIR}/lib
 )
 target_link_libraries(main ${MAIN_LIBS})
 
@@ -331,6 +336,13 @@ if (WIN32)
     else()
         target_link_options(main PRIVATE "-mconsole")
     endif()
+endif()
+
+# ── Tests ──
+option(BUILD_TESTING "Build Catch2 unit tests" ON)
+if(BUILD_TESTING)
+    enable_testing()
+    add_subdirectory(tests)
 endif()
 
 # Apply additional compile options if the build type is Debug
