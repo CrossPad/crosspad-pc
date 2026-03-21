@@ -14,3 +14,12 @@ bin/
 
 # Dev mode: junctions to local repos (dev-mode.sh / submodule-mode.sh)
 .dev-mode-pins
+
+# MCP server config (local paths)
+.mcp.json
+
+# Local build scripts
+_build_*.bat
+
+# Screenshots (dev/test artifacts)
+screenshots/
