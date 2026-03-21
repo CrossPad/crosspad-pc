@@ -313,15 +313,28 @@ private:
         }
 #endif
 
-        // Try exe-relative: exe_dir/../crosspad-gui/assets/
         if (!exeDir.empty()) {
-            fs::path candidate = exeDir / ".." / "crosspad-gui" / "assets";
-            std::error_code ec;
-            if (fs::exists(candidate, ec)) {
-                std::string resolved = fs::canonical(candidate, ec).string();
-                for (char& c : resolved) { if (c == '\\') c = '/'; }
-                assetPrefix_ = resolved + "/";
-                return;
+            // Try exe-relative: exe_dir/assets/ (distribution bundle)
+            {
+                fs::path candidate = exeDir / "assets";
+                std::error_code ec;
+                if (fs::exists(candidate, ec)) {
+                    std::string resolved = fs::canonical(candidate, ec).string();
+                    for (char& c : resolved) { if (c == '\\') c = '/'; }
+                    assetPrefix_ = resolved + "/";
+                    return;
+                }
+            }
+            // Try exe-relative: exe_dir/../crosspad-gui/assets/ (dev layout)
+            {
+                fs::path candidate = exeDir / ".." / "crosspad-gui" / "assets";
+                std::error_code ec;
+                if (fs::exists(candidate, ec)) {
+                    std::string resolved = fs::canonical(candidate, ec).string();
+                    for (char& c : resolved) { if (c == '\\') c = '/'; }
+                    assetPrefix_ = resolved + "/";
+                    return;
+                }
             }
         }
 
