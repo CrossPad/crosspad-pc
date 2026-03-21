@@ -25,7 +25,7 @@ jobs:
           vcpkgGitCommitId: 'b472291f295551b7127359ea38fdd2ca092f6f1b'
 
       - name: Install SDL2
-        run: vcpkg install sdl2:x64-windows
+        run: ${{ env.VCPKG_ROOT }}/vcpkg install sdl2:x64-windows
 
       - name: Set up MSVC
         uses: ilammy/msvc-dev-cmd@v1
