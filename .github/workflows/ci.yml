@@ -35,7 +35,7 @@ jobs:
       - name: Configure
         run: >
           cmake -B build -G Ninja
-          -DCMAKE_TOOLCHAIN_FILE="${{ env.VCPKG_ROOT }}\scripts\buildsystems\vcpkg.cmake"
+          -DCMAKE_TOOLCHAIN_FILE="${{ env.RUNVCPKG_VCPKG_ROOT }}/scripts/buildsystems/vcpkg.cmake"
           -DCMAKE_BUILD_TYPE=Debug
           -DBUILD_TESTING=ON
 
