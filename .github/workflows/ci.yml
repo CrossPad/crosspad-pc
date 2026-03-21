@@ -22,7 +22,7 @@ jobs:
       - name: Set up vcpkg
         uses: lukka/run-vcpkg@v11
         with:
-          vcpkgGitCommitId: 'dd930e314f'
+          vcpkgGitCommitId: 'b472291f295551b7127359ea38fdd2ca092f6f1b'
 
       - name: Install SDL2
         run: vcpkg install sdl2:x64-windows
