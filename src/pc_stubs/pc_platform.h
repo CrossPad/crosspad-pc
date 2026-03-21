@@ -59,4 +59,21 @@ PcAudioOutput* pc_platform_get_audio_output(int index);
 /// Save the current mixer state to ~/.crosspad/mixer_state.json
 void pc_platform_save_mixer_state();
 
+// ── Virtual SD card ──────────────────────────────────────────────────────
+
+#include <string>
+
+/// Set the virtual SD card root directory. Creates /crosspad/kits/ and
+/// /crosspad/recordings/ subdirectories if they don't exist.
+/// Pass empty string to unmount.
+void pc_platform_set_sdcard_path(const std::string& path);
+
+/// Get the current virtual SD card root directory, or empty if not mounted.
+const std::string& pc_platform_get_sdcard_path();
+
+/// Resolve a virtual path (e.g. "/crosspad/kits/...") to the actual
+/// filesystem path under the mounted SD card root. Returns input unchanged
+/// if SD card is not mounted or path doesn't start with "/crosspad".
+std::string pc_platform_resolve_sdcard_path(const std::string& virtualPath);
+
 #endif

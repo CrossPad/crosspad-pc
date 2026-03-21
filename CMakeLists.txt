@@ -155,6 +155,7 @@ endif()
 set(MAIN_SOURCES ${WIN_RESOURCES} src/mouse_cursor_icon.c src/hal/hal.c
     src/stm32_emu/Stm32EmuWindow.cpp
     src/stm32_emu/EmuJackPanel.cpp
+    src/stm32_emu/EmuSdCardSlot.cpp
     src/stm32_emu/KeyboardCapture.cpp
     src/crosspad_app.cpp
     src/remote/RemoteControl.cpp
@@ -302,9 +303,9 @@ target_include_directories(main PRIVATE
 )
 target_link_libraries(main ${MAIN_LIBS})
 
-# Winsock for remote control server
+# Winsock + COM (folder picker dialog) for Windows
 if(WIN32)
-    target_link_libraries(main ws2_32)
+    target_link_libraries(main ws2_32 ole32 shell32)
 endif()
 
 target_compile_definitions(main PRIVATE USE_FREERTOS=1)

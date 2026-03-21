@@ -185,6 +185,9 @@ void Stm32EmuWindow::buildLayout()
     // Audio/MIDI jack connectors on device edges
     jackPanel_.create(screen_);
 
+    // Virtual SD card slot on right edge
+    sdCardSlot_.create(screen_);
+
     // 6 screws matching the hardware render
     constexpr int32_t M = 22;  // corner margin from window edge
     // 4 corner screws

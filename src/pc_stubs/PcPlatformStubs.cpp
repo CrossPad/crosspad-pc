@@ -67,6 +67,9 @@ CrosspadSettings* settings = nullptr;
 CrosspadStatus status;
 lv_obj_t* status_c = nullptr;
 
+// Forward declaration — defined after anonymous namespace
+std::string pc_platform_resolve_sdcard_path(const std::string& virtualPath);
+
 // =============================================================================
 // PcClock — IClock via std::chrono
 // =============================================================================
@@ -357,8 +360,12 @@ class PcFileSystem : public crosspad_gui::IFileSystem {
 public:
     bool listDirectory(const std::string& path, std::vector<crosspad_gui::FileItem>& outEntries) override {
         outEntries.clear();
+
+        // Resolve virtual SD card paths to real filesystem paths
+        std::string resolvedPath = pc_platform_resolve_sdcard_path(path);
+
         std::error_code ec;
-        for (auto& entry : std::filesystem::directory_iterator(path, ec)) {
+        for (auto& entry : std::filesystem::directory_iterator(resolvedPath, ec)) {
             if (ec) break;
             crosspad_gui::FileItem item;
             item.path = entry.path().string();
@@ -508,4 +515,52 @@ void pc_platform_save_settings() {
 // Get user profile directory (~/.crosspad)
 const char* pc_platform_get_profile_dir() {
     return s_kvStore.getProfileDir().c_str();
+}
+
+// =============================================================================
+// Virtual SD card path management
+// =============================================================================
+
+static std::string s_sdcardRoot;
+
+void pc_platform_set_sdcard_path(const std::string& path) {
+    s_sdcardRoot = path;
+
+    // Normalize backslashes
+    for (char& c : s_sdcardRoot) {
+        if (c == '\\') c = '/';
+    }
+    // Remove trailing slash
+    if (!s_sdcardRoot.empty() && s_sdcardRoot.back() == '/') {
+        s_sdcardRoot.pop_back();
+    }
+
+    if (!s_sdcardRoot.empty()) {
+        // Create standard CrossPad directory structure
+        namespace fs = std::filesystem;
+        std::error_code ec;
+        fs::create_directories(s_sdcardRoot + "/crosspad/kits", ec);
+        fs::create_directories(s_sdcardRoot + "/crosspad/recordings", ec);
+        printf("[SDCard] Mounted: %s\n", s_sdcardRoot.c_str());
+    } else {
+        printf("[SDCard] Unmounted\n");
+    }
+
+    // Update CrosspadStatus — drives status bar SD icon (status_bar.cpp checks stm32.sdDetected)
+    status.stm32.sdDetected = !s_sdcardRoot.empty();
+    status.sdCardDetected   = !s_sdcardRoot.empty();
+}
+
+const std::string& pc_platform_get_sdcard_path() {
+    return s_sdcardRoot;
+}
+
+std::string pc_platform_resolve_sdcard_path(const std::string& virtualPath) {
+    if (s_sdcardRoot.empty()) return virtualPath;
+
+    // Map "/crosspad/..." → "<sdcard_root>/crosspad/..."
+    if (virtualPath.size() >= 9 && virtualPath.compare(0, 9, "/crosspad") == 0) {
+        return s_sdcardRoot + virtualPath;
+    }
+    return virtualPath;
 }

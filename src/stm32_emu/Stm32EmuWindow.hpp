@@ -5,6 +5,7 @@
 #include "crosspad-gui/virtual_device/VirtualPadGrid.h"
 #include "crosspad-gui/virtual_device/VirtualPowerButton.h"
 #include "EmuJackPanel.hpp"
+#include "EmuSdCardSlot.hpp"
 #include "KeyboardCapture.hpp"
 #include <cstdint>
 
@@ -45,6 +46,9 @@ public:
     /// Access keyboard capture for external configuration.
     KeyboardCapture& getKeyboardCapture() { return kbCapture_; }
 
+    /// Access the SD card slot for mount/unmount callbacks.
+    EmuSdCardSlot& getSdCardSlot() { return sdCardSlot_; }
+
 private:
     lv_obj_t* screen_       = nullptr;
     lv_obj_t* lcdContainer_ = nullptr;
@@ -53,6 +57,7 @@ private:
     crosspad_gui::VirtualPadGrid     padGrid_;
     crosspad_gui::VirtualPowerButton powerBtn_;
     EmuJackPanel   jackPanel_;
+    EmuSdCardSlot  sdCardSlot_;
     KeyboardCapture kbCapture_;
 
     lv_obj_t* kbButton_     = nullptr;   ///< 3-state keyboard toggle button

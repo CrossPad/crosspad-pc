@@ -99,6 +99,7 @@ struct DevicePreferences {
     std::string audioIn2;
     std::string midiOut;
     std::string midiIn;
+    std::string sdcardPath;
 };
 
 static DevicePreferences s_devicePrefs;
@@ -134,11 +135,13 @@ static void loadDevicePrefs() {
     if (doc["audio_in2"].is<const char*>())  s_devicePrefs.audioIn2  = doc["audio_in2"].as<const char*>();
     if (doc["midi_out"].is<const char*>())   s_devicePrefs.midiOut   = doc["midi_out"].as<const char*>();
     if (doc["midi_in"].is<const char*>())    s_devicePrefs.midiIn    = doc["midi_in"].as<const char*>();
+    if (doc["sdcard_path"].is<const char*>()) s_devicePrefs.sdcardPath = doc["sdcard_path"].as<const char*>();
 
-    printf("[DevPrefs] Loaded: out1='%s' out2='%s' in1='%s' in2='%s' midiOut='%s' midiIn='%s'\n",
+    printf("[DevPrefs] Loaded: out1='%s' out2='%s' in1='%s' in2='%s' midiOut='%s' midiIn='%s' sd='%s'\n",
            s_devicePrefs.audioOut1.c_str(), s_devicePrefs.audioOut2.c_str(),
            s_devicePrefs.audioIn1.c_str(), s_devicePrefs.audioIn2.c_str(),
-           s_devicePrefs.midiOut.c_str(), s_devicePrefs.midiIn.c_str());
+           s_devicePrefs.midiOut.c_str(), s_devicePrefs.midiIn.c_str(),
+           s_devicePrefs.sdcardPath.c_str());
 }
 
 static void saveDevicePrefs() {
@@ -148,8 +151,9 @@ static void saveDevicePrefs() {
     doc["audio_out2"] = s_devicePrefs.audioOut2;
     doc["audio_in1"]  = s_devicePrefs.audioIn1;
     doc["audio_in2"]  = s_devicePrefs.audioIn2;
-    doc["midi_out"]   = s_devicePrefs.midiOut;
-    doc["midi_in"]    = s_devicePrefs.midiIn;
+    doc["midi_out"]    = s_devicePrefs.midiOut;
+    doc["midi_in"]     = s_devicePrefs.midiIn;
+    doc["sdcard_path"] = s_devicePrefs.sdcardPath;
 
     std::ofstream f(path);
     if (!f.is_open()) {
@@ -313,6 +317,33 @@ void crosspad_app_init()
     /* Wire keyboard shortcuts: Escape→go home, Space/Ctrl→volume overlay */
     stm32Emu.getKeyboardCapture().setEscapeCallback(crosspad_app_go_home);
     stm32Emu.getKeyboardCapture().setPowerCallback(crosspad_gui::volume_overlay_toggle);
+
+    /* Virtual SD card slot — auto-mount from saved preferences */
+    if (!s_devicePrefs.sdcardPath.empty()) {
+        namespace fs = std::filesystem;
+        std::error_code ec;
+        if (fs::exists(s_devicePrefs.sdcardPath, ec)) {
+            pc_platform_set_sdcard_path(s_devicePrefs.sdcardPath);
+            stm32Emu.getSdCardSlot().setMounted(true, s_devicePrefs.sdcardPath);
+            printf("[SDCard] Auto-mounted from saved prefs: %s\n", s_devicePrefs.sdcardPath.c_str());
+        } else {
+            printf("[SDCard] Saved path no longer exists: %s\n", s_devicePrefs.sdcardPath.c_str());
+            s_devicePrefs.sdcardPath.clear();
+            saveDevicePrefs();
+        }
+    }
+
+    /* Wire SD card slot mount/unmount callbacks */
+    stm32Emu.getSdCardSlot().setOnMount([](const std::string& path) {
+        pc_platform_set_sdcard_path(path);
+        s_devicePrefs.sdcardPath = path;
+        saveDevicePrefs();
+    });
+    stm32Emu.getSdCardSlot().setOnUnmount([]() {
+        pc_platform_set_sdcard_path("");
+        s_devicePrefs.sdcardPath.clear();
+        saveDevicePrefs();
+    });
 
     /* Overlay layer on lv_layer_top(), positioned over the LCD area. */
     lv_obj_t* overlayLayer = lv_obj_create(lv_layer_top());
