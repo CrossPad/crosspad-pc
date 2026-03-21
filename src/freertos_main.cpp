@@ -33,7 +33,11 @@ void vApplicationMallocFailedHook(void)
     for (;;);
 }
 
+#ifdef _MSC_VER
 void vApplicationIdleHook(void) { Sleep(1); }
+#else
+void vApplicationIdleHook(void) { usleep(1000); }
+#endif
 
 void vApplicationStackOverflowHook(TaskHandle_t xTask, char* pcTaskName)
 {
