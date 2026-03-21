@@ -3,6 +3,8 @@
 #include "settings_app.h"
 #include "crosspad/app/AppRegistrar.hpp"
 #include "crosspad-gui/components/settings_ui.h"
+#include "crosspad-gui/platform/IGuiPlatform.h"
+#include <cstdio>
 
 lv_obj_t * lv_CreateSettings(lv_obj_t * parent, App * a) {
     (void)a;
@@ -39,7 +41,16 @@ void lv_DestroySettings(lv_obj_t * obj) {
     crosspad_gui::settings_ui_destroy();
 }
 
-REGISTER_APP(Settings, nullptr, "gear.png",
-             lv_CreateSettings, lv_DestroySettings, nullptr, nullptr, nullptr, 10);
+void _register_Settings_app() {
+    static char icon_path[256];
+    snprintf(icon_path, sizeof(icon_path), "%sgear.png",
+             crosspad_gui::getGuiPlatform().assetPathPrefix());
+    static const crosspad::AppEntry entry = {
+        "Settings", icon_path,
+        lv_CreateSettings, lv_DestroySettings,
+        nullptr, nullptr, nullptr, nullptr, 10
+    };
+    crosspad::AppRegistry::getInstance().registerApp(entry);
+}
 
 #endif // USE_LVGL

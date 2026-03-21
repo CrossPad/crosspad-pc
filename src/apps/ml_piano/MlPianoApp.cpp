@@ -377,7 +377,7 @@ void MlPiano_destroy(lv_obj_t* app_obj)
 
 void _register_MLPiano_app() {
     static char icon_path[256];
-    snprintf(icon_path, sizeof(icon_path), "%sCrossPad_Logo_110w.png",
+    snprintf(icon_path, sizeof(icon_path), "%spiano.png",
              crosspad_gui::getGuiPlatform().assetPathPrefix());
 
     static const crosspad::AppEntry entry = {

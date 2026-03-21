@@ -330,7 +330,31 @@ void Stm32EmuWindow::handleEncoderPress(bool pressed)
     encoder_.handleButtonPress(pressed);
 }
 
+/// Find the deepest scrollable child under the LCD container.
+static lv_obj_t* findScrollable(lv_obj_t* obj)
+{
+    if (!obj) return nullptr;
+    uint32_t cnt = lv_obj_get_child_count(obj);
+    for (uint32_t i = 0; i < cnt; i++) {
+        lv_obj_t* child = lv_obj_get_child(obj, i);
+        if (lv_obj_has_flag(child, LV_OBJ_FLAG_HIDDEN)) continue;
+        lv_obj_t* found = findScrollable(child);
+        if (found) return found;
+    }
+    if (lv_obj_has_flag(obj, LV_OBJ_FLAG_SCROLLABLE) &&
+        lv_obj_get_scroll_top(obj) + lv_obj_get_scroll_bottom(obj) > 0) {
+        return obj;
+    }
+    return nullptr;
+}
+
 void Stm32EmuWindow::handleEncoderWheel(int dy)
 {
     encoder_.handleWheelDelta(dy);
+
+    // Scroll the active app's scrollable content
+    lv_obj_t* target = findScrollable(lcdContainer_);
+    if (target) {
+        lv_obj_scroll_by(target, 0, dy * 20, LV_ANIM_ON);
+    }
 }

@@ -134,12 +134,10 @@ void KeyboardCapture::setMode(Mode m)
 
 bool KeyboardCapture::handleKey(int keycode, bool pressed, bool isRepeat)
 {
-    if (mode_ == Mode::Off) return false;
-
     // Ignore key repeats
     if (pressed && isRepeat) return false;
 
-    // ── Navigation shortcuts (fire on key-down only) ────────────
+    // ── Navigation shortcuts — always active regardless of capture mode ──
     if (pressed) {
         switch (keycode) {
             case SDLK_ESCAPE:
@@ -155,7 +153,8 @@ bool KeyboardCapture::handleKey(int keycode, bool pressed, bool isRepeat)
         }
     }
 
-    // ── Pad keys ────────────────────────────────────────────────
+    // ── Pad keys (only when capture is enabled) ─────────────────
+    if (mode_ == Mode::Off) return false;
     int padIdx = keyToPad(keycode);
     if (padIdx < 0) return false;
 

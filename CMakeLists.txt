@@ -218,6 +218,10 @@ list(APPEND MAIN_SOURCES ${SETTINGS_APP_SOURCES})
 add_subdirectory(src/apps/citest)
 list(APPEND MAIN_SOURCES ${CITEST_APP_SOURCES})
 
+# Instructions app (markdown-rendered help/shortcuts reference)
+add_subdirectory(src/apps/instructions)
+list(APPEND MAIN_SOURCES ${INSTRUCTIONS_APP_SOURCES})
+
 # Auto-generate app registry initialization
 include(cmake/generate_registry.cmake)
 set(APP_REGISTRY_FILE "${CMAKE_BINARY_DIR}/app_registry_init.cpp")
