@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.14)
-project(crosspad_pc VERSION 0.2.1 LANGUAGES C CXX)
+project(crosspad_pc VERSION 0.2.2 LANGUAGES C CXX)
 
 # Set the correct FreeRTOS port for the current compiler
 if(MSVC OR MINGW)
@@ -328,6 +328,23 @@ target_link_libraries(CrossPad ${MAIN_LIBS})
 # Winsock + COM (folder picker dialog) for Windows
 if(WIN32)
     target_link_libraries(CrossPad ws2_32 ole32 shell32 winhttp)
+
+    # Copy SDL2.dll next to the exe so dev builds match release layout.
+    # This ensures the auto-updater can swap exe+dll without PATH issues.
+    find_file(SDL2_DLL_PATH SDL2.dll
+        PATHS "${SDL2_DIR}" "${_VCPKG_INSTALLED_DIR}/x64-windows/bin"
+              "${VCPKG_INSTALLED_DIR}/x64-windows/bin"
+              "C:/vcpkg/installed/x64-windows/bin"
+        NO_DEFAULT_PATH
+    )
+    if(SDL2_DLL_PATH)
+        add_custom_command(TARGET CrossPad POST_BUILD
+            COMMAND ${CMAKE_COMMAND} -E copy_if_different
+                "${SDL2_DLL_PATH}"
+                "$<TARGET_FILE_DIR:CrossPad>/SDL2.dll"
+            COMMENT "Copying SDL2.dll to output directory"
+        )
+    endif()
 endif()
 
 target_compile_definitions(CrossPad PRIVATE USE_FREERTOS=1)
