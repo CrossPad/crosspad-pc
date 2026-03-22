@@ -4,7 +4,7 @@
  */
 
 #include "updater/PcUpdater.hpp"
-#include "crosspad_pc_version.h"
+#include "CrosspadPcVersion.hpp"
 
 #include <crosspad/net/IHttpClient.hpp>
 #include <crosspad/platform/PlatformServices.hpp>

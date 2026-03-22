@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.14)
-project(crosspad_pc VERSION 0.2.5 LANGUAGES C CXX)
+project(crosspad_pc VERSION 0.2.6 LANGUAGES C CXX)
 
 # Set the correct FreeRTOS port for the current compiler
 if(MSVC OR MINGW)
@@ -241,16 +241,14 @@ list(APPEND MAIN_SOURCES ${NETSTATUS_APP_SOURCES})
 # Updater module (version check, download, self-update)
 list(APPEND MAIN_SOURCES src/updater/PcUpdater.cpp)
 
-# Version for the generated header — defaults to PROJECT_VERSION from project(),
-# CI can override via -DCROSSPAD_VERSION_OVERRIDE=x.y.z from git tag.
+# CI can override version via -DCROSSPAD_VERSION_OVERRIDE=x.y.z from git tag.
+# This regenerates src/CrosspadPcVersion.hpp at configure time.
 if(DEFINED CROSSPAD_VERSION_OVERRIDE)
     set(CP_VERSION "${CROSSPAD_VERSION_OVERRIDE}")
-else()
-    set(CP_VERSION "${PROJECT_VERSION}")
+    configure_file(cmake/version.h.in "${PROJECT_SOURCE_DIR}/src/CrosspadPcVersion.hpp" @ONLY)
+    message(STATUS "CrossPad version overridden to ${CP_VERSION}")
 endif()
 
-# Generate version header
-configure_file(cmake/version.h.in "${CMAKE_BINARY_DIR}/generated/crosspad_pc_version.h" @ONLY)
 
 # Auto-generate app registry initialization
 include(cmake/generate_registry.cmake)
@@ -329,7 +327,6 @@ target_include_directories(CrossPad PRIVATE
     ${PROJECT_SOURCE_DIR}/lib/ml_synth
     ${PROJECT_SOURCE_DIR}/lib
     ${PROJECT_SOURCE_DIR}/lvgl/src
-    ${CMAKE_BINARY_DIR}/generated
 )
 target_link_libraries(CrossPad ${MAIN_LIBS})
 
