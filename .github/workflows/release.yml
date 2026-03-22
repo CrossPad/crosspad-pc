@@ -22,6 +22,17 @@ jobs:
           submodules: recursive
           token: ${{ secrets.SUBMODULE_PAT }}
 
+      - name: Extract version from tag
+        id: version
+        shell: bash
+        run: |
+          TAG="${GITHUB_REF#refs/tags/v}"
+          if [ -n "${{ github.event.inputs.tag }}" ]; then
+            TAG="${{ github.event.inputs.tag }}"
+            TAG="${TAG#v}"
+          fi
+          echo "version=$TAG" >> $GITHUB_OUTPUT
+
       - name: Set up vcpkg
         uses: lukka/run-vcpkg@v11
         with:
@@ -41,6 +52,7 @@ jobs:
           -DCMAKE_TOOLCHAIN_FILE="${{ env.RUNVCPKG_VCPKG_ROOT }}/scripts/buildsystems/vcpkg.cmake"
           -DCMAKE_BUILD_TYPE=Release
           -DBUILD_TESTING=OFF
+          -DCROSSPAD_VERSION_OVERRIDE=${{ steps.version.outputs.version }}
 
       - name: Build
         run: cmake --build build
@@ -49,7 +61,7 @@ jobs:
         shell: bash
         run: |
           mkdir -p dist/CrossPad
-          cp bin/main.exe dist/CrossPad/CrossPad.exe
+          cp bin/CrossPad.exe dist/CrossPad/CrossPad.exe
           # Copy SDL2.dll from vcpkg installed dir
           cp "$RUNVCPKG_VCPKG_ROOT/installed/x64-windows/bin/SDL2.dll" dist/CrossPad/
           # Copy assets
@@ -70,6 +82,16 @@ jobs:
           submodules: recursive
           token: ${{ secrets.SUBMODULE_PAT }}
 
+      - name: Extract version from tag
+        id: version
+        run: |
+          TAG="${GITHUB_REF#refs/tags/v}"
+          if [ -n "${{ github.event.inputs.tag }}" ]; then
+            TAG="${{ github.event.inputs.tag }}"
+            TAG="${TAG#v}"
+          fi
+          echo "version=$TAG" >> $GITHUB_OUTPUT
+
       - name: Install dependencies
         run: |
           sudo apt-get update
@@ -80,6 +102,7 @@ jobs:
           cmake -B build -G Ninja
           -DCMAKE_BUILD_TYPE=Release
           -DBUILD_TESTING=OFF
+          -DCROSSPAD_VERSION_OVERRIDE=${{ steps.version.outputs.version }}
 
       - name: Build
         run: cmake --build build
@@ -87,7 +110,7 @@ jobs:
       - name: Package
         run: |
           mkdir -p dist/CrossPad
-          cp bin/main dist/CrossPad/CrossPad
+          cp bin/CrossPad dist/CrossPad/CrossPad
           chmod +x dist/CrossPad/CrossPad
           cp -r crosspad-gui/assets dist/CrossPad/assets
 

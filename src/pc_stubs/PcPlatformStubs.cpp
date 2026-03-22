@@ -51,6 +51,9 @@
 #include <unistd.h>
 #endif
 
+// PC platform API
+#include "pc_stubs/pc_platform.h"
+
 // crosspad-gui interfaces
 #include "crosspad-gui/platform/IGuiPlatform.h"
 #include "crosspad-gui/platform/IFileSystem.h"
@@ -491,6 +494,9 @@ extern "C" void pc_platform_init() {
     crosspad::setPlatformCapabilities(
         Capability::Pads | Capability::Leds | Capability::Encoder |
         Capability::Display | Capability::Persistence);
+
+    // Register PC HTTP client (WinHTTP on Windows)
+    pc_http_client_init();
 
     printf("[PC] Platform stubs initialized\n");
 }

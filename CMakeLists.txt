@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.14)
-project(lvgl C CXX)
+project(crosspad_pc VERSION 0.1.0 LANGUAGES C CXX)
 
 # Set the correct FreeRTOS port for the current compiler
 if(MSVC OR MINGW)
@@ -143,6 +143,7 @@ file(GLOB_RECURSE CROSSPAD_GUI_SOURCES crosspad-gui/src/*.cpp)
 set(PC_STUB_SOURCES
     src/pc_stubs/PcPlatformStubs.cpp
     src/pc_stubs/PcApp.cpp
+    src/pc_stubs/PcHttpClient.cpp
 )
 
 # Windows application icon
@@ -223,6 +224,16 @@ list(APPEND MAIN_SOURCES ${CITEST_APP_SOURCES})
 add_subdirectory(src/apps/instructions)
 list(APPEND MAIN_SOURCES ${INSTRUCTIONS_APP_SOURCES})
 
+# Net Status app (HTTP client test/verification)
+add_subdirectory(src/apps/netstatus)
+list(APPEND MAIN_SOURCES ${NETSTATUS_APP_SOURCES})
+
+# Updater module (version check, download, self-update)
+list(APPEND MAIN_SOURCES src/updater/PcUpdater.cpp)
+
+# Generate version header from CMake project version
+configure_file(cmake/version.h.in "${CMAKE_BINARY_DIR}/generated/crosspad_pc_version.h" @ONLY)
+
 # Auto-generate app registry initialization
 include(cmake/generate_registry.cmake)
 set(APP_REGISTRY_FILE "${CMAKE_BINARY_DIR}/app_registry_init.cpp")
@@ -230,7 +241,7 @@ generate_app_registry("${APP_REGISTRY_FILE}" "${PROJECT_SOURCE_DIR}/src/apps")
 list(APPEND MAIN_SOURCES "${APP_REGISTRY_FILE}")
 
 # Custom target to run the executable
-add_custom_target(run COMMAND ${EXECUTABLE_OUTPUT_PATH}/main DEPENDS main)
+add_custom_target(run COMMAND ${EXECUTABLE_OUTPUT_PATH}/CrossPad DEPENDS CrossPad)
 
 # Conditionally include and link SDL2_image if LV_USE_DRAW_SDL is enabled
 if(LV_USE_DRAW_SDL)
@@ -285,38 +296,44 @@ if(LVGL_PRO_PROJECT_DIR)
   endif()
 endif()
 
-add_executable(main ${MAIN_SOURCES})
-target_compile_definitions(main PRIVATE
+add_executable(CrossPad ${MAIN_SOURCES})
+target_compile_definitions(CrossPad PRIVATE
     LV_CONF_INCLUDE_SIMPLE
     USE_LVGL=1
     CP_LCD_HOR_RES=320
     CP_LCD_VER_RES=240
     PLATFORM_PC=1
 )
-target_include_directories(main PRIVATE
+target_include_directories(CrossPad PRIVATE
     ${PROJECT_SOURCE_DIR}/src
     ${PROJECT_SOURCE_DIR}/crosspad-core/include
     ${PROJECT_SOURCE_DIR}/crosspad-gui/include
     ${PROJECT_SOURCE_DIR}/lib/ml_synth
     ${PROJECT_SOURCE_DIR}/lib
     ${PROJECT_SOURCE_DIR}/lvgl/src
+    ${CMAKE_BINARY_DIR}/generated
 )
-target_link_libraries(main ${MAIN_LIBS})
+target_link_libraries(CrossPad ${MAIN_LIBS})
 
 # Winsock + COM (folder picker dialog) for Windows
 if(WIN32)
-    target_link_libraries(main ws2_32 ole32 shell32)
+    target_link_libraries(CrossPad ws2_32 ole32 shell32 winhttp)
 endif()
 
-target_compile_definitions(main PRIVATE USE_FREERTOS=1)
+target_compile_definitions(CrossPad PRIVATE USE_FREERTOS=1)
+
+# Allow CI to override PC version from git tag
+if(DEFINED CROSSPAD_VERSION_OVERRIDE)
+    target_compile_definitions(CrossPad PRIVATE CROSSPAD_PC_VERSION="${CROSSPAD_VERSION_OVERRIDE}")
+endif()
 
 # MIDI compile definition
 if(USE_MIDI)
-    target_compile_definitions(main PRIVATE USE_MIDI=1)
+    target_compile_definitions(CrossPad PRIVATE USE_MIDI=1)
 endif()
 
 if(USE_AUDIO)
-    target_compile_definitions(main PRIVATE USE_AUDIO=1)
+    target_compile_definitions(CrossPad PRIVATE USE_AUDIO=1)
     # Suppress warnings for vendored ML_SynthTools code
     if(MSVC)
         set_source_files_properties(
@@ -339,9 +356,9 @@ endif()
 # which hides log output. This ensures a console is available for logging.
 if (WIN32)
     if (MSVC)
-        target_link_options(main PRIVATE "/SUBSYSTEM:CONSOLE")
+        target_link_options(CrossPad PRIVATE "/SUBSYSTEM:CONSOLE")
     else()
-        target_link_options(main PRIVATE "-mconsole")
+        target_link_options(CrossPad PRIVATE "-mconsole")
     endif()
 endif()
 

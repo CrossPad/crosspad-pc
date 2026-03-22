@@ -7,7 +7,7 @@
  * launcher icons, navigate settings, verify screenshot changes, pad input
  * reflected in stats, etc.
  *
- * Requires: bin/main.exe built and accessible. The test launches it as a
+ * Requires: bin/CrossPad.exe built and accessible. The test launches it as a
  * subprocess, waits for the TCP server, runs test scenarios, then kills it.
  *
  * Protocol: newline-delimited JSON over TCP.
@@ -210,7 +210,7 @@ static bool launchSimulator() {
     PROCESS_INFORMATION pi = {};
 
     // Try multiple paths — test may run from project root or from bin/
-    const char* paths[] = { "bin\\main.exe", "main.exe", "..\\bin\\main.exe" };
+    const char* paths[] = { "bin\\CrossPad.exe", "CrossPad.exe", "..\\bin\\CrossPad.exe" };
     bool launched = false;
     for (auto path : paths) {
         char cmd[MAX_PATH];
@@ -248,7 +248,7 @@ static pid_t s_simPid = 0;
 static bool launchSimulator() {
     s_simPid = fork();
     if (s_simPid == 0) {
-        execl("bin/main.exe", "main.exe", NULL);
+        execl("bin/CrossPad.exe", "CrossPad.exe", NULL);
         _exit(1);
     }
     if (s_simPid < 0) return false;
@@ -280,7 +280,7 @@ int main(int argc, char* argv[]) {
 
     // Launch simulator
     if (!launchSimulator()) {
-        printf("[GUI Test] Cannot start simulator — is bin/main.exe built?\n");
+        printf("[GUI Test] Cannot start simulator — is bin/CrossPad.exe built?\n");
         return 1;
     }
 

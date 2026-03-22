@@ -107,7 +107,7 @@ if(WIN32)
 endif()
 
 # GUI tests depend on the main simulator being built
-add_dependencies(gui_tests main)
+add_dependencies(gui_tests CrossPad)
 
 # GUI tests can't use catch_discover_tests (it runs the exe at build time,
 # which tries to launch the simulator). Register as a single CTest entry.

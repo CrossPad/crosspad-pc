@@ -41,6 +41,9 @@ crosspad::RgbColor pc_get_led_color(uint16_t idx);
 /// Get the global synth engine (delegates to PlatformServices)
 crosspad::ISynthEngine* pc_platform_get_synth_engine();
 
+/// Initialize PC HTTP client (WinHTTP on Windows, no-op on other platforms)
+void pc_http_client_init();
+
 /// Save current CrosspadSettings to ~/.crosspad/preferences.json
 void pc_platform_save_settings();
 
