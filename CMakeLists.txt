@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.14)
-project(crosspad_pc VERSION 0.2.3 LANGUAGES C CXX)
+project(crosspad_pc VERSION 0.2.4 LANGUAGES C CXX)
 
 # Set the correct FreeRTOS port for the current compiler
 if(MSVC OR MINGW)
@@ -241,17 +241,15 @@ list(APPEND MAIN_SOURCES ${NETSTATUS_APP_SOURCES})
 # Updater module (version check, download, self-update)
 list(APPEND MAIN_SOURCES src/updater/PcUpdater.cpp)
 
-# CI passes -DCROSSPAD_VERSION_OVERRIDE=x.y.z from git tag.
-# Override PROJECT_VERSION so configure_file generates the correct header.
+# Version for the generated header — defaults to PROJECT_VERSION from project(),
+# CI can override via -DCROSSPAD_VERSION_OVERRIDE=x.y.z from git tag.
 if(DEFINED CROSSPAD_VERSION_OVERRIDE)
-    set(PROJECT_VERSION "${CROSSPAD_VERSION_OVERRIDE}")
-    string(REPLACE "." ";" _VER_PARTS "${CROSSPAD_VERSION_OVERRIDE}")
-    list(GET _VER_PARTS 0 PROJECT_VERSION_MAJOR)
-    list(GET _VER_PARTS 1 PROJECT_VERSION_MINOR)
-    list(GET _VER_PARTS 2 PROJECT_VERSION_PATCH)
+    set(CP_VERSION "${CROSSPAD_VERSION_OVERRIDE}")
+else()
+    set(CP_VERSION "${PROJECT_VERSION}")
 endif()
 
-# Generate version header from CMake project version
+# Generate version header
 configure_file(cmake/version.h.in "${CMAKE_BINARY_DIR}/generated/crosspad_pc_version.h" @ONLY)
 
 # Auto-generate app registry initialization
