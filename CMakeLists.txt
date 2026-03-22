@@ -139,6 +139,16 @@ list(FILTER CROSSPAD_CORE_SOURCES EXCLUDE REGEX "Stm32Manager\\.cpp$")
 # ── crosspad-gui sources (auto-discover) ──
 file(GLOB_RECURSE CROSSPAD_GUI_SOURCES crosspad-gui/src/*.cpp)
 
+# ── Auto-reconfigure when source files are added/removed ──
+# Ninja watches these directories and triggers cmake reconfigure on changes
+set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS
+    "${CMAKE_SOURCE_DIR}/crosspad-core/src"
+    "${CMAKE_SOURCE_DIR}/crosspad-gui/src"
+    "${CMAKE_SOURCE_DIR}/src/apps"
+    "${CMAKE_SOURCE_DIR}/src/pc_stubs"
+    "${CMAKE_SOURCE_DIR}/src/updater"
+)
+
 # ── PC platform stubs (event bus, singletons, interface impls) ──
 set(PC_STUB_SOURCES
     src/pc_stubs/PcPlatformStubs.cpp
