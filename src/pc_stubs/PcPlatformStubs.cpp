@@ -284,7 +284,11 @@ public:
 
     void sendPowerOff() override {
         printf("[PC] Power off requested (exiting)\n");
-        exit(0);
+        fflush(stdout);
+        // _exit() skips CRT cleanup (atexit, thread join, static destructors)
+        // which avoids abort() when detached std::threads are still running.
+        // OS cleans up all resources on process exit anyway.
+        _exit(0);
     }
 
 private:

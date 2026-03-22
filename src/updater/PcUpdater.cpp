@@ -8,6 +8,7 @@
 
 #include <crosspad/net/IHttpClient.hpp>
 #include <crosspad/platform/PlatformServices.hpp>
+#include "crosspad-gui/platform/IGuiPlatform.h"
 
 #include <ArduinoJson.h>
 #include <cstdio>
@@ -495,8 +496,8 @@ void PcUpdater::installAndRestart()
         return;
     }
 
-    // Exit the current process so the batch script can replace the exe
-    exit(0);
+    // Graceful shutdown — same path as the Power OFF button
+    crosspad_gui::getGuiPlatform().sendPowerOff();
 }
 
 #else // Non-Windows stub
