@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.14)
-project(crosspad_pc VERSION 0.2.2 LANGUAGES C CXX)
+project(crosspad_pc VERSION 0.2.3 LANGUAGES C CXX)
 
 # Set the correct FreeRTOS port for the current compiler
 if(MSVC OR MINGW)
@@ -241,6 +241,16 @@ list(APPEND MAIN_SOURCES ${NETSTATUS_APP_SOURCES})
 # Updater module (version check, download, self-update)
 list(APPEND MAIN_SOURCES src/updater/PcUpdater.cpp)
 
+# CI passes -DCROSSPAD_VERSION_OVERRIDE=x.y.z from git tag.
+# Override PROJECT_VERSION so configure_file generates the correct header.
+if(DEFINED CROSSPAD_VERSION_OVERRIDE)
+    set(PROJECT_VERSION "${CROSSPAD_VERSION_OVERRIDE}")
+    string(REPLACE "." ";" _VER_PARTS "${CROSSPAD_VERSION_OVERRIDE}")
+    list(GET _VER_PARTS 0 PROJECT_VERSION_MAJOR)
+    list(GET _VER_PARTS 1 PROJECT_VERSION_MINOR)
+    list(GET _VER_PARTS 2 PROJECT_VERSION_PATCH)
+endif()
+
 # Generate version header from CMake project version
 configure_file(cmake/version.h.in "${CMAKE_BINARY_DIR}/generated/crosspad_pc_version.h" @ONLY)
 
@@ -349,10 +359,6 @@ endif()
 
 target_compile_definitions(CrossPad PRIVATE USE_FREERTOS=1)
 
-# Allow CI to override PC version from git tag
-if(DEFINED CROSSPAD_VERSION_OVERRIDE)
-    target_compile_definitions(CrossPad PRIVATE CROSSPAD_PC_VERSION="${CROSSPAD_VERSION_OVERRIDE}")
-endif()
 
 # MIDI compile definition
 if(USE_MIDI)
