@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.14)
-project(crosspad_pc VERSION 0.2.4 LANGUAGES C CXX)
+project(crosspad_pc VERSION 0.2.5 LANGUAGES C CXX)
 
 # Set the correct FreeRTOS port for the current compiler
 if(MSVC OR MINGW)

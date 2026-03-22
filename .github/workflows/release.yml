@@ -38,6 +38,13 @@ jobs:
         with:
           vcpkgGitCommitId: 'b472291f295551b7127359ea38fdd2ca092f6f1b'
 
+      - name: Cache vcpkg installed packages
+        uses: actions/cache@v4
+        with:
+          path: ${{ env.RUNVCPKG_VCPKG_ROOT }}/installed
+          key: vcpkg-release-${{ runner.os }}-${{ hashFiles('**/vcpkgGitCommitId') }}-sdl2
+          restore-keys: vcpkg-release-${{ runner.os }}-
+
       - name: Install SDL2
         run: ${{ env.VCPKG_ROOT }}/vcpkg install sdl2:x64-windows
 
@@ -91,6 +98,12 @@ jobs:
             TAG="${TAG#v}"
           fi
           echo "version=$TAG" >> $GITHUB_OUTPUT
+
+      - name: Cache apt packages
+        uses: actions/cache@v4
+        with:
+          path: /var/cache/apt/archives
+          key: apt-${{ runner.os }}-sdl2-ninja-alsa
 
       - name: Install dependencies
         run: |
