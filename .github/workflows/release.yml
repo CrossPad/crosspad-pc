@@ -155,22 +155,59 @@ jobs:
           cd CrossPad-Windows-x64 && zip -r ../CrossPad-Windows-x64.zip . && cd ..
           tar -czf CrossPad-Linux-x64.tar.gz -C CrossPad-Linux-x64 .
 
-      - name: Determine tag
+      - name: Checkout (for changelog generation)
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          token: ${{ secrets.SUBMODULE_PAT }}
+
+      - name: Determine tag and stability
         id: tag
         run: |
           if [ -n "${{ github.event.inputs.tag }}" ]; then
-            echo "name=${{ github.event.inputs.tag }}" >> $GITHUB_OUTPUT
+            TAG="${{ github.event.inputs.tag }}"
           else
-            echo "name=${GITHUB_REF#refs/tags/}" >> $GITHUB_OUTPUT
+            TAG="${GITHUB_REF#refs/tags/}"
           fi
+          echo "name=$TAG" >> $GITHUB_OUTPUT
+          # Tags with a dash after version are pre-releases (v0.2.9-CR, v0.3.0-beta, etc.)
+          VERSION="${TAG#v}"
+          if echo "$VERSION" | grep -q '-'; then
+            echo "prerelease=true" >> $GITHUB_OUTPUT
+          else
+            echo "prerelease=false" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Generate changelog
+        id: changelog
+        run: |
+          TAG="${{ steps.tag.outputs.name }}"
+          # Find previous tag
+          PREV_TAG=$(git tag --sort=-v:refname | grep -v "^${TAG}$" | head -1)
+          if [ -z "$PREV_TAG" ]; then
+            # First release — use all commits
+            CHANGELOG=$(git log --pretty=format:"- %s" HEAD | head -30)
+          else
+            CHANGELOG=$(git log --pretty=format:"- %s" "${PREV_TAG}..${TAG}" 2>/dev/null || git log --pretty=format:"- %s" HEAD | head -30)
+          fi
+          # Write to file (multi-line safe)
+          {
+            echo "## What's Changed"
+            echo ""
+            echo "$CHANGELOG"
+            echo ""
+            echo "**Full Changelog**: https://github.com/CrossPad/crosspad-pc/compare/${PREV_TAG}...${TAG}"
+          } > release_body.md
+          cat release_body.md
 
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v2
         with:
           tag_name: ${{ steps.tag.outputs.name }}
           name: CrossPad PC ${{ steps.tag.outputs.name }}
+          body_path: release_body.md
           draft: false
-          prerelease: false
+          prerelease: ${{ steps.tag.outputs.prerelease == 'true' }}
           files: |
             CrossPad-Windows-x64.zip
             CrossPad-Linux-x64.tar.gz

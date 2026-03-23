@@ -61,9 +61,15 @@ bool pc_updater_has_cached_result()
 
 static std::string stripVersionPrefix(const std::string& tag)
 {
-    if (!tag.empty() && (tag[0] == 'v' || tag[0] == 'V'))
-        return tag.substr(1);
-    return tag;
+    std::string t = tag;
+    // Strip leading 'v'
+    if (!t.empty() && (t[0] == 'v' || t[0] == 'V'))
+        t = t.substr(1);
+    // Strip postfix after version: "0.2.9-CR" → "0.2.9"
+    auto dash = t.find('-');
+    if (dash != std::string::npos)
+        t = t.substr(0, dash);
+    return t;
 }
 
 /* ── Helper: parse a single release JSON object into ReleaseInfo ────── */
@@ -193,9 +199,14 @@ std::vector<std::string> PcUpdater::getCachedVersions() const
     return versions;
 }
 
-/* ── Version Check (latest only) ─────────────────────────────────────── */
+/* ── Version Check ───────────────────────────────────────────────────── */
 
 UpdateInfo PcUpdater::checkForUpdate()
+{
+    return checkForUpdate(false);
+}
+
+UpdateInfo PcUpdater::checkForUpdate(bool includePrereleases)
 {
     UpdateInfo info;
     info.currentVersion = CROSSPAD_PC_VERSION;
@@ -207,12 +218,18 @@ UpdateInfo PcUpdater::checkForUpdate()
     }
 
     crosspad::HttpRequest req;
-    req.url = "https://api.github.com/repos/CrossPad/crosspad-pc/releases/latest";
+    // /releases/latest skips prereleases; to include them, fetch the list
+    if (includePrereleases) {
+        req.url = "https://api.github.com/repos/CrossPad/crosspad-pc/releases?per_page=1";
+    } else {
+        req.url = "https://api.github.com/repos/CrossPad/crosspad-pc/releases/latest";
+    }
     req.timeoutMs = 10000;
     req.headers.push_back({"Accept", "application/vnd.github.v3+json"});
     req.headers.push_back({"User-Agent", "CrossPad/" CROSSPAD_PC_VERSION});
 
-    printf("[Updater] Checking for updates...\n");
+    printf("[Updater] Checking for updates (prereleases=%s)...\n",
+           includePrereleases ? "yes" : "no");
     auto resp = http.get(req);
 
     if (!resp.success()) {
@@ -231,16 +248,26 @@ UpdateInfo PcUpdater::checkForUpdate()
         return info;
     }
 
-    const char* tagName = doc["tag_name"] | "";
+    // /releases?per_page=1 returns an array, /releases/latest returns an object
+    JsonObject releaseObj;
+    if (includePrereleases) {
+        JsonArray arr = doc.as<JsonArray>();
+        if (arr.size() == 0) { info.errorMessage = "No releases found"; return info; }
+        releaseObj = arr[0].as<JsonObject>();
+    } else {
+        releaseObj = doc.as<JsonObject>();
+    }
+
+    const char* tagName = releaseObj["tag_name"] | "";
     if (strlen(tagName) == 0) {
         info.errorMessage = "No tag_name in release";
         return info;
     }
 
     info.latestVersion = stripVersionPrefix(tagName);
-    info.releaseNotes = doc["body"] | "";
+    info.releaseNotes = releaseObj["body"] | "";
 
-    JsonArray assets = doc["assets"].as<JsonArray>();
+    JsonArray assets = releaseObj["assets"].as<JsonArray>();
     for (JsonObject asset : assets) {
         const char* name = asset["name"] | "";
         if (strstr(name, "Windows") && strstr(name, ".zip")) {
@@ -639,7 +666,9 @@ void PcUpdater::installCachedAndRestart(const std::string& version)
 
 #else // ── Non-Windows stubs ─────────────────────────────────────────── */
 
-UpdateInfo PcUpdater::checkForUpdate()
+UpdateInfo PcUpdater::checkForUpdate() { return checkForUpdate(false); }
+
+UpdateInfo PcUpdater::checkForUpdate(bool)
 {
     UpdateInfo info;
     info.currentVersion = CROSSPAD_PC_VERSION;

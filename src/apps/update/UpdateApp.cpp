@@ -286,8 +286,9 @@ static void on_check_update_clicked(lv_event_t*)
     set_update_msg("Checking for updates...");
 
     std::thread([]() {
-        // Check latest
-        s_updateInfo = s_updater.checkForUpdate();
+        // Check latest (include prereleases if setting is on)
+        bool showPre = pc_platform_get_show_prereleases();
+        s_updateInfo = s_updater.checkForUpdate(showPre);
 
         if (!s_updateInfo.errorMessage.empty()) {
             s_updateState.store(UpdateState::Error);
@@ -434,6 +435,31 @@ lv_obj_t* Update_create(lv_obj_t* parent, App* a)
     lv_obj_add_event_cb(autoSwitch, [](lv_event_t* e) {
         bool checked = lv_obj_has_state((lv_obj_t*)lv_event_get_target(e), LV_STATE_CHECKED);
         pc_platform_set_auto_check_updates(checked);
+    }, LV_EVENT_VALUE_CHANGED, nullptr);
+
+    // Show pre-releases toggle row
+    lv_obj_t* preRow = lv_obj_create(cont);
+    lv_obj_set_size(preRow, lv_pct(100), 24);
+    lv_obj_set_style_bg_opa(preRow, LV_OPA_TRANSP, 0);
+    lv_obj_set_style_border_width(preRow, 0, 0);
+    lv_obj_set_style_pad_all(preRow, 0, 0);
+    lv_obj_remove_flag(preRow, LV_OBJ_FLAG_SCROLLABLE);
+
+    lv_obj_t* preLbl = lv_label_create(preRow);
+    lv_label_set_text(preLbl, "Show pre-releases");
+    lv_obj_set_style_text_font(preLbl, &lv_font_montserrat_10, 0);
+    lv_obj_set_style_text_color(preLbl, lv_color_hex(0xAAAAAA), 0);
+    lv_obj_align(preLbl, LV_ALIGN_LEFT_MID, 0, 0);
+
+    lv_obj_t* preSwitch = lv_switch_create(preRow);
+    lv_obj_set_size(preSwitch, 36, 18);
+    lv_obj_align(preSwitch, LV_ALIGN_RIGHT_MID, -2, 0);
+    if (pc_platform_get_show_prereleases()) {
+        lv_obj_add_state(preSwitch, LV_STATE_CHECKED);
+    }
+    lv_obj_add_event_cb(preSwitch, [](lv_event_t* e) {
+        bool checked = lv_obj_has_state((lv_obj_t*)lv_event_get_target(e), LV_STATE_CHECKED);
+        pc_platform_set_show_prereleases(checked);
     }, LV_EVENT_VALUE_CHANGED, nullptr);
 
     /* ── Latest version + buttons ────────────────────────────── */

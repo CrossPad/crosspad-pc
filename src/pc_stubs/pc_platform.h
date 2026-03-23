@@ -53,6 +53,12 @@ bool pc_platform_get_auto_check_updates();
 /// Set whether auto-update check is enabled (persisted immediately)
 void pc_platform_set_auto_check_updates(bool enabled);
 
+/// Read whether pre-releases should be shown (default: false)
+bool pc_platform_get_show_prereleases();
+
+/// Set whether pre-releases should be shown (persisted immediately)
+void pc_platform_set_show_prereleases(bool enabled);
+
 /// Get user profile directory path (~/.crosspad)
 const char* pc_platform_get_profile_dir();
 

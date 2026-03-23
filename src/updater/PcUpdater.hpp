@@ -53,6 +53,9 @@ public:
     /// Check GitHub Releases API for the latest version (synchronous)
     UpdateInfo checkForUpdate();
 
+    /// Check with option to include pre-releases
+    UpdateInfo checkForUpdate(bool includePrereleases);
+
     /// Fetch list of available releases from GitHub (synchronous)
     std::vector<ReleaseInfo> listReleases();
 

@@ -549,6 +549,14 @@ void pc_platform_set_auto_check_updates(bool enabled) {
     s_kvStore.saveBool("cfg_system", "auto_check_upd", enabled);
 }
 
+bool pc_platform_get_show_prereleases() {
+    return s_kvStore.readBool("cfg_system", "show_prerel", false);
+}
+
+void pc_platform_set_show_prereleases(bool enabled) {
+    s_kvStore.saveBool("cfg_system", "show_prerel", enabled);
+}
+
 // =============================================================================
 // Virtual SD card path management
 // =============================================================================

@@ -142,7 +142,7 @@ bool PcMidi::beginAutoConnect(const std::string& keyword)
             }
         }
         if (!outFound && count > 0)
-            printf("[MIDI] Auto-connect: no '%s' output found, using port 0\n", keyword.c_str());
+            printf("[MIDI] Auto-connect: no '%s' output found, falling back to port 0\n", keyword.c_str());
     }
 
     // Find best matching input port
@@ -161,7 +161,7 @@ bool PcMidi::beginAutoConnect(const std::string& keyword)
             }
         }
         if (!inFound && count > 0)
-            printf("[MIDI] Auto-connect: no '%s' input found, using port 0\n", keyword.c_str());
+            printf("[MIDI] Auto-connect: no '%s' input found, falling back to port 0\n", keyword.c_str());
     }
 
     autoConnectFound_ = (outFound || inFound);
@@ -170,6 +170,42 @@ bool PcMidi::beginAutoConnect(const std::string& keyword)
 
 bool PcMidi::reconnect()
 {
+    // Check if port list changed since last connect — if not, skip the
+    // expensive teardown/reopen cycle to avoid spamming logs.
+    auto probeOutputs = [&]() {
+        std::vector<std::string> ports;
+        try {
+            RtMidiOut probe;
+            for (unsigned int i = 0; i < probe.getPortCount(); i++)
+                ports.push_back(probe.getPortName(i));
+        } catch (...) {}
+        return ports;
+    };
+    auto probeInputs = [&]() {
+        std::vector<std::string> ports;
+        try {
+            RtMidiIn probe;
+            for (unsigned int i = 0; i < probe.getPortCount(); i++)
+                ports.push_back(probe.getPortName(i));
+        } catch (...) {}
+        return ports;
+    };
+
+    auto currentOut = probeOutputs();
+    auto currentIn  = probeInputs();
+
+    bool portsChanged = (currentOut != lastOutputPorts_) || (currentIn != lastInputPorts_);
+    bool outputLost   = !outputOpen_;
+
+    // Nothing changed and output still works — skip reconnect
+    if (!portsChanged && !outputLost)
+        return outputOpen_ || inputOpen_;
+
+    if (portsChanged)
+        printf("[MIDI] Port configuration changed, reconnecting...\n");
+    else if (outputLost)
+        printf("[MIDI] Output lost, reconnecting...\n");
+
     end();
     return beginAutoConnect(autoConnectKeyword_);
 }
@@ -193,7 +229,6 @@ void PcMidi::end()
         outputOpen_ = false;
     }
 
-    printf("[MIDI] Shutdown complete.\n");
 }
 
 // ── Output (Arduino MIDI Library signature) ──────────────────────────────
