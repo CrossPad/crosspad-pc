@@ -60,6 +60,7 @@
 #include <RtAudio.h>
 #endif
 
+#include "uart/PcUart.hpp"
 #include <ArduinoJson.h>
 
 /* ── Constants ────────────────────────────────────────────────────────── */
@@ -91,6 +92,10 @@ static AudioMixerEngine s_mixerEngine;
 static std::shared_ptr<MixerPadLogic> s_mixerPadLogic;
 #endif
 
+/* ── Virtual USB/UART ─────────────────────────────────────────────────── */
+
+static PcUart pcUart;
+
 /* ── Device Preferences ──────────────────────────────────────────────── */
 
 struct DevicePreferences {
@@ -101,6 +106,8 @@ struct DevicePreferences {
     std::string midiOut;
     std::string midiIn;
     std::string sdcardPath;
+    std::string uartPort;
+    uint32_t    uartBaud = 115200;
 };
 
 static DevicePreferences s_devicePrefs;
@@ -137,12 +144,15 @@ static void loadDevicePrefs() {
     if (doc["midi_out"].is<const char*>())   s_devicePrefs.midiOut   = doc["midi_out"].as<const char*>();
     if (doc["midi_in"].is<const char*>())    s_devicePrefs.midiIn    = doc["midi_in"].as<const char*>();
     if (doc["sdcard_path"].is<const char*>()) s_devicePrefs.sdcardPath = doc["sdcard_path"].as<const char*>();
+    if (doc["uart_port"].is<const char*>())  s_devicePrefs.uartPort   = doc["uart_port"].as<const char*>();
+    if (doc["uart_baud"].is<uint32_t>())     s_devicePrefs.uartBaud   = doc["uart_baud"].as<uint32_t>();
 
-    printf("[DevPrefs] Loaded: out1='%s' out2='%s' in1='%s' in2='%s' midiOut='%s' midiIn='%s' sd='%s'\n",
+    printf("[DevPrefs] Loaded: out1='%s' out2='%s' in1='%s' in2='%s' midiOut='%s' midiIn='%s' sd='%s' uart='%s@%u'\n",
            s_devicePrefs.audioOut1.c_str(), s_devicePrefs.audioOut2.c_str(),
            s_devicePrefs.audioIn1.c_str(), s_devicePrefs.audioIn2.c_str(),
            s_devicePrefs.midiOut.c_str(), s_devicePrefs.midiIn.c_str(),
-           s_devicePrefs.sdcardPath.c_str());
+           s_devicePrefs.sdcardPath.c_str(),
+           s_devicePrefs.uartPort.c_str(), s_devicePrefs.uartBaud);
 }
 
 static void saveDevicePrefs() {
@@ -155,6 +165,8 @@ static void saveDevicePrefs() {
     doc["midi_out"]    = s_devicePrefs.midiOut;
     doc["midi_in"]     = s_devicePrefs.midiIn;
     doc["sdcard_path"] = s_devicePrefs.sdcardPath;
+    doc["uart_port"]   = s_devicePrefs.uartPort;
+    doc["uart_baud"]   = s_devicePrefs.uartBaud;
 
     std::ofstream f(path);
     if (!f.is_open()) {
@@ -413,8 +425,11 @@ void crosspad_app_init()
     // (with its blocking enumeration) runs on a background thread.
     static std::atomic<bool> s_midiReconnecting{false};
     lv_timer_create([](lv_timer_t*) {
-        bool connected = midi.isKeywordConnected() && midi.isOutputOpen();
-        if (!connected && !s_midiReconnecting.load()) {
+        // Reconnect if output died, OR if we don't have a keyword match
+        // (a new CrossPad device may have appeared). reconnect() itself
+        // short-circuits if nothing changed, so this is cheap.
+        bool needsReconnect = !midi.isOutputOpen() || !midi.isKeywordConnected();
+        if (needsReconnect && !s_midiReconnecting.load()) {
             s_midiReconnecting.store(true);
             std::thread([]() {
                 printf("[MIDI] Attempting reconnect (background)...\n");
@@ -613,6 +628,48 @@ void crosspad_app_init()
         }
 #endif
 
+        // USB/UART — enumerate COM ports and auto-connect
+        {
+            auto comPorts = PcUart::enumeratePorts();
+            std::vector<std::string> usbPorts;
+            usbPorts.push_back("(None)");
+            int currentIdx = 0;
+            for (size_t i = 0; i < comPorts.size(); i++) {
+                usbPorts.push_back(comPorts[i]);
+                if (comPorts[i] == s_devicePrefs.uartPort)
+                    currentIdx = (int)(i + 1);
+            }
+            jp.setDeviceList(EmuJackPanel::USB, usbPorts, currentIdx);
+
+            // Auto-connect: saved port first, then VID/PID detection
+            bool connected = false;
+            auto baud = static_cast<PcUart::BaudRate>(s_devicePrefs.uartBaud);
+
+            if (!s_devicePrefs.uartPort.empty()) {
+                connected = pcUart.open(s_devicePrefs.uartPort, baud);
+            }
+
+            if (!connected && pc_platform_get_usb_autoconnect()) {
+                auto crosspadPorts = PcUart::findPortsByVidPid(
+                    PcUart::CROSSPAD_VID, PcUart::CROSSPAD_PID);
+                for (auto& port : crosspadPorts) {
+                    if (pcUart.open(port, baud)) {
+                        s_devicePrefs.uartPort = port;
+                        saveDevicePrefs();
+                        printf("[USB] Auto-connected CrossPad on %s\n", port.c_str());
+                        connected = true;
+                        break;
+                    }
+                }
+            }
+
+            if (connected) {
+                jp.setConnected(EmuJackPanel::USB, true);
+                jp.setDeviceName(EmuJackPanel::USB, pcUart.getPortName());
+                crosspad::addPlatformCapability(crosspad::Capability::Usb);
+            }
+        }
+
         // Device selection callback — handles all jack types
         jp.setOnDeviceSelected([](int jackId, unsigned int deviceIndex) {
             auto& jp = stm32Emu.getJackPanel();
@@ -719,6 +776,35 @@ void crosspad_app_init()
             }
 #endif
 
+            case EmuJackPanel::USB: {
+                if (deviceIndex == 0) {
+                    printf("[JackPanel] USB/UART disconnected\n");
+                    pcUart.close();
+                    jp.setConnected(EmuJackPanel::USB, false);
+                    jp.setDeviceName(EmuJackPanel::USB, "");
+                    s_devicePrefs.uartPort.clear();
+                    crosspad::removePlatformCapability(crosspad::Capability::Usb);
+                } else {
+                    auto comPorts = PcUart::enumeratePorts();
+                    unsigned int portIdx = deviceIndex - 1;
+                    if (portIdx < comPorts.size()) {
+                        pcUart.close();
+                        auto baud = static_cast<PcUart::BaudRate>(s_devicePrefs.uartBaud);
+                        if (pcUart.open(comPorts[portIdx], baud)) {
+                            jp.setConnected(EmuJackPanel::USB, true);
+                            jp.setDeviceName(EmuJackPanel::USB, comPorts[portIdx]);
+                            s_devicePrefs.uartPort = comPorts[portIdx];
+                            crosspad::addPlatformCapability(crosspad::Capability::Usb);
+                        } else {
+                            jp.setConnected(EmuJackPanel::USB, false);
+                            jp.setDeviceName(EmuJackPanel::USB, "");
+                        }
+                    }
+                }
+                saveDevicePrefs();
+                break;
+            }
+
             default:
                 break;
             }
@@ -771,6 +857,30 @@ void crosspad_app_init()
         }
     }, 16, nullptr);
 #endif
+
+    // ── USB/UART periodic reconnect (5s) — auto-detect CrossPad by VID/PID ──
+    lv_timer_create([](lv_timer_t*) {
+        if (pcUart.isOpen()) return;          // already connected
+        if (!pc_platform_get_usb_autoconnect()) return;
+
+        auto crosspadPorts = PcUart::findPortsByVidPid(
+            PcUart::CROSSPAD_VID, PcUart::CROSSPAD_PID);
+        if (crosspadPorts.empty()) return;
+
+        auto baud = static_cast<PcUart::BaudRate>(s_devicePrefs.uartBaud);
+        for (auto& port : crosspadPorts) {
+            if (pcUart.open(port, baud)) {
+                auto& jp = stm32Emu.getJackPanel();
+                jp.setConnected(EmuJackPanel::USB, true);
+                jp.setDeviceName(EmuJackPanel::USB, port);
+                s_devicePrefs.uartPort = port;
+                saveDevicePrefs();
+                crosspad::addPlatformCapability(crosspad::Capability::Usb);
+                printf("[USB] Auto-reconnected CrossPad on %s\n", port.c_str());
+                break;
+            }
+        }
+    }, 5000, nullptr);
 
     printf("[CrossPad] App init complete\n");
 }
@@ -825,3 +935,7 @@ void pc_platform_save_mixer_state()
 PcAudioOutput* pc_platform_get_audio_output(int /*index*/) { return nullptr; }
 void pc_platform_save_mixer_state() {}
 #endif
+
+/* ── UART accessor ────────────────────────────────────────────────────── */
+
+PcUart& pc_platform_get_uart() { return pcUart; }

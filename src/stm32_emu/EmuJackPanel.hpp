@@ -2,11 +2,13 @@
 
 /**
  * @file EmuJackPanel.hpp
- * @brief Visual audio/MIDI jack connectors for the CrossPad PC emulator.
+ * @brief Visual audio/MIDI/USB jack connectors for the CrossPad PC emulator.
  *
- * Renders thick bars on the device body edges representing physical jack
- * connectors. When connected, audio jack bars become live VU meters showing
- * real-time signal levels. All jacks are clickable for device selection.
+ * Renders bar-shaped jack connectors on the device body edges.
+ * Audio jacks show VU meter bars when connected.
+ * MIDI jacks use colored bars. USB uses a rectangular port shape
+ * with COM port selection for UART host/device (OTG) functionality.
+ * All jacks are clickable for device selection via styled dropdown menus.
  */
 
 #include "lvgl/lvgl.h"
@@ -24,7 +26,8 @@ public:
         AUDIO_IN2  = 3,
         MIDI_OUT   = 4,
         MIDI_IN    = 5,
-        JACK_COUNT = 6
+        USB        = 6,
+        JACK_COUNT = 7
     };
 
     /// Callback: (jackId, deviceIndex) where deviceIndex is index into the
@@ -61,16 +64,16 @@ public:
 
 private:
     struct Jack {
-        lv_obj_t* bar      = nullptr;
-        lv_obj_t* vuBarL   = nullptr;   // VU meter left channel (child of bar)
-        lv_obj_t* vuBarR   = nullptr;   // VU meter right channel (child of bar)
-        lv_obj_t* label    = nullptr;
-        lv_obj_t* dropdown = nullptr;
-        bool      connected = false;
-        bool      vertical  = false;    // true for AUDIO_OUT1/OUT2 (vertical bars)
-        JackId    id = AUDIO_OUT1;
-        int16_t   levelL = 0;
-        int16_t   levelR = 0;
+        lv_obj_t* bar        = nullptr;   // bar shape on device edge
+        lv_obj_t* vuBarL     = nullptr;   // VU left channel bar (audio only)
+        lv_obj_t* vuBarR     = nullptr;   // VU right channel bar (audio only)
+        lv_obj_t* label      = nullptr;   // type/device name label
+        lv_obj_t* dropdown   = nullptr;
+        bool      connected  = false;
+        bool      vertical   = false;     // true for audio OUT (left edge)
+        JackId    id         = AUDIO_OUT1;
+        int16_t   levelL     = 0;
+        int16_t   levelR     = 0;
     };
 
     Jack jacks_[JACK_COUNT] = {};

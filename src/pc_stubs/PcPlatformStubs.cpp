@@ -557,6 +557,15 @@ void pc_platform_set_show_prereleases(bool enabled) {
     s_kvStore.saveBool("cfg_system", "show_prerel", enabled);
 }
 
+// USB/UART auto-connect setting (PC-only, persisted in preferences.json)
+bool pc_platform_get_usb_autoconnect() {
+    return s_kvStore.readBool("cfg_system", "usb_autoconn", true);
+}
+
+void pc_platform_set_usb_autoconnect(bool enabled) {
+    s_kvStore.saveBool("cfg_system", "usb_autoconn", enabled);
+}
+
 // =============================================================================
 // Virtual SD card path management
 // =============================================================================

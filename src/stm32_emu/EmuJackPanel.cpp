@@ -35,10 +35,17 @@ static constexpr int32_t MIDI_BAR_W     = 50,  MIDI_BAR_H     = 8;
 static constexpr int32_t MIDI_LBL_Y     = 10;
 static constexpr int32_t MIDI_LBL_W     = 60;
 
+// USB-C port — horizontal bar on TOP edge, centered between audio IN and MIDI
+static constexpr int32_t USB_BAR_X  = 220, USB_BAR_Y = 2;
+static constexpr int32_t USB_BAR_W  = 50,  USB_BAR_H = 10;
+static constexpr int32_t USB_LBL_Y  = 13;
+static constexpr int32_t USB_LBL_W  = 52;
+
 // Colors
 static constexpr uint32_t COLOR_DISCONNECTED = 0x555555;
 static constexpr uint32_t COLOR_CONNECTED    = 0x00CC66;
 static constexpr uint32_t COLOR_MIDI_CONN    = 0x3399FF;
+static constexpr uint32_t COLOR_USB_CONN     = 0xFF9900;
 static constexpr uint32_t COLOR_VU_BG        = 0x1A1A1A;
 
 /* ── VU helpers ──────────────────────────────────────────────────────── */
@@ -122,6 +129,12 @@ void EmuJackPanel::create(lv_obj_t* parent)
                MIDI_IN_BAR_X, MIDI_IN_BAR_Y, MIDI_BAR_W, MIDI_BAR_H,
                MIDI_IN_BAR_X, MIDI_LBL_Y, MIDI_LBL_W,
                "MIDI IN", true, LV_DIR_BOTTOM);
+
+    // USB-C / UART (clickable, top edge center)
+    createJack(parent, USB,
+               USB_BAR_X, USB_BAR_Y, USB_BAR_W, USB_BAR_H,
+               USB_BAR_X, USB_LBL_Y, USB_LBL_W,
+               "USB-C", true, LV_DIR_BOTTOM);
 
     // Click anywhere on screen closes all open dropdowns
     lv_obj_add_flag(parent, LV_OBJ_FLAG_CLICKABLE);
@@ -304,7 +317,9 @@ void EmuJackPanel::applyBarStyle(Jack& jack)
     } else {
         uint32_t color;
         if (jack.connected) {
-            color = (jack.id == MIDI_IN || jack.id == MIDI_OUT) ? COLOR_MIDI_CONN : COLOR_CONNECTED;
+            if (jack.id == MIDI_IN || jack.id == MIDI_OUT) color = COLOR_MIDI_CONN;
+            else if (jack.id == USB) color = COLOR_USB_CONN;
+            else color = COLOR_CONNECTED;
         } else {
             color = COLOR_DISCONNECTED;
         }
@@ -380,7 +395,7 @@ void EmuJackPanel::setDeviceName(JackId id, const std::string& name)
     if (jack.label) {
         if (name.empty()) {
             static const char* defaults[] = {
-                "OUT 1", "OUT 2", "IN 1", "IN 2", "MIDI OUT", "MIDI IN"
+                "OUT 1", "OUT 2", "IN 1", "IN 2", "MIDI OUT", "MIDI IN", "USB-C"
             };
             lv_label_set_text(jack.label, defaults[id]);
             lv_obj_set_style_text_color(jack.label, lv_color_hex(0x999999), 0);

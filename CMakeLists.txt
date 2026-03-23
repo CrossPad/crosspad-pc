@@ -168,6 +168,7 @@ set(MAIN_SOURCES ${WIN_RESOURCES} src/mouse_cursor_icon.c src/hal/hal.c
     src/stm32_emu/EmuJackPanel.cpp
     src/stm32_emu/EmuSdCardSlot.cpp
     src/stm32_emu/KeyboardCapture.cpp
+    src/uart/PcUart.cpp
     src/crosspad_app.cpp
     src/remote/RemoteControl.cpp
     ${CROSSPAD_CORE_SOURCES}
@@ -233,6 +234,10 @@ list(APPEND MAIN_SOURCES ${CITEST_APP_SOURCES})
 # Instructions app (markdown-rendered help/shortcuts reference)
 add_subdirectory(src/apps/instructions)
 list(APPEND MAIN_SOURCES ${INSTRUCTIONS_APP_SOURCES})
+
+# Serial Monitor app (UART output viewer)
+add_subdirectory(src/apps/serial_monitor)
+list(APPEND MAIN_SOURCES ${SERIAL_MONITOR_APP_SOURCES})
 
 # Update app (version check, download, auto-update)
 add_subdirectory(src/apps/update)

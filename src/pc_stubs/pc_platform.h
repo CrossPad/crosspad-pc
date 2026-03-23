@@ -59,6 +59,12 @@ bool pc_platform_get_show_prereleases();
 /// Set whether pre-releases should be shown (persisted immediately)
 void pc_platform_set_show_prereleases(bool enabled);
 
+/// Read whether USB/UART auto-connect is enabled (default: true)
+bool pc_platform_get_usb_autoconnect();
+
+/// Set whether USB/UART auto-connect is enabled (persisted immediately)
+void pc_platform_set_usb_autoconnect(bool enabled);
+
 /// Get user profile directory path (~/.crosspad)
 const char* pc_platform_get_profile_dir();
 

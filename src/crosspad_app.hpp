@@ -9,6 +9,8 @@
  * Call after lv_init() + sdl_hal_init().
  */
 
+class PcUart;
+
 void crosspad_app_init();
 
 /// Return to the launcher main screen (destroys running app, reloads launcher)
@@ -16,3 +18,6 @@ void crosspad_app_go_home();
 
 /// Update the status bar icon showing which pad logic is currently active
 void crosspad_app_update_pad_icon();
+
+/// Access the global PcUart instance (virtual USB/UART)
+PcUart& pc_platform_get_uart();
