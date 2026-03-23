@@ -1,6 +1,9 @@
 /**
  * @file PcUpdater.cpp
- * @brief Auto-update implementation for Windows (WinHTTP download, Shell COM zip, batch replace)
+ * @brief Auto-update implementation for Windows
+ *
+ * WinHTTP for downloads, PowerShell for zip extraction, batch script for
+ * exe replacement. Supports version caching and rollback.
  */
 
 #include "updater/PcUpdater.hpp"
@@ -15,6 +18,8 @@
 #include <cstdlib>
 #include <cstring>
 
+/* ── Semver compare ──────────────────────────────────────────────────── */
+
 int compareSemver(const std::string& a, const std::string& b)
 {
     int aMaj = 0, aMin = 0, aPat = 0;
@@ -27,13 +32,70 @@ int compareSemver(const std::string& a, const std::string& b)
     return aPat - bPat;
 }
 
+/* ── Global auto-check result cache ──────────────────────────────────── */
+
+static std::mutex s_cachedMutex;
+static UpdateInfo s_cachedCheckResult;
+static bool s_hasCachedResult = false;
+
+void pc_updater_set_cached_check_result(const UpdateInfo& info)
+{
+    std::lock_guard<std::mutex> lock(s_cachedMutex);
+    s_cachedCheckResult = info;
+    s_hasCachedResult = true;
+}
+
+UpdateInfo pc_updater_get_cached_check_result()
+{
+    std::lock_guard<std::mutex> lock(s_cachedMutex);
+    return s_cachedCheckResult;
+}
+
+bool pc_updater_has_cached_result()
+{
+    std::lock_guard<std::mutex> lock(s_cachedMutex);
+    return s_hasCachedResult;
+}
+
+/* ── Helper: strip version prefix ────────────────────────────────────── */
+
+static std::string stripVersionPrefix(const std::string& tag)
+{
+    if (!tag.empty() && (tag[0] == 'v' || tag[0] == 'V'))
+        return tag.substr(1);
+    return tag;
+}
+
+/* ── Helper: parse a single release JSON object into ReleaseInfo ────── */
+
+static bool parseReleaseJson(JsonObject rel, ReleaseInfo& out, const char* currentVersion)
+{
+    const char* tag = rel["tag_name"] | "";
+    if (strlen(tag) == 0) return false;
+
+    out.tagName = tag;
+    out.version = stripVersionPrefix(tag);
+    out.releaseName = rel["name"] | "";
+    out.releaseNotes = rel["body"] | "";
+    out.isCurrent = (out.version == currentVersion);
+
+    // Find Windows zip asset
+    JsonArray assets = rel["assets"].as<JsonArray>();
+    for (JsonObject asset : assets) {
+        const char* name = asset["name"] | "";
+        if (strstr(name, "Windows") && strstr(name, ".zip")) {
+            out.downloadUrl = asset["browser_download_url"] | "";
+            out.assetSize = asset["size"] | (uint64_t)0;
+            break;
+        }
+    }
+    return !out.downloadUrl.empty();
+}
+
 #ifdef _WIN32
 
 #include <Windows.h>
 #include <winhttp.h>
-#include <shlobj.h>
-#include <shobjidl.h>
-#include <shldisp.h>
 
 #include <fstream>
 #include <filesystem>
@@ -42,7 +104,7 @@ int compareSemver(const std::string& a, const std::string& b)
 
 namespace fs = std::filesystem;
 
-/* ── Helpers ─────────────────────────────────────────────────────────── */
+/* ── WinHTTP helpers ─────────────────────────────────────────────────── */
 
 static std::wstring to_wide(const std::string& s)
 {
@@ -72,21 +134,15 @@ struct UrlParts {
 static bool parse_url(const std::string& url, UrlParts& out)
 {
     std::wstring wurl = to_wide(url);
-
     URL_COMPONENTS uc = {};
     uc.dwStructSize = sizeof(uc);
-
     wchar_t hostBuf[256] = {};
     wchar_t pathBuf[2048] = {};
     uc.lpszHostName = hostBuf;
     uc.dwHostNameLength = 256;
     uc.lpszUrlPath = pathBuf;
     uc.dwUrlPathLength = 2048;
-
-    if (!WinHttpCrackUrl(wurl.c_str(), (DWORD)wurl.size(), 0, &uc)) {
-        return false;
-    }
-
+    if (!WinHttpCrackUrl(wurl.c_str(), (DWORD)wurl.size(), 0, &uc)) return false;
     out.host = hostBuf;
     out.path = pathBuf;
     out.port = uc.nPort;
@@ -98,11 +154,46 @@ static std::string getTempUpdateDir()
 {
     wchar_t tempPath[MAX_PATH];
     GetTempPathW(MAX_PATH, tempPath);
-    std::wstring dir = std::wstring(tempPath) + L"crosspad_update";
-    return to_utf8(dir);
+    return to_utf8(std::wstring(tempPath) + L"crosspad_update");
 }
 
-/* ── Version Check ───────────────────────────────────────────────────── */
+/* ── Static helpers ──────────────────────────────────────────────────── */
+
+std::string PcUpdater::getCurrentExePath()
+{
+    wchar_t path[MAX_PATH];
+    GetModuleFileNameW(nullptr, path, MAX_PATH);
+    return to_utf8(path);
+}
+
+std::string PcUpdater::getCacheDir()
+{
+    fs::path exeDir = fs::path(getCurrentExePath()).parent_path();
+    return (exeDir / "versions").string();
+}
+
+bool PcUpdater::isCached(const std::string& version) const
+{
+    return fs::exists(getCacheDir() + "/CrossPad_v" + version + ".exe");
+}
+
+std::vector<std::string> PcUpdater::getCachedVersions() const
+{
+    std::vector<std::string> versions;
+    std::string cacheDir = getCacheDir();
+    if (!fs::exists(cacheDir)) return versions;
+    for (auto& entry : fs::directory_iterator(cacheDir)) {
+        std::string name = entry.path().filename().string();
+        // Pattern: CrossPad_v0.2.7.exe
+        if (name.find("CrossPad_v") == 0 && name.size() > 14 &&
+            name.substr(name.size() - 4) == ".exe") {
+            versions.push_back(name.substr(10, name.size() - 14));
+        }
+    }
+    return versions;
+}
+
+/* ── Version Check (latest only) ─────────────────────────────────────── */
 
 UpdateInfo PcUpdater::checkForUpdate()
 {
@@ -125,46 +216,30 @@ UpdateInfo PcUpdater::checkForUpdate()
     auto resp = http.get(req);
 
     if (!resp.success()) {
-        if (resp.statusCode == 0) {
+        if (resp.statusCode == 0)
             info.errorMessage = resp.errorMessage.empty() ? "Network error" : resp.errorMessage;
-        } else if (resp.statusCode == 404) {
+        else if (resp.statusCode == 404)
             info.errorMessage = "No releases found";
-        } else {
+        else
             info.errorMessage = "GitHub API error: HTTP " + std::to_string(resp.statusCode);
-        }
         return info;
     }
 
-    // Parse JSON response
     JsonDocument doc;
-    DeserializationError err = deserializeJson(doc, resp.body);
-    if (err) {
-        info.errorMessage = std::string("JSON parse error: ") + err.c_str();
+    if (deserializeJson(doc, resp.body)) {
+        info.errorMessage = "JSON parse error";
         return info;
     }
 
-    // Extract tag_name (e.g. "v1.2.0")
     const char* tagName = doc["tag_name"] | "";
     if (strlen(tagName) == 0) {
         info.errorMessage = "No tag_name in release";
         return info;
     }
 
-    // Strip leading 'v'
-    std::string version = tagName;
-    if (version[0] == 'v' || version[0] == 'V') {
-        version = version.substr(1);
-    }
-    info.latestVersion = version;
+    info.latestVersion = stripVersionPrefix(tagName);
+    info.releaseNotes = doc["body"] | "";
 
-    // Release notes (truncate for display)
-    const char* body = doc["body"] | "";
-    info.releaseNotes = body;
-    if (info.releaseNotes.size() > 500) {
-        info.releaseNotes = info.releaseNotes.substr(0, 500) + "...";
-    }
-
-    // Find the Windows zip asset
     JsonArray assets = doc["assets"].as<JsonArray>();
     for (JsonObject asset : assets) {
         const char* name = asset["name"] | "";
@@ -180,37 +255,56 @@ UpdateInfo PcUpdater::checkForUpdate()
         return info;
     }
 
-    // Compare versions
     info.updateAvailable = compareSemver(info.latestVersion, info.currentVersion) > 0;
 
     printf("[Updater] Current: %s, Latest: %s, Update: %s\n",
            info.currentVersion.c_str(), info.latestVersion.c_str(),
            info.updateAvailable ? "YES" : "no");
-
     return info;
 }
 
-/* ── Binary Download (WinHTTP streaming) ─────────────────────────────── */
+/* ── List Releases ───────────────────────────────────────────────────── */
 
-bool PcUpdater::downloadUpdate(const UpdateInfo& info, UpdateProgressCallback progressCb)
+std::vector<ReleaseInfo> PcUpdater::listReleases()
 {
-    if (info.downloadUrl.empty()) {
-        if (progressCb) progressCb(UpdateState::Error, 0, "No download URL");
-        return false;
+    std::vector<ReleaseInfo> releases;
+
+    auto& http = crosspad::getHttpClient();
+    if (!http.isAvailable()) return releases;
+
+    crosspad::HttpRequest req;
+    req.url = "https://api.github.com/repos/CrossPad/crosspad-pc/releases?per_page=10";
+    req.timeoutMs = 10000;
+    req.headers.push_back({"Accept", "application/vnd.github.v3+json"});
+    req.headers.push_back({"User-Agent", "CrossPad/" CROSSPAD_PC_VERSION});
+
+    auto resp = http.get(req);
+    if (!resp.success()) return releases;
+
+    JsonDocument doc;
+    if (deserializeJson(doc, resp.body)) return releases;
+
+    JsonArray arr = doc.as<JsonArray>();
+    for (JsonObject rel : arr) {
+        ReleaseInfo info;
+        if (parseReleaseJson(rel, info, CROSSPAD_PC_VERSION)) {
+            info.isCached = isCached(info.version);
+            releases.push_back(info);
+        }
     }
 
-    // Create temp directory
-    tempDir_ = getTempUpdateDir();
-    fs::create_directories(tempDir_);
+    printf("[Updater] Listed %zu releases\n", releases.size());
+    return releases;
+}
 
-    downloadPath_ = tempDir_ + "\\CrossPad-Windows-x64.zip";
-    extractDir_ = tempDir_ + "\\CrossPad";
+/* ── WinHTTP binary download helper ──────────────────────────────────── */
 
-    if (progressCb) progressCb(UpdateState::Downloading, 0, "Connecting...");
-
+static bool winHttpDownload(const std::string& url, const std::string& outputPath,
+                            uint64_t expectedSize, UpdateProgressCallback progressCb)
+{
     UrlParts parts;
-    if (!parse_url(info.downloadUrl, parts)) {
-        if (progressCb) progressCb(UpdateState::Error, 0, "Failed to parse download URL");
+    if (!parse_url(url, parts)) {
+        if (progressCb) progressCb(UpdateState::Error, 0, "Failed to parse URL");
         return false;
     }
 
@@ -222,17 +316,14 @@ bool PcUpdater::downloadUpdate(const UpdateInfo& info, UpdateProgressCallback pr
         return false;
     }
 
-    // Enable automatic redirect following (GitHub redirects to CDN)
     DWORD redirectPolicy = WINHTTP_OPTION_REDIRECT_POLICY_ALWAYS;
     WinHttpSetOption(hSession, WINHTTP_OPTION_REDIRECT_POLICY, &redirectPolicy, sizeof(redirectPolicy));
-
-    // Set timeouts (30s connect, 60s for data)
     WinHttpSetTimeouts(hSession, 30000, 30000, 60000, 60000);
 
     HINTERNET hConnect = WinHttpConnect(hSession, parts.host.c_str(), parts.port, 0);
     if (!hConnect) {
-        if (progressCb) progressCb(UpdateState::Error, 0, "Connection failed");
         WinHttpCloseHandle(hSession);
+        if (progressCb) progressCb(UpdateState::Error, 0, "Connection failed");
         return false;
     }
 
@@ -241,69 +332,49 @@ bool PcUpdater::downloadUpdate(const UpdateInfo& info, UpdateProgressCallback pr
         parts.path.c_str(), nullptr, WINHTTP_NO_REFERER,
         WINHTTP_DEFAULT_ACCEPT_TYPES, flags);
     if (!hRequest) {
-        if (progressCb) progressCb(UpdateState::Error, 0, "Request creation failed");
         WinHttpCloseHandle(hConnect);
         WinHttpCloseHandle(hSession);
+        if (progressCb) progressCb(UpdateState::Error, 0, "Request failed");
         return false;
     }
 
     if (!WinHttpSendRequest(hRequest, WINHTTP_NO_ADDITIONAL_HEADERS, 0,
-                            WINHTTP_NO_REQUEST_DATA, 0, 0, 0)) {
-        DWORD err = GetLastError();
-        if (progressCb) progressCb(UpdateState::Error, 0,
-            "Send failed (error " + std::to_string(err) + ")");
+                            WINHTTP_NO_REQUEST_DATA, 0, 0, 0) ||
+        !WinHttpReceiveResponse(hRequest, nullptr)) {
         WinHttpCloseHandle(hRequest);
         WinHttpCloseHandle(hConnect);
         WinHttpCloseHandle(hSession);
+        if (progressCb) progressCb(UpdateState::Error, 0, "HTTP request failed");
         return false;
     }
 
-    if (!WinHttpReceiveResponse(hRequest, nullptr)) {
-        DWORD err = GetLastError();
-        if (progressCb) progressCb(UpdateState::Error, 0,
-            "Receive failed (error " + std::to_string(err) + ")");
-        WinHttpCloseHandle(hRequest);
-        WinHttpCloseHandle(hConnect);
-        WinHttpCloseHandle(hSession);
-        return false;
-    }
-
-    // Check HTTP status
     DWORD statusCode = 0;
-    DWORD size = sizeof(statusCode);
-    WinHttpQueryHeaders(hRequest,
-        WINHTTP_QUERY_STATUS_CODE | WINHTTP_QUERY_FLAG_NUMBER,
-        WINHTTP_HEADER_NAME_BY_INDEX, &statusCode, &size,
-        WINHTTP_NO_HEADER_INDEX);
-
+    DWORD sz = sizeof(statusCode);
+    WinHttpQueryHeaders(hRequest, WINHTTP_QUERY_STATUS_CODE | WINHTTP_QUERY_FLAG_NUMBER,
+        WINHTTP_HEADER_NAME_BY_INDEX, &statusCode, &sz, WINHTTP_NO_HEADER_INDEX);
     if (statusCode != 200) {
-        if (progressCb) progressCb(UpdateState::Error, 0,
-            "Download HTTP " + std::to_string(statusCode));
         WinHttpCloseHandle(hRequest);
         WinHttpCloseHandle(hConnect);
         WinHttpCloseHandle(hSession);
+        if (progressCb) progressCb(UpdateState::Error, 0, "HTTP " + std::to_string(statusCode));
         return false;
     }
 
-    // Get content length if available
-    uint64_t totalSize = info.assetSize;
+    uint64_t totalSize = expectedSize;
     if (totalSize == 0) {
-        wchar_t contentLen[64] = {};
-        DWORD clSize = sizeof(contentLen);
+        wchar_t cl[64] = {};
+        DWORD clSz = sizeof(cl);
         if (WinHttpQueryHeaders(hRequest, WINHTTP_QUERY_CONTENT_LENGTH,
-                WINHTTP_HEADER_NAME_BY_INDEX, contentLen, &clSize,
-                WINHTTP_NO_HEADER_INDEX)) {
-            totalSize = _wtoi64(contentLen);
-        }
+                WINHTTP_HEADER_NAME_BY_INDEX, cl, &clSz, WINHTTP_NO_HEADER_INDEX))
+            totalSize = _wtoi64(cl);
     }
 
-    // Stream to file
-    std::ofstream outFile(downloadPath_, std::ios::binary);
+    std::ofstream outFile(outputPath, std::ios::binary);
     if (!outFile.is_open()) {
-        if (progressCb) progressCb(UpdateState::Error, 0, "Cannot create temp file");
         WinHttpCloseHandle(hRequest);
         WinHttpCloseHandle(hConnect);
         WinHttpCloseHandle(hSession);
+        if (progressCb) progressCb(UpdateState::Error, 0, "Cannot create file");
         return false;
     }
 
@@ -322,14 +393,8 @@ bool PcUpdater::downloadUpdate(const UpdateInfo& info, UpdateProgressCallback pr
             success = false;
             break;
         }
-
         outFile.write(buf.data(), bytesRead);
-        if (!outFile.good()) {
-            success = false;
-            if (progressCb) progressCb(UpdateState::Error, 0, "Disk write error");
-            break;
-        }
-
+        if (!outFile.good()) { success = false; break; }
         bytesTotal += bytesRead;
 
         if (progressCb && totalSize > 0) {
@@ -346,60 +411,153 @@ bool PcUpdater::downloadUpdate(const UpdateInfo& info, UpdateProgressCallback pr
     WinHttpCloseHandle(hConnect);
     WinHttpCloseHandle(hSession);
 
-    if (!success) {
-        fs::remove(downloadPath_);
+    if (!success) { fs::remove(outputPath); }
+    return success;
+}
+
+/* ── Download, extract, and cache ────────────────────────────────────── */
+
+static bool downloadExtractAndCache(const std::string& downloadUrl, uint64_t assetSize,
+                                     const std::string& version, const std::string& releaseNotes,
+                                     UpdateProgressCallback progressCb,
+                                     std::string& outExtractDir)
+{
+    std::string tempDir = getTempUpdateDir();
+    fs::create_directories(tempDir);
+
+    std::string zipPath = tempDir + "\\CrossPad-Windows-x64.zip";
+    std::string extractDir = tempDir + "\\CrossPad";
+
+    if (progressCb) progressCb(UpdateState::Downloading, 0, "Connecting...");
+
+    if (!winHttpDownload(downloadUrl, zipPath, assetSize, progressCb))
         return false;
-    }
 
-    printf("[Updater] Downloaded %llu bytes to %s\n", bytesTotal, downloadPath_.c_str());
-
-    // ── Extract zip ──
+    // Extract
     if (progressCb) progressCb(UpdateState::Extracting, 0, "Extracting...");
-
-    fs::create_directories(extractDir_);
-
-    // Use PowerShell to extract (simpler and more reliable than Shell COM)
+    fs::create_directories(extractDir);
     std::string cmd = "powershell -NoProfile -Command \"Expand-Archive -Path '"
-        + downloadPath_ + "' -DestinationPath '" + extractDir_ + "' -Force\"";
-
-    printf("[Updater] Extracting: %s\n", cmd.c_str());
-    int ret = system(cmd.c_str());
-
-    if (ret != 0) {
+        + zipPath + "' -DestinationPath '" + extractDir + "' -Force\"";
+    if (system(cmd.c_str()) != 0) {
         if (progressCb) progressCb(UpdateState::Error, 0, "Extraction failed");
         return false;
     }
 
-    // Verify extraction — look for CrossPad.exe in extract dir (may be nested)
+    // Find exe (may be nested)
     bool foundExe = false;
-    for (auto& entry : fs::recursive_directory_iterator(extractDir_)) {
+    for (auto& entry : fs::recursive_directory_iterator(extractDir)) {
         if (entry.path().filename() == "CrossPad.exe") {
-            // If exe is in a subdirectory, adjust extractDir_ to that subdirectory
-            if (entry.path().parent_path() != fs::path(extractDir_)) {
-                extractDir_ = entry.path().parent_path().string();
-            }
+            if (entry.path().parent_path() != fs::path(extractDir))
+                extractDir = entry.path().parent_path().string();
             foundExe = true;
             break;
         }
     }
-
     if (!foundExe) {
-        if (progressCb) progressCb(UpdateState::Error, 0, "CrossPad.exe not found in archive");
+        if (progressCb) progressCb(UpdateState::Error, 0, "CrossPad.exe not found");
         return false;
     }
 
-    if (progressCb) progressCb(UpdateState::ReadyToInstall, 100, "Ready to install");
-    printf("[Updater] Extraction complete, exe found in %s\n", extractDir_.c_str());
+    // Cache the exe and release notes
+    std::string cacheDir = PcUpdater::getCacheDir();
+    fs::create_directories(cacheDir);
+    std::string cachedExe = cacheDir + "/CrossPad_v" + version + ".exe";
+    std::error_code ec;
+    fs::copy_file(extractDir + "/CrossPad.exe", cachedExe, fs::copy_options::overwrite_existing, ec);
+    if (!ec) {
+        printf("[Updater] Cached exe: %s\n", cachedExe.c_str());
+    }
+    if (!releaseNotes.empty()) {
+        std::string cachedNotes = cacheDir + "/CrossPad_v" + version + ".md";
+        std::ofstream nf(cachedNotes);
+        if (nf.is_open()) nf << releaseNotes;
+    }
+
+    outExtractDir = extractDir;
     return true;
 }
 
-/* ── Self-Replace via Batch Script ───────────────────────────────────── */
+/* ── Public download methods ─────────────────────────────────────────── */
 
-std::string PcUpdater::getCurrentExePath()
+bool PcUpdater::downloadUpdate(const UpdateInfo& info, UpdateProgressCallback progressCb)
 {
-    wchar_t path[MAX_PATH];
-    GetModuleFileNameW(nullptr, path, MAX_PATH);
-    return to_utf8(path);
+    if (info.downloadUrl.empty()) {
+        if (progressCb) progressCb(UpdateState::Error, 0, "No download URL");
+        return false;
+    }
+
+    tempDir_ = getTempUpdateDir();
+    bool ok = downloadExtractAndCache(info.downloadUrl, info.assetSize,
+                                       info.latestVersion, info.releaseNotes,
+                                       progressCb, extractDir_);
+    if (ok && progressCb)
+        progressCb(UpdateState::ReadyToInstall, 100, "Ready to install");
+    return ok;
+}
+
+bool PcUpdater::downloadAndCache(const ReleaseInfo& release, UpdateProgressCallback progressCb)
+{
+    if (release.downloadUrl.empty()) {
+        if (progressCb) progressCb(UpdateState::Error, 0, "No download URL");
+        return false;
+    }
+
+    tempDir_ = getTempUpdateDir();
+    bool ok = downloadExtractAndCache(release.downloadUrl, release.assetSize,
+                                       release.version, release.releaseNotes,
+                                       progressCb, extractDir_);
+    if (ok && progressCb)
+        progressCb(UpdateState::ReadyToInstall, 100, "Ready to install");
+    return ok;
+}
+
+/* ── Batch script generation ─────────────────────────────────────────── */
+
+static void writeBatchScript(std::ofstream& bat, const std::string& sourceExe,
+                              const std::string& sourceDir,
+                              const std::string& exePath, const std::string& exeDir,
+                              const std::string& tempDir)
+{
+    bat << "@echo off\r\n";
+    bat << "echo Updating CrossPad...\r\n";
+    bat << "echo Waiting for CrossPad to exit...\r\n";
+    bat << "\r\n";
+
+    bat << "set RETRIES=0\r\n";
+    bat << ":retry_copy\r\n";
+    bat << "timeout /t 2 /nobreak >nul\r\n";
+    bat << "copy /y \"" << sourceExe << "\" \"" << exePath << "\" >nul 2>&1\r\n";
+    bat << "if errorlevel 1 (\r\n";
+    bat << "    set /a RETRIES+=1\r\n";
+    bat << "    if %RETRIES% lss 15 (\r\n";
+    bat << "        echo Retrying... (%RETRIES%/15)\r\n";
+    bat << "        goto retry_copy\r\n";
+    bat << "    )\r\n";
+    bat << "    echo ERROR: Failed to copy after 15 attempts\r\n";
+    bat << "    pause\r\n";
+    bat << "    exit /b 1\r\n";
+    bat << ")\r\n";
+    bat << "\r\n";
+
+    // Copy SDL2.dll if available alongside source
+    if (!sourceDir.empty()) {
+        bat << "if exist \"" << sourceDir << "\\SDL2.dll\" (\r\n";
+        bat << "    copy /y \"" << sourceDir << "\\SDL2.dll\" \"" << exeDir << "\\SDL2.dll\"\r\n";
+        bat << ")\r\n";
+        bat << "if exist \"" << sourceDir << "\\assets\" (\r\n";
+        bat << "    xcopy /e /y /q \"" << sourceDir << "\\assets\" \"" << exeDir << "\\assets\\\"\r\n";
+        bat << ")\r\n";
+        bat << "\r\n";
+    }
+
+    bat << "echo Update complete! Restarting...\r\n";
+    bat << "start \"\" \"" << exePath << "\"\r\n";
+    bat << "\r\n";
+    bat << "timeout /t 2 /nobreak >nul\r\n";
+    if (!tempDir.empty()) {
+        bat << "rmdir /s /q \"" << tempDir << "\" 2>nul\r\n";
+    }
+    bat << "exit\r\n";
 }
 
 std::string PcUpdater::prepareInstall()
@@ -411,95 +569,75 @@ std::string PcUpdater::prepareInstall()
     std::ofstream bat(batPath);
     if (!bat.is_open()) return "";
 
-    bat << "@echo off\r\n";
-    bat << "echo Updating CrossPad...\r\n";
-    bat << "echo Waiting for CrossPad to exit...\r\n";
-    bat << "\r\n";
-
-    // Retry loop — wait up to 30 seconds for the exe to become writable
-    bat << "set RETRIES=0\r\n";
-    bat << ":retry_copy\r\n";
-    bat << "timeout /t 2 /nobreak >nul\r\n";
-    bat << "copy /y \"" << extractDir_ << "\\CrossPad.exe\" \"" << exePath << "\" >nul 2>&1\r\n";
-    bat << "if errorlevel 1 (\r\n";
-    bat << "    set /a RETRIES+=1\r\n";
-    bat << "    if %RETRIES% lss 15 (\r\n";
-    bat << "        echo Retrying... (%RETRIES%/15)\r\n";
-    bat << "        goto retry_copy\r\n";
-    bat << "    )\r\n";
-    bat << "    echo ERROR: Failed to copy CrossPad.exe after 15 attempts\r\n";
-    bat << "    pause\r\n";
-    bat << "    exit /b 1\r\n";
-    bat << ")\r\n";
-    bat << "\r\n";
-
-    // Copy SDL2.dll if present
-    bat << "if exist \"" << extractDir_ << "\\SDL2.dll\" (\r\n";
-    bat << "    copy /y \"" << extractDir_ << "\\SDL2.dll\" \"" << exeDir << "\\SDL2.dll\"\r\n";
-    bat << ")\r\n";
-    bat << "\r\n";
-
-    // Copy assets if present
-    bat << "if exist \"" << extractDir_ << "\\assets\" (\r\n";
-    bat << "    xcopy /e /y /q \"" << extractDir_ << "\\assets\" \"" << exeDir << "\\assets\\\"\r\n";
-    bat << ")\r\n";
-    bat << "\r\n";
-
-    // Restart first, then cleanup (bat is inside tempDir so rmdir must be last)
-    bat << "echo Update complete! Restarting...\r\n";
-    bat << "start \"\" \"" << exePath << "\"\r\n";
-    bat << "\r\n";
-    bat << "timeout /t 2 /nobreak >nul\r\n";
-    bat << "rmdir /s /q \"" << tempDir_ << "\" 2>nul\r\n";
-    bat << "exit\r\n";
-
+    writeBatchScript(bat, extractDir_ + "\\CrossPad.exe", extractDir_,
+                     exePath, exeDir, tempDir_);
     bat.close();
     printf("[Updater] Batch script written to %s\n", batPath.c_str());
     return batPath;
 }
 
-void PcUpdater::installAndRestart()
+std::string PcUpdater::prepareInstallFromCache(const std::string& version)
 {
-    std::string batPath = prepareInstall();
-    if (batPath.empty()) {
-        printf("[Updater] ERROR: Failed to write update script\n");
-        return;
+    std::string cachedExe = getCacheDir() + "/CrossPad_v" + version + ".exe";
+    if (!fs::exists(cachedExe)) {
+        printf("[Updater] Cached exe not found: %s\n", cachedExe.c_str());
+        return "";
     }
 
-    // Launch the batch script as a detached process
-    std::wstring wBatPath = to_wide(batPath);
+    std::string exePath = getCurrentExePath();
+    std::string exeDir = fs::path(exePath).parent_path().string();
+    std::string tempDir = getTempUpdateDir();
+    fs::create_directories(tempDir);
+    std::string batPath = tempDir + "\\update.bat";
 
+    std::ofstream bat(batPath);
+    if (!bat.is_open()) return "";
+
+    // For cache install, source is just the cached exe (no SDL2/assets)
+    writeBatchScript(bat, cachedExe, "", exePath, exeDir, tempDir);
+    bat.close();
+    printf("[Updater] Cache install script written to %s\n", batPath.c_str());
+    return batPath;
+}
+
+/* ── Launch batch and exit ───────────────────────────────────────────── */
+
+static void launchBatAndExit(const std::string& batPath)
+{
+    std::wstring wBatPath = to_wide(batPath);
     STARTUPINFOW si = {};
     si.cb = sizeof(si);
     PROCESS_INFORMATION pi = {};
-
-    // Use cmd.exe /c to run the batch file
     std::wstring cmdLine = L"cmd.exe /c \"" + wBatPath + L"\"";
 
-    BOOL ok = CreateProcessW(
-        nullptr,
-        cmdLine.data(),
-        nullptr, nullptr,
-        FALSE,
-        CREATE_NEW_CONSOLE,
-        nullptr, nullptr,
-        &si, &pi
-    );
-
+    BOOL ok = CreateProcessW(nullptr, cmdLine.data(), nullptr, nullptr,
+        FALSE, CREATE_NEW_CONSOLE, nullptr, nullptr, &si, &pi);
     if (ok) {
         CloseHandle(pi.hThread);
         CloseHandle(pi.hProcess);
         printf("[Updater] Update script launched, exiting...\n");
     } else {
-        printf("[Updater] ERROR: Failed to launch update script (error %lu)\n", GetLastError());
+        printf("[Updater] ERROR: Failed to launch script (error %lu)\n", GetLastError());
         return;
     }
-
-    // Graceful shutdown — same path as the Power OFF button
     crosspad_gui::getGuiPlatform().sendPowerOff();
 }
 
-#else // Non-Windows stub
+void PcUpdater::installAndRestart()
+{
+    std::string batPath = prepareInstall();
+    if (batPath.empty()) return;
+    launchBatAndExit(batPath);
+}
+
+void PcUpdater::installCachedAndRestart(const std::string& version)
+{
+    std::string batPath = prepareInstallFromCache(version);
+    if (batPath.empty()) return;
+    launchBatAndExit(batPath);
+}
+
+#else // ── Non-Windows stubs ─────────────────────────────────────────── */
 
 UpdateInfo PcUpdater::checkForUpdate()
 {
@@ -509,14 +647,27 @@ UpdateInfo PcUpdater::checkForUpdate()
     return info;
 }
 
+std::vector<ReleaseInfo> PcUpdater::listReleases() { return {}; }
+
 bool PcUpdater::downloadUpdate(const UpdateInfo&, UpdateProgressCallback cb)
 {
     if (cb) cb(UpdateState::Error, 0, "Not available on this platform");
     return false;
 }
 
+bool PcUpdater::downloadAndCache(const ReleaseInfo&, UpdateProgressCallback cb)
+{
+    if (cb) cb(UpdateState::Error, 0, "Not available on this platform");
+    return false;
+}
+
 std::string PcUpdater::getCurrentExePath() { return ""; }
+std::string PcUpdater::getCacheDir() { return ""; }
+bool PcUpdater::isCached(const std::string&) const { return false; }
+std::vector<std::string> PcUpdater::getCachedVersions() const { return {}; }
 std::string PcUpdater::prepareInstall() { return ""; }
+std::string PcUpdater::prepareInstallFromCache(const std::string&) { return ""; }
 void PcUpdater::installAndRestart() {}
+void PcUpdater::installCachedAndRestart(const std::string&) {}
 
 #endif // _WIN32

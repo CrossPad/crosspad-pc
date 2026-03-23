@@ -540,6 +540,15 @@ const char* pc_platform_get_profile_dir() {
     return s_kvStore.getProfileDir().c_str();
 }
 
+// Auto-update check setting (PC-only, persisted in preferences.json)
+bool pc_platform_get_auto_check_updates() {
+    return s_kvStore.readBool("cfg_system", "auto_check_upd", true);
+}
+
+void pc_platform_set_auto_check_updates(bool enabled) {
+    s_kvStore.saveBool("cfg_system", "auto_check_upd", enabled);
+}
+
 // =============================================================================
 // Virtual SD card path management
 // =============================================================================

@@ -234,9 +234,9 @@ list(APPEND MAIN_SOURCES ${CITEST_APP_SOURCES})
 add_subdirectory(src/apps/instructions)
 list(APPEND MAIN_SOURCES ${INSTRUCTIONS_APP_SOURCES})
 
-# Net Status app (HTTP client test/verification)
-add_subdirectory(src/apps/netstatus)
-list(APPEND MAIN_SOURCES ${NETSTATUS_APP_SOURCES})
+# Update app (version check, download, auto-update)
+add_subdirectory(src/apps/update)
+list(APPEND MAIN_SOURCES ${UPDATE_APP_SOURCES})
 
 # Updater module (version check, download, self-update)
 list(APPEND MAIN_SOURCES src/updater/PcUpdater.cpp)

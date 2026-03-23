@@ -47,6 +47,12 @@ void pc_http_client_init();
 /// Save current CrosspadSettings to ~/.crosspad/preferences.json
 void pc_platform_save_settings();
 
+/// Read whether auto-update check is enabled (default: true)
+bool pc_platform_get_auto_check_updates();
+
+/// Set whether auto-update check is enabled (persisted immediately)
+void pc_platform_set_auto_check_updates(bool enabled);
+
 /// Get user profile directory path (~/.crosspad)
 const char* pc_platform_get_profile_dir();
 

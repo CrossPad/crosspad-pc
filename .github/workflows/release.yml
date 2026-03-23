@@ -174,3 +174,31 @@ jobs:
           files: |
             CrossPad-Windows-x64.zip
             CrossPad-Linux-x64.tar.gz
+
+      - name: Detect release type
+        id: release_type
+        run: |
+          TAG="${{ steps.tag.outputs.name }}"
+          if echo "$TAG" | grep -qiE 'nightly|alpha|beta|rc|dev|pre'; then
+            echo "type=nightly" >> $GITHUB_OUTPUT
+            echo "label=🌙 Nightly" >> $GITHUB_OUTPUT
+            echo "color=16750848" >> $GITHUB_OUTPUT
+            echo "role_id=${{ vars.DISCORD_ROLE_NIGHTLY }}" >> $GITHUB_OUTPUT
+          else
+            echo "type=stable" >> $GITHUB_OUTPUT
+            echo "label=✅ Stable" >> $GITHUB_OUTPUT
+            echo "color=5814783" >> $GITHUB_OUTPUT
+            echo "role_id=${{ vars.DISCORD_ROLE_STABLE }}" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Notify Discord
+        if: success()
+        run: |
+          ROLE_ID="${{ steps.release_type.outputs.role_id }}"
+          MENTION=""
+          if [ -n "$ROLE_ID" ]; then
+            MENTION="<@&${ROLE_ID}>"
+          fi
+          curl -H "Content-Type: application/json" \
+            -d "{\"content\":\"${MENTION}\",\"embeds\":[{\"title\":\"CrossPad PC ${{ steps.tag.outputs.name }} released!\",\"url\":\"https://github.com/${{ github.repository }}/releases/tag/${{ steps.tag.outputs.name }}\",\"color\":${{ steps.release_type.outputs.color }},\"fields\":[{\"name\":\"Type\",\"value\":\"${{ steps.release_type.outputs.label }}\",\"inline\":true},{\"name\":\"Platform\",\"value\":\"Windows x64, Linux x64\",\"inline\":true}]}]}" \
+            "${{ secrets.DISCORD_RELEASE_WEBHOOK }}"

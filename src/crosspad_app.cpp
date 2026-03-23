@@ -23,6 +23,7 @@
 
 #include "pc_stubs/pc_platform.h"
 #include "pc_stubs/PcApp.hpp"
+#include "updater/PcUpdater.hpp"
 
 // crosspad-core
 #include "crosspad/app/AppRegistry.hpp"
@@ -522,6 +523,17 @@ void crosspad_app_init()
     InitializeOrchestrator();
     crosspad_gui::AppOrchestrator::getInstance().populateApps(app_c);
     LoadMainScreen(lcdContainer);
+
+    /* ── Auto-check for updates (background) ─────────────────────────── */
+    if (pc_platform_get_auto_check_updates()) {
+        std::thread([]() {
+            PcUpdater updater;
+            auto info = updater.checkForUpdate();
+            pc_updater_set_cached_check_result(info);
+            if (info.updateAvailable)
+                printf("[Updater] Update available: v%s\n", info.latestVersion.c_str());
+        }).detach();
+    }
 
     /* ── Jack panel wiring ────────────────────────────────────────────── */
     {
