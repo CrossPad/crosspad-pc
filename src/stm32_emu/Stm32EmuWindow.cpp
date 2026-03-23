@@ -11,6 +11,7 @@
 
 #include <cstdio>
 #include <cstdint>
+#include <cstdlib>
 
 #include <SDL2/SDL.h>
 #include "crosspad-gui/platform/IGuiPlatform.h"
@@ -27,6 +28,13 @@ static int sdlEventWatcher(void* userdata, SDL_Event* event)
         bool isRepeat = (event->key.repeat != 0);
         if (self->getKeyboardCapture().handleKey(event->key.keysym.sym, pressed, isRepeat))
             return 0;  // consumed — don't pass to LVGL
+    }
+
+    // Window close — use _exit() to avoid abort() from detached FreeRTOS threads
+    if (event->type == SDL_QUIT) {
+        printf("[PC] Window closed — exiting\n");
+        fflush(stdout);
+        _exit(0);
     }
 
     // Encoder: mouse wheel + middle click
