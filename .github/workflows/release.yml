@@ -230,12 +230,33 @@ jobs:
 
       - name: Notify Discord
         if: success()
+        env:
+          TAG_NAME: ${{ steps.tag.outputs.name }}
+          RELEASE_LABEL: ${{ steps.release_type.outputs.label }}
+          RELEASE_COLOR: ${{ steps.release_type.outputs.color }}
+          ROLE_ID: ${{ steps.release_type.outputs.role_id }}
+          WEBHOOK_URL: ${{ secrets.DISCORD_RELEASE_WEBHOOK }}
         run: |
-          ROLE_ID="${{ steps.release_type.outputs.role_id }}"
           MENTION=""
           if [ -n "$ROLE_ID" ]; then
             MENTION="<@&${ROLE_ID}>"
           fi
-          curl -H "Content-Type: application/json" \
-            -d "{\"content\":\"${MENTION}\",\"embeds\":[{\"title\":\"CrossPad PC ${{ steps.tag.outputs.name }} released!\",\"url\":\"https://github.com/${{ github.repository }}/releases/tag/${{ steps.tag.outputs.name }}\",\"color\":${{ steps.release_type.outputs.color }},\"fields\":[{\"name\":\"Type\",\"value\":\"${{ steps.release_type.outputs.label }}\",\"inline\":true},{\"name\":\"Platform\",\"value\":\"Windows x64, Linux x64\",\"inline\":true}]}]}" \
-            "${{ secrets.DISCORD_RELEASE_WEBHOOK }}"
+          PAYLOAD=$(jq -n \
+            --arg content "$MENTION" \
+            --arg title "CrossPad PC ${TAG_NAME} released!" \
+            --arg url "https://github.com/${{ github.repository }}/releases/tag/${TAG_NAME}" \
+            --argjson color "${RELEASE_COLOR}" \
+            --arg label "$RELEASE_LABEL" \
+            '{
+              content: $content,
+              embeds: [{
+                title: $title,
+                url: $url,
+                color: $color,
+                fields: [
+                  { name: "Type", value: $label, inline: true },
+                  { name: "Platform", value: "Windows x64, Linux x64", inline: true }
+                ]
+              }]
+            }')
+          curl -H "Content-Type: application/json" -d "$PAYLOAD" "$WEBHOOK_URL"
