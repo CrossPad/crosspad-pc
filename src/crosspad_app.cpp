@@ -375,13 +375,13 @@ void crosspad_app_init()
         int outPort = findMidiPortByName(s_devicePrefs.midiOut, true);
         int inPort  = findMidiPortByName(s_devicePrefs.midiIn, false);
 
-        if (outPort >= 0 || inPort >= 0) {
-            // We have saved preferences — connect to those specific ports
-            midi.begin(outPort >= 0 ? (unsigned)outPort : 0,
-                       inPort >= 0  ? (unsigned)inPort  : 0);
+        if (outPort >= 0 && inPort >= 0) {
+            // Both saved prefs found — connect to those specific ports
+            midi.begin((unsigned)outPort, (unsigned)inPort);
+            midi.setAutoConnectKeyword("CrossPad");
             printf("[MIDI] Connected from saved prefs: out=%d in=%d\n", outPort, inPort);
         } else {
-            // No saved prefs — use auto-connect keyword
+            // Missing or stale prefs — use auto-connect keyword
             midi.beginAutoConnect("CrossPad");
         }
         crosspad::getPlatformServices().setMidiOutput(&midi);
@@ -432,7 +432,6 @@ void crosspad_app_init()
         if (needsReconnect && !s_midiReconnecting.load()) {
             s_midiReconnecting.store(true);
             std::thread([]() {
-                printf("[MIDI] Attempting reconnect (background)...\n");
                 midi.reconnect();
                 s_midiReconnecting.store(false);
             }).detach();
@@ -594,37 +593,60 @@ void crosspad_app_init()
 #endif
 
 #ifdef USE_MIDI
-        // MIDI jack labels — show currently connected ports
-        if (midi.isOutputOpen()) {
-            RtMidiOut probe;
-            for (unsigned int i = 0; i < probe.getPortCount(); i++) {
-                jp.setDeviceName(EmuJackPanel::MIDI_OUT, probe.getPortName(i));
-                break;
-            }
-            jp.setConnected(EmuJackPanel::MIDI_OUT, true);
-        }
-        if (midi.isInputOpen()) {
-            RtMidiIn probe;
-            for (unsigned int i = 0; i < probe.getPortCount(); i++) {
-                jp.setDeviceName(EmuJackPanel::MIDI_IN, probe.getPortName(i));
-                break;
-            }
-            jp.setConnected(EmuJackPanel::MIDI_IN, true);
-        }
-
-        // Populate MIDI port lists
+        // Populate MIDI port lists and set selected device
         {
             std::vector<std::string> midiOutPorts;
             midiOutPorts.push_back("(None)");
-            for (unsigned int i = 0; i < midi.getOutputPortCount(); i++)
-                midiOutPorts.push_back(midi.getOutputPortName(i));
-            jp.setDeviceList(EmuJackPanel::MIDI_OUT, midiOutPorts, 0);
+            int outSelected = 0;
+            for (unsigned int i = 0; i < midi.getOutputPortCount(); i++) {
+                std::string name = midi.getOutputPortName(i);
+                midiOutPorts.push_back(name);
+                if (midi.isOutputOpen() && name == s_devicePrefs.midiOut)
+                    outSelected = (int)i + 1; // +1 for "(None)" at index 0
+            }
+            // If no saved pref match but output is open, find by auto-connect
+            if (outSelected == 0 && midi.isOutputOpen()) {
+                for (unsigned int i = 0; i < midi.getOutputPortCount(); i++) {
+                    std::string name = midi.getOutputPortName(i);
+                    std::string lower = name;
+                    std::transform(lower.begin(), lower.end(), lower.begin(), ::tolower);
+                    if (lower.find("crosspad") != std::string::npos) {
+                        outSelected = (int)i + 1;
+                        break;
+                    }
+                }
+            }
+            jp.setDeviceList(EmuJackPanel::MIDI_OUT, midiOutPorts, outSelected);
+            if (outSelected > 0) {
+                jp.setDeviceName(EmuJackPanel::MIDI_OUT, midiOutPorts[outSelected]);
+                jp.setConnected(EmuJackPanel::MIDI_OUT, true);
+            }
 
             std::vector<std::string> midiInPorts;
             midiInPorts.push_back("(None)");
-            for (unsigned int i = 0; i < midi.getInputPortCount(); i++)
-                midiInPorts.push_back(midi.getInputPortName(i));
-            jp.setDeviceList(EmuJackPanel::MIDI_IN, midiInPorts, 0);
+            int inSelected = 0;
+            for (unsigned int i = 0; i < midi.getInputPortCount(); i++) {
+                std::string name = midi.getInputPortName(i);
+                midiInPorts.push_back(name);
+                if (midi.isInputOpen() && name == s_devicePrefs.midiIn)
+                    inSelected = (int)i + 1;
+            }
+            if (inSelected == 0 && midi.isInputOpen()) {
+                for (unsigned int i = 0; i < midi.getInputPortCount(); i++) {
+                    std::string name = midi.getInputPortName(i);
+                    std::string lower = name;
+                    std::transform(lower.begin(), lower.end(), lower.begin(), ::tolower);
+                    if (lower.find("crosspad") != std::string::npos) {
+                        inSelected = (int)i + 1;
+                        break;
+                    }
+                }
+            }
+            jp.setDeviceList(EmuJackPanel::MIDI_IN, midiInPorts, inSelected);
+            if (inSelected > 0) {
+                jp.setDeviceName(EmuJackPanel::MIDI_IN, midiInPorts[inSelected]);
+                jp.setConnected(EmuJackPanel::MIDI_IN, true);
+            }
         }
 #endif
 
@@ -741,12 +763,14 @@ void crosspad_app_init()
                     jp.setDeviceName(EmuJackPanel::MIDI_OUT, "");
                     s_devicePrefs.midiOut.clear();
                 } else {
-                    unsigned int portIdx = deviceIndex - 1;
+                    unsigned int newOut = deviceIndex - 1;
+                    // Preserve current input port
+                    int curIn = findMidiPortByName(s_devicePrefs.midiIn, false);
                     midi.end();
-                    midi.begin(portIdx, 0);
+                    midi.begin(newOut, curIn >= 0 ? (unsigned)curIn : 0);
                     jp.setConnected(EmuJackPanel::MIDI_OUT, midi.isOutputOpen());
                     if (midi.isOutputOpen()) {
-                        std::string name = midi.getOutputPortName(portIdx);
+                        std::string name = midi.getOutputPortName(newOut);
                         jp.setDeviceName(EmuJackPanel::MIDI_OUT, name);
                         s_devicePrefs.midiOut = name;
                     }
@@ -761,12 +785,14 @@ void crosspad_app_init()
                     jp.setDeviceName(EmuJackPanel::MIDI_IN, "");
                     s_devicePrefs.midiIn.clear();
                 } else {
-                    unsigned int portIdx = deviceIndex - 1;
+                    unsigned int newIn = deviceIndex - 1;
+                    // Preserve current output port
+                    int curOut = findMidiPortByName(s_devicePrefs.midiOut, true);
                     midi.end();
-                    midi.begin(0, portIdx);
+                    midi.begin(curOut >= 0 ? (unsigned)curOut : 0, newIn);
                     jp.setConnected(EmuJackPanel::MIDI_IN, midi.isInputOpen());
                     if (midi.isInputOpen()) {
-                        std::string name = midi.getInputPortName(portIdx);
+                        std::string name = midi.getInputPortName(newIn);
                         jp.setDeviceName(EmuJackPanel::MIDI_IN, name);
                         s_devicePrefs.midiIn = name;
                     }

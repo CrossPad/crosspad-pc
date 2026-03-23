@@ -366,6 +366,13 @@ bool PcMidi::isInputOpen() const
     return inputOpen_;
 }
 
+void PcMidi::setAutoConnectKeyword(const std::string& keyword)
+{
+    autoConnectKeyword_ = keyword;
+    // Mark as found if already connected (e.g. connected via saved prefs)
+    autoConnectFound_ = (outputOpen_ || inputOpen_);
+}
+
 bool PcMidi::isKeywordConnected() const
 {
     return autoConnectFound_ && (outputOpen_ || inputOpen_);

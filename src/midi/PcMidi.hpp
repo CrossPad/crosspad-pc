@@ -91,6 +91,9 @@ public:
     bool isOutputOpen() const;
     bool isInputOpen() const;
 
+    /// Set the keyword used by reconnect() without triggering a connection.
+    void setAutoConnectKeyword(const std::string& keyword);
+
     /// Returns true if the last beginAutoConnect() found a port matching the keyword.
     bool isKeywordConnected() const;
 
