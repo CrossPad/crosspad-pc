@@ -150,16 +150,16 @@ jobs:
           name: CrossPad-Linux-x64
           path: CrossPad-Linux-x64
 
-      - name: Create archives
-        run: |
-          cd CrossPad-Windows-x64 && zip -r ../CrossPad-Windows-x64.zip . && cd ..
-          tar -czf CrossPad-Linux-x64.tar.gz -C CrossPad-Linux-x64 .
-
       - name: Checkout (for changelog generation)
         uses: actions/checkout@v4
         with:
           fetch-depth: 0
           token: ${{ secrets.SUBMODULE_PAT }}
+
+      - name: Create archives
+        run: |
+          cd CrossPad-Windows-x64 && zip -r ../CrossPad-Windows-x64.zip . && cd ..
+          tar -czf CrossPad-Linux-x64.tar.gz -C CrossPad-Linux-x64 .
 
       - name: Determine tag and stability
         id: tag
