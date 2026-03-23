@@ -150,16 +150,17 @@ jobs:
           name: CrossPad-Linux-x64
           path: CrossPad-Linux-x64
 
-      - name: Checkout (for changelog generation)
-        uses: actions/checkout@v4
-        with:
-          fetch-depth: 0
-          token: ${{ secrets.SUBMODULE_PAT }}
-
       - name: Create archives
         run: |
           cd CrossPad-Windows-x64 && zip -r ../CrossPad-Windows-x64.zip . && cd ..
           tar -czf CrossPad-Linux-x64.tar.gz -C CrossPad-Linux-x64 .
+
+      - name: Checkout (for changelog generation)
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          path: repo
+          token: ${{ secrets.SUBMODULE_PAT }}
 
       - name: Determine tag and stability
         id: tag
@@ -183,14 +184,12 @@ jobs:
         run: |
           TAG="${{ steps.tag.outputs.name }}"
           # Find previous tag
-          PREV_TAG=$(git tag --sort=-v:refname | grep -v "^${TAG}$" | head -1)
+          PREV_TAG=$(git -C repo tag --sort=-v:refname | grep -v "^${TAG}$" | head -1)
           if [ -z "$PREV_TAG" ]; then
-            # First release — use all commits
-            CHANGELOG=$(git log --pretty=format:"- %s" HEAD | head -30)
+            CHANGELOG=$(git -C repo log --pretty=format:"- %s" HEAD | head -30)
           else
-            CHANGELOG=$(git log --pretty=format:"- %s" "${PREV_TAG}..${TAG}" 2>/dev/null || git log --pretty=format:"- %s" HEAD | head -30)
+            CHANGELOG=$(git -C repo log --pretty=format:"- %s" "${PREV_TAG}..${TAG}" 2>/dev/null || git -C repo log --pretty=format:"- %s" HEAD | head -30)
           fi
-          # Write to file (multi-line safe)
           {
             echo "## What's Changed"
             echo ""
