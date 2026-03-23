@@ -34,7 +34,7 @@ static int sdlEventWatcher(void* userdata, SDL_Event* event)
     if (event->type == SDL_QUIT) {
         printf("[PC] Window closed — exiting\n");
         fflush(stdout);
-        _exit(0);
+        _Exit(0);
     }
 
     // Encoder: mouse wheel + middle click
@@ -74,7 +74,7 @@ static constexpr int32_t GRID_H   = crosspad_gui::VirtualPadGrid::gridHeight(PAD
 
 // LCD centered horizontally in window
 static constexpr int32_t LCD_X = (Stm32EmuWindow::WIN_W - LCD_W) / 2;
-static constexpr int32_t LCD_Y = 40;
+static constexpr int32_t LCD_Y = 58;
 
 // Encoder to the right of LCD
 static constexpr int32_t ENC_SIZE = 60;
@@ -251,44 +251,48 @@ void Stm32EmuWindow::onUpdateTimer(lv_timer_t* t)
 
 /* ── Keyboard capture toggle button ───────────────────────────────────── */
 
-// Position: left edge, below Audio OUT2 jack (OUT2 is at y=210, h=50)
-static constexpr int32_t KB_BTN_W = 40;
-static constexpr int32_t KB_BTN_H = 50;
-static constexpr int32_t KB_BTN_X = 5;
-static constexpr int32_t KB_BTN_Y = 320;
+// Position: left edge, vertically centered between LCD bottom and pad grid top
+static constexpr int32_t KB_BTN_DIA = 30;
+static constexpr int32_t KB_BTN_CX  = 22;  // aligned with corner screws
+static constexpr int32_t KB_BTN_CY  = 50 + LCD_Y + LCD_H + (GRID_Y - (LCD_Y + LCD_H)) / 2;
 
 void Stm32EmuWindow::buildKeyboardButton(lv_obj_t* parent)
 {
     kbButton_ = lv_obj_create(parent);
-    lv_obj_set_pos(kbButton_, KB_BTN_X, KB_BTN_Y);
-    lv_obj_set_size(kbButton_, KB_BTN_W, KB_BTN_H);
+    lv_obj_set_pos(kbButton_, KB_BTN_CX - KB_BTN_DIA / 2, KB_BTN_CY - KB_BTN_DIA / 2);
+    lv_obj_set_size(kbButton_, KB_BTN_DIA, KB_BTN_DIA);
 
-    lv_obj_set_style_radius(kbButton_, 6, 0);
+    lv_obj_set_style_radius(kbButton_, LV_RADIUS_CIRCLE, 0);
     lv_obj_set_style_bg_color(kbButton_, lv_color_hex(0x2A2A2A), 0);
     lv_obj_set_style_bg_opa(kbButton_, LV_OPA_COVER, 0);
-    lv_obj_set_style_border_width(kbButton_, 1, 0);
-    lv_obj_set_style_border_color(kbButton_, lv_color_hex(0x555555), 0);
-    lv_obj_set_style_pad_all(kbButton_, 2, 0);
+    lv_obj_set_style_border_width(kbButton_, 2, 0);
+    lv_obj_set_style_border_color(kbButton_, lv_color_hex(0x505050), 0);
+    lv_obj_set_style_pad_all(kbButton_, 0, 0);
+    lv_obj_set_style_shadow_width(kbButton_, 0, 0);
 
     lv_obj_add_flag(kbButton_, LV_OBJ_FLAG_CLICKABLE);
     lv_obj_remove_flag(kbButton_, LV_OBJ_FLAG_SCROLLABLE);
+    lv_obj_remove_flag(kbButton_, LV_OBJ_FLAG_CLICK_FOCUSABLE);
+    lv_group_remove_obj(kbButton_);
 
     // Pressed visual feedback
-    lv_obj_set_style_bg_color(kbButton_, lv_color_hex(0x444444), LV_STATE_PRESSED);
+    lv_obj_set_style_bg_opa(kbButton_, LV_OPA_70, LV_STATE_PRESSED);
 
-    // Keyboard icon (using Unicode keyboard symbol ⌨ approximation)
+    // Keyboard icon centered
     kbIcon_ = lv_label_create(kbButton_);
     lv_label_set_text(kbIcon_, LV_SYMBOL_KEYBOARD);
-    lv_obj_set_style_text_font(kbIcon_, &lv_font_montserrat_16, 0);
+    lv_obj_set_style_text_font(kbIcon_, &lv_font_montserrat_14, 0);
     lv_obj_set_style_text_color(kbIcon_, lv_color_hex(0x666666), 0);
-    lv_obj_align(kbIcon_, LV_ALIGN_TOP_MID, 0, 4);
+    lv_obj_center(kbIcon_);
 
-    // Mode label below icon
-    kbModeLabel_ = lv_label_create(kbButton_);
+    // Mode label below the button (outside)
+    kbModeLabel_ = lv_label_create(parent);
     lv_label_set_text(kbModeLabel_, "OFF");
     lv_obj_set_style_text_font(kbModeLabel_, &lv_font_montserrat_10, 0);
-    lv_obj_set_style_text_color(kbModeLabel_, lv_color_hex(0x666666), 0);
-    lv_obj_align(kbModeLabel_, LV_ALIGN_BOTTOM_MID, 0, -2);
+    lv_obj_set_style_text_color(kbModeLabel_, lv_color_hex(0x555555), 0);
+    lv_obj_set_style_text_align(kbModeLabel_, LV_TEXT_ALIGN_CENTER, 0);
+    lv_obj_set_width(kbModeLabel_, 40);
+    lv_obj_set_pos(kbModeLabel_, KB_BTN_CX - 20, KB_BTN_CY + KB_BTN_DIA / 2 + 2);
 
     // Click callback
     lv_obj_add_event_cb(kbButton_, onKbButtonClicked, LV_EVENT_CLICKED, this);
@@ -303,19 +307,28 @@ void Stm32EmuWindow::updateKeyboardButtonVisual()
     switch (mode) {
         case KeyboardCapture::Mode::Off:
             lv_obj_set_style_text_color(kbIcon_, lv_color_hex(0x666666), 0);
-            lv_obj_set_style_border_color(kbButton_, lv_color_hex(0x555555), 0);
+            lv_obj_set_style_border_color(kbButton_, lv_color_hex(0x505050), 0);
+            lv_obj_set_style_shadow_width(kbButton_, 0, 0);
             lv_label_set_text(kbModeLabel_, "OFF");
-            lv_obj_set_style_text_color(kbModeLabel_, lv_color_hex(0x666666), 0);
+            lv_obj_set_style_text_color(kbModeLabel_, lv_color_hex(0x555555), 0);
             break;
         case KeyboardCapture::Mode::Focus:
             lv_obj_set_style_text_color(kbIcon_, lv_color_hex(0x00CC66), 0);
             lv_obj_set_style_border_color(kbButton_, lv_color_hex(0x00CC66), 0);
+            lv_obj_set_style_shadow_width(kbButton_, 12, 0);
+            lv_obj_set_style_shadow_color(kbButton_, lv_color_hex(0x00CC66), 0);
+            lv_obj_set_style_shadow_opa(kbButton_, LV_OPA_40, 0);
+            lv_obj_set_style_shadow_spread(kbButton_, 1, 0);
             lv_label_set_text(kbModeLabel_, "FOCUS");
             lv_obj_set_style_text_color(kbModeLabel_, lv_color_hex(0x00CC66), 0);
             break;
         case KeyboardCapture::Mode::Global:
             lv_obj_set_style_text_color(kbIcon_, lv_color_hex(0xFF6600), 0);
             lv_obj_set_style_border_color(kbButton_, lv_color_hex(0xFF6600), 0);
+            lv_obj_set_style_shadow_width(kbButton_, 12, 0);
+            lv_obj_set_style_shadow_color(kbButton_, lv_color_hex(0xFF6600), 0);
+            lv_obj_set_style_shadow_opa(kbButton_, LV_OPA_40, 0);
+            lv_obj_set_style_shadow_spread(kbButton_, 1, 0);
             lv_label_set_text(kbModeLabel_, "GLOBAL");
             lv_obj_set_style_text_color(kbModeLabel_, lv_color_hex(0xFF6600), 0);
             break;
