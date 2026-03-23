@@ -19,7 +19,7 @@
 #include <crosspad/settings/CrosspadSettings.hpp>
 #include "crosspad-gui/platform/IGuiPlatform.h"
 
-#include "CrosspadPcVersion.hpp"
+#include "crosspad_pc_version.h"
 #include <crosspad/CrosspadCoreVersion.hpp>
 #include <crosspad-gui/CrosspadGuiVersion.hpp>
 

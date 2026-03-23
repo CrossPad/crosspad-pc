@@ -59,7 +59,7 @@ jobs:
           -DCMAKE_TOOLCHAIN_FILE="${{ env.RUNVCPKG_VCPKG_ROOT }}/scripts/buildsystems/vcpkg.cmake"
           -DCMAKE_BUILD_TYPE=Release
           -DBUILD_TESTING=OFF
-          -DCROSSPAD_VERSION_OVERRIDE=${{ steps.version.outputs.version }}
+          "-DCROSSPAD_VERSION_OVERRIDE=${{ steps.version.outputs.version }}"
 
       - name: Build
         run: cmake --build build
