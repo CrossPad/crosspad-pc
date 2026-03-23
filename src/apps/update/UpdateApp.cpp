@@ -144,25 +144,32 @@ static void build_version_list()
             // Store index in user data for click handler
             lv_obj_add_event_cb(btn, [](lv_event_t* e) {
                 int idx = (int)(uintptr_t)lv_event_get_user_data(e);
-                std::lock_guard<std::mutex> lk(s_releasesMutex);
-                if (idx < 0 || idx >= (int)s_releases.size()) return;
-                auto rel = s_releases[idx]; // copy
-                lk.~lock_guard(); // release lock before blocking ops
+                ReleaseInfo rel;
+                {
+                    std::lock_guard<std::mutex> lk(s_releasesMutex);
+                    if (idx < 0 || idx >= (int)s_releases.size()) return;
+                    rel = s_releases[idx];
+                }
 
                 if (rel.isCached) {
                     s_updater.installCachedAndRestart(rel.version);
                 } else {
-                    // Download in background, then install
+                    // Download in background, then install from cache
                     s_updateState.store(UpdateState::Downloading);
                     set_update_msg("Downloading v" + rel.version + "...");
-                    std::thread([rel]() {
+                    std::string ver = rel.version;
+                    std::thread([rel, ver]() {
                         bool ok = s_updater.downloadAndCache(rel,
                             [](UpdateState state, int pct, const std::string& msg) {
                                 s_updateState.store(state);
                                 s_updateProgress.store(pct);
                                 set_update_msg(msg);
                             });
-                        if (!ok && s_updateState.load() != UpdateState::Error) {
+                        if (ok) {
+                            // Cached now — install directly instead of going through timer
+                            s_updateState.store(UpdateState::Idle);
+                            s_updater.installCachedAndRestart(ver);
+                        } else if (s_updateState.load() != UpdateState::Error) {
                             s_updateState.store(UpdateState::Error);
                             set_update_msg("Download failed");
                         }
@@ -264,6 +271,18 @@ static void update_timer_cb(lv_timer_t*)
     if (s_releasesFetched.load()) {
         s_releasesFetched.store(false);
         build_version_list();
+
+        // If no notes shown yet, show notes for the current version
+        if (!s_notesNeedRender.load() && s_releaseNotesBox &&
+            lv_obj_get_child_count(s_releaseNotesBox) == 0) {
+            std::lock_guard<std::mutex> lk(s_releasesMutex);
+            for (auto& r : s_releases) {
+                if (r.isCurrent && !r.releaseNotes.empty()) {
+                    set_notes_to_render(r.releaseNotes);
+                    break;
+                }
+            }
+        }
     }
 
     // Ready to install — trigger install
@@ -305,11 +324,34 @@ static void on_check_update_clicked(lv_event_t*)
         } else {
             s_updateState.store(UpdateState::Idle);
             set_update_msg("Up to date (v" + s_updateInfo.currentVersion + ")");
+            // Show release notes for current version
+            if (!s_updateInfo.releaseNotes.empty())
+                set_notes_to_render(s_updateInfo.releaseNotes);
         }
 
         // Also fetch releases list
         {
             auto releases = s_updater.listReleases();
+
+            // Insert current version if not in the list (e.g. local/dev build)
+            bool foundCurrent = false;
+            for (auto& r : releases) {
+                if (r.isCurrent) { foundCurrent = true; break; }
+            }
+            if (!foundCurrent) {
+                ReleaseInfo cur;
+                cur.version = CROSSPAD_PC_VERSION;
+                cur.tagName = "v" + cur.version;
+                cur.releaseName = "CrossPad PC v" + cur.version;
+                cur.isCurrent = true;
+                cur.isCached = s_updater.isCached(cur.version);
+                // Insert sorted by version (descending)
+                auto it = releases.begin();
+                while (it != releases.end() && compareSemver(it->version, cur.version) > 0)
+                    ++it;
+                releases.insert(it, cur);
+            }
+
             std::lock_guard<std::mutex> lk(s_releasesMutex);
             s_releases = std::move(releases);
         }

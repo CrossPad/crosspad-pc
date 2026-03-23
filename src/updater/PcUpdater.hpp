@@ -89,6 +89,12 @@ public:
     /// List all locally cached versions
     std::vector<std::string> getCachedVersions() const;
 
+    /// Load cached release notes (markdown) for a version. Empty if not found.
+    static std::string getCachedReleaseNotes(const std::string& version);
+
+    /// Load cached metadata JSON for a version. Empty if not found.
+    static std::string getCachedMetadataJson(const std::string& version);
+
 private:
     std::string tempDir_;
     std::string downloadPath_;

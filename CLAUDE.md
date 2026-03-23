@@ -2,6 +2,10 @@
 
 This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
 
+## Default Tools
+
+**Always prefer CrossPad MCP tools** (`crosspad_build`, `crosspad_run`, `crosspad_screenshot`, `crosspad_log`, `crosspad_test`, etc.) over manual bash commands for building, running, testing, and interacting with the simulator. The MCP server handles MSVC environment setup, paths, and simulator communication automatically.
+
 ## Project Overview
 
 CrossPad PC — a desktop simulator for the CrossPad embedded device. Runs the same LVGL GUI + crosspad-core/crosspad-gui libraries on desktop via SDL2, with MIDI I/O (RtMidi), audio output (RtAudio/WASAPI), and an STM32 hardware emulator window (4x4 pad grid + rotary encoder). Used for rapid development before deploying to ESP32-S3 hardware.

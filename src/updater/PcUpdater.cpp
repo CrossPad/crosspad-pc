@@ -20,6 +20,22 @@
 
 /* ── Semver compare ──────────────────────────────────────────────────── */
 
+/// Parse pre-release suffix: "" → (false, 0), "-RC" → (true, 0), "-RC3" → (true, 3)
+static void parsePreRelease(const std::string& ver, bool& isPreRelease, int& preNum)
+{
+    isPreRelease = false;
+    preNum = 0;
+    auto dash = ver.find('-');
+    if (dash == std::string::npos) return;
+    isPreRelease = true;
+    std::string suffix = ver.substr(dash + 1);
+    // Extract trailing number: "RC3" → 3, "RC" → 0, "alpha2" → 2
+    size_t i = suffix.size();
+    while (i > 0 && suffix[i - 1] >= '0' && suffix[i - 1] <= '9') --i;
+    if (i < suffix.size())
+        preNum = atoi(suffix.c_str() + i);
+}
+
 int compareSemver(const std::string& a, const std::string& b)
 {
     int aMaj = 0, aMin = 0, aPat = 0;
@@ -29,7 +45,19 @@ int compareSemver(const std::string& a, const std::string& b)
 
     if (aMaj != bMaj) return aMaj - bMaj;
     if (aMin != bMin) return aMin - bMin;
-    return aPat - bPat;
+    if (aPat != bPat) return aPat - bPat;
+
+    // Pre-release comparison: release (no suffix) > pre-release (has suffix)
+    // e.g. 0.3.1 > 0.3.1-RC2 > 0.3.1-RC1 > 0.3.1-RC
+    bool aPre, bPre;
+    int aPreNum, bPreNum;
+    parsePreRelease(a, aPre, aPreNum);
+    parsePreRelease(b, bPre, bPreNum);
+
+    if (!aPre && !bPre) return 0;    // both release
+    if (!aPre &&  bPre) return 1;    // a is release, b is pre → a > b
+    if ( aPre && !bPre) return -1;   // a is pre, b is release → a < b
+    return aPreNum - bPreNum;         // both pre → compare numbers
 }
 
 /* ── Global auto-check result cache ──────────────────────────────────── */
@@ -62,13 +90,9 @@ bool pc_updater_has_cached_result()
 static std::string stripVersionPrefix(const std::string& tag)
 {
     std::string t = tag;
-    // Strip leading 'v'
+    // Strip leading 'v': "v0.3.1-RC1" → "0.3.1-RC1"
     if (!t.empty() && (t[0] == 'v' || t[0] == 'V'))
         t = t.substr(1);
-    // Strip postfix after version: "0.2.9-CR" → "0.2.9"
-    auto dash = t.find('-');
-    if (dash != std::string::npos)
-        t = t.substr(0, dash);
     return t;
 }
 
@@ -180,7 +204,7 @@ std::string PcUpdater::getCacheDir()
 
 bool PcUpdater::isCached(const std::string& version) const
 {
-    return fs::exists(getCacheDir() + "/CrossPad_v" + version + ".exe");
+    return fs::exists(fs::path(getCacheDir()) / ("CrossPad_v" + version + ".exe"));
 }
 
 std::vector<std::string> PcUpdater::getCachedVersions() const
@@ -444,11 +468,14 @@ static bool winHttpDownload(const std::string& url, const std::string& outputPat
 
 /* ── Download, extract, and cache ────────────────────────────────────── */
 
-static bool downloadExtractAndCache(const std::string& downloadUrl, uint64_t assetSize,
-                                     const std::string& version, const std::string& releaseNotes,
+static bool downloadExtractAndCache(const ReleaseInfo& release,
                                      UpdateProgressCallback progressCb,
                                      std::string& outExtractDir)
 {
+    const auto& downloadUrl = release.downloadUrl;
+    const auto& assetSize   = release.assetSize;
+    const auto& version     = release.version;
+    const auto& releaseNotes = release.releaseNotes;
     std::string tempDir = getTempUpdateDir();
     fs::create_directories(tempDir);
 
@@ -485,19 +512,38 @@ static bool downloadExtractAndCache(const std::string& downloadUrl, uint64_t ass
         return false;
     }
 
-    // Cache the exe and release notes
+    // Cache the exe, release notes, and metadata
     std::string cacheDir = PcUpdater::getCacheDir();
     fs::create_directories(cacheDir);
-    std::string cachedExe = cacheDir + "/CrossPad_v" + version + ".exe";
+    std::string prefix = (fs::path(cacheDir) / ("CrossPad_v" + version)).string();
+
+    std::string cachedExe = prefix + ".exe";
     std::error_code ec;
-    fs::copy_file(extractDir + "/CrossPad.exe", cachedExe, fs::copy_options::overwrite_existing, ec);
+    fs::copy_file(fs::path(extractDir) / "CrossPad.exe", cachedExe, fs::copy_options::overwrite_existing, ec);
     if (!ec) {
         printf("[Updater] Cached exe: %s\n", cachedExe.c_str());
     }
+
+    // Save raw release notes (markdown) for future parsing
     if (!releaseNotes.empty()) {
-        std::string cachedNotes = cacheDir + "/CrossPad_v" + version + ".md";
-        std::ofstream nf(cachedNotes);
+        std::ofstream nf(prefix + ".md");
         if (nf.is_open()) nf << releaseNotes;
+    }
+
+    // Save release metadata JSON
+    {
+        JsonDocument meta;
+        meta["version"]       = version;
+        meta["tag_name"]      = release.tagName;
+        meta["release_name"]  = release.releaseName;
+        meta["asset_size"]    = assetSize;
+        meta["cached_at"]     = std::chrono::duration_cast<std::chrono::seconds>(
+            std::chrono::system_clock::now().time_since_epoch()).count();
+
+        std::ofstream mf(prefix + ".json");
+        if (mf.is_open()) {
+            serializeJsonPretty(meta, mf);
+        }
     }
 
     outExtractDir = extractDir;
@@ -513,10 +559,17 @@ bool PcUpdater::downloadUpdate(const UpdateInfo& info, UpdateProgressCallback pr
         return false;
     }
 
+    // Build a ReleaseInfo from UpdateInfo for unified cache path
+    ReleaseInfo rel;
+    rel.version      = info.latestVersion;
+    rel.tagName      = "v" + info.latestVersion;
+    rel.releaseName  = "";
+    rel.downloadUrl  = info.downloadUrl;
+    rel.releaseNotes = info.releaseNotes;
+    rel.assetSize    = info.assetSize;
+
     tempDir_ = getTempUpdateDir();
-    bool ok = downloadExtractAndCache(info.downloadUrl, info.assetSize,
-                                       info.latestVersion, info.releaseNotes,
-                                       progressCb, extractDir_);
+    bool ok = downloadExtractAndCache(rel, progressCb, extractDir_);
     if (ok && progressCb)
         progressCb(UpdateState::ReadyToInstall, 100, "Ready to install");
     return ok;
@@ -530,9 +583,7 @@ bool PcUpdater::downloadAndCache(const ReleaseInfo& release, UpdateProgressCallb
     }
 
     tempDir_ = getTempUpdateDir();
-    bool ok = downloadExtractAndCache(release.downloadUrl, release.assetSize,
-                                       release.version, release.releaseNotes,
-                                       progressCb, extractDir_);
+    bool ok = downloadExtractAndCache(release, progressCb, extractDir_);
     if (ok && progressCb)
         progressCb(UpdateState::ReadyToInstall, 100, "Ready to install");
     return ok;
@@ -543,24 +594,32 @@ bool PcUpdater::downloadAndCache(const ReleaseInfo& release, UpdateProgressCallb
 static void writeBatchScript(std::ofstream& bat, const std::string& sourceExe,
                               const std::string& sourceDir,
                               const std::string& exePath, const std::string& exeDir,
-                              const std::string& tempDir)
+                              const std::string& tempDir, DWORD pid)
 {
     bat << "@echo off\r\n";
     bat << "echo Updating CrossPad...\r\n";
-    bat << "echo Waiting for CrossPad to exit...\r\n";
+
+    // Wait for the process to exit by PID (up to 30 seconds)
+    bat << "echo Waiting for CrossPad (PID " << pid << ") to exit...\r\n";
+    bat << "set WAIT_RETRIES=0\r\n";
+    bat << ":wait_exit\r\n";
+    bat << "tasklist /FI \"PID eq " << pid << "\" 2>nul | find \"" << pid << "\" >nul\r\n";
+    bat << "if not errorlevel 1 (\r\n";
+    bat << "    set /a WAIT_RETRIES+=1\r\n";
+    bat << "    if %WAIT_RETRIES% gtr 30 (\r\n";
+    bat << "        echo ERROR: CrossPad did not exit after 30 seconds\r\n";
+    bat << "        pause\r\n";
+    bat << "        exit /b 1\r\n";
+    bat << "    )\r\n";
+    bat << "    timeout /t 1 /nobreak >nul\r\n";
+    bat << "    goto wait_exit\r\n";
+    bat << ")\r\n";
+    bat << "echo Process exited.\r\n";
     bat << "\r\n";
 
-    bat << "set RETRIES=0\r\n";
-    bat << ":retry_copy\r\n";
-    bat << "timeout /t 2 /nobreak >nul\r\n";
     bat << "copy /y \"" << sourceExe << "\" \"" << exePath << "\" >nul 2>&1\r\n";
     bat << "if errorlevel 1 (\r\n";
-    bat << "    set /a RETRIES+=1\r\n";
-    bat << "    if %RETRIES% lss 15 (\r\n";
-    bat << "        echo Retrying... (%RETRIES%/15)\r\n";
-    bat << "        goto retry_copy\r\n";
-    bat << "    )\r\n";
-    bat << "    echo ERROR: Failed to copy after 15 attempts\r\n";
+    bat << "    echo ERROR: Failed to copy update\r\n";
     bat << "    pause\r\n";
     bat << "    exit /b 1\r\n";
     bat << ")\r\n";
@@ -597,7 +656,7 @@ std::string PcUpdater::prepareInstall()
     if (!bat.is_open()) return "";
 
     writeBatchScript(bat, extractDir_ + "\\CrossPad.exe", extractDir_,
-                     exePath, exeDir, tempDir_);
+                     exePath, exeDir, tempDir_, GetCurrentProcessId());
     bat.close();
     printf("[Updater] Batch script written to %s\n", batPath.c_str());
     return batPath;
@@ -605,7 +664,7 @@ std::string PcUpdater::prepareInstall()
 
 std::string PcUpdater::prepareInstallFromCache(const std::string& version)
 {
-    std::string cachedExe = getCacheDir() + "/CrossPad_v" + version + ".exe";
+    std::string cachedExe = (fs::path(getCacheDir()) / ("CrossPad_v" + version + ".exe")).string();
     if (!fs::exists(cachedExe)) {
         printf("[Updater] Cached exe not found: %s\n", cachedExe.c_str());
         return "";
@@ -621,10 +680,31 @@ std::string PcUpdater::prepareInstallFromCache(const std::string& version)
     if (!bat.is_open()) return "";
 
     // For cache install, source is just the cached exe (no SDL2/assets)
-    writeBatchScript(bat, cachedExe, "", exePath, exeDir, tempDir);
+    writeBatchScript(bat, cachedExe, "", exePath, exeDir, tempDir, GetCurrentProcessId());
     bat.close();
     printf("[Updater] Cache install script written to %s\n", batPath.c_str());
     return batPath;
+}
+
+/* ── Cache current exe before switching ──────────────────────────────── */
+
+static void cacheCurrentExe()
+{
+    std::string curVersion = CROSSPAD_PC_VERSION;
+    std::string cacheDir = PcUpdater::getCacheDir();
+    fs::create_directories(cacheDir);
+    std::string cachedExe = (fs::path(cacheDir) / ("CrossPad_v" + curVersion + ".exe")).string();
+
+    if (fs::exists(cachedExe)) return; // already cached
+
+    std::string curExe = PcUpdater::getCurrentExePath();
+    std::error_code ec;
+    fs::copy_file(curExe, cachedExe, fs::copy_options::none, ec);
+    if (!ec) {
+        printf("[Updater] Cached current exe (v%s) before switching\n", curVersion.c_str());
+    } else {
+        printf("[Updater] Warning: failed to cache current exe: %s\n", ec.message().c_str());
+    }
 }
 
 /* ── Launch batch and exit ───────────────────────────────────────────── */
@@ -643,17 +723,20 @@ static void launchBatAndExit(const std::string& batPath)
         CloseHandle(pi.hThread);
         CloseHandle(pi.hProcess);
         printf("[Updater] Update script launched, exiting...\n");
+        fflush(stdout);
     } else {
         printf("[Updater] ERROR: Failed to launch script (error %lu)\n", GetLastError());
         return;
     }
-    crosspad_gui::getGuiPlatform().sendPowerOff();
+    // Terminate immediately — _exit() works from any thread and skips CRT cleanup
+    _exit(0);
 }
 
 void PcUpdater::installAndRestart()
 {
     std::string batPath = prepareInstall();
     if (batPath.empty()) return;
+    cacheCurrentExe();
     launchBatAndExit(batPath);
 }
 
@@ -661,7 +744,26 @@ void PcUpdater::installCachedAndRestart(const std::string& version)
 {
     std::string batPath = prepareInstallFromCache(version);
     if (batPath.empty()) return;
+    cacheCurrentExe();
     launchBatAndExit(batPath);
+}
+
+std::string PcUpdater::getCachedReleaseNotes(const std::string& version)
+{
+    auto path = fs::path(getCacheDir()) / ("CrossPad_v" + version + ".md");
+    if (!fs::exists(path)) return "";
+    std::ifstream f(path);
+    return std::string((std::istreambuf_iterator<char>(f)),
+                        std::istreambuf_iterator<char>());
+}
+
+std::string PcUpdater::getCachedMetadataJson(const std::string& version)
+{
+    auto path = fs::path(getCacheDir()) / ("CrossPad_v" + version + ".json");
+    if (!fs::exists(path)) return "";
+    std::ifstream f(path);
+    return std::string((std::istreambuf_iterator<char>(f)),
+                        std::istreambuf_iterator<char>());
 }
 
 #else // ── Non-Windows stubs ─────────────────────────────────────────── */
@@ -698,5 +800,7 @@ std::string PcUpdater::prepareInstall() { return ""; }
 std::string PcUpdater::prepareInstallFromCache(const std::string&) { return ""; }
 void PcUpdater::installAndRestart() {}
 void PcUpdater::installCachedAndRestart(const std::string&) {}
+std::string PcUpdater::getCachedReleaseNotes(const std::string&) { return ""; }
+std::string PcUpdater::getCachedMetadataJson(const std::string&) { return ""; }
 
 #endif // _WIN32
