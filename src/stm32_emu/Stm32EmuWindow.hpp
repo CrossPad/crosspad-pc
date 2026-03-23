@@ -22,7 +22,7 @@ public:
     ~Stm32EmuWindow();
 
     static constexpr int32_t WIN_W = 490;
-    static constexpr int32_t WIN_H = 680;
+    static constexpr int32_t WIN_H = 714;
 
     /// Build device body on the active screen. Returns the 320x240 LCD container.
     /// Call after sdl_hal_init(WIN_W, WIN_H) and pc_platform_init().

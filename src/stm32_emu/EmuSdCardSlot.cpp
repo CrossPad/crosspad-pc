@@ -18,21 +18,22 @@
 
 /* ── Layout constants ────────────────────────────────────────────────── */
 
-// SD card slot — bottom-left corner, horizontal bar between screw and PAD 1.
-// Bottom-left screw center is at (22, 658), right edge ≈ 30.
-// PAD 1 left edge is at GRID_X = 95. Slot sits in that gap.
+// SD card slot — bottom-left corner, positioned relative to window bottom.
+// Sits between bottom-left screw and PAD 1 row.
+#include "Stm32EmuWindow.hpp"
+
 static constexpr int32_t SLOT_X = 36;
-static constexpr int32_t SLOT_Y = 652;
+static constexpr int32_t SLOT_Y = Stm32EmuWindow::WIN_H - 40;
 static constexpr int32_t SLOT_W = 50;
 static constexpr int32_t SLOT_H = 10;
 
-// "SD" label — to the right of slot bar
+// "SD" label — above slot bar
 static constexpr int32_t ICON_LBL_X = 38;
-static constexpr int32_t ICON_LBL_Y = 640;
+static constexpr int32_t ICON_LBL_Y = SLOT_Y - 12;
 
-// Path label — below slot bar, shows folder name when mounted
+// Path label — to the right of slot bar
 static constexpr int32_t PATH_LBL_X = 36;
-static constexpr int32_t PATH_LBL_Y = 664;
+static constexpr int32_t PATH_LBL_Y = SLOT_Y + SLOT_H + 2;
 static constexpr int32_t PATH_LBL_W = 55;
 
 // Colors (matching EmuJackPanel style)
