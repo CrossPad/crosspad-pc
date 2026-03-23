@@ -445,13 +445,12 @@ std::string PcUpdater::prepareInstall()
     bat << ")\r\n";
     bat << "\r\n";
 
-    // Cleanup temp dir
-    bat << "rmdir /s /q \"" << tempDir_ << "\"\r\n";
-    bat << "\r\n";
-
-    // Restart
+    // Restart first, then cleanup (bat is inside tempDir so rmdir must be last)
     bat << "echo Update complete! Restarting...\r\n";
     bat << "start \"\" \"" << exePath << "\"\r\n";
+    bat << "\r\n";
+    bat << "timeout /t 2 /nobreak >nul\r\n";
+    bat << "rmdir /s /q \"" << tempDir_ << "\" 2>nul\r\n";
     bat << "exit\r\n";
 
     bat.close();

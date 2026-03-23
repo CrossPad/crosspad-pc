@@ -168,7 +168,7 @@ jobs:
         uses: softprops/action-gh-release@v2
         with:
           tag_name: ${{ steps.tag.outputs.name }}
-          name: CrossPad ${{ steps.tag.outputs.name }}
+          name: CrossPad PC ${{ steps.tag.outputs.name }}
           draft: false
           prerelease: false
           files: |
