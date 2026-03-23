@@ -104,6 +104,10 @@ private:
     std::string autoConnectKeyword_;
     bool autoConnectFound_ = false;   // true when keyword match was found
 
+    // Cached port lists — only log when devices change
+    std::vector<std::string> lastOutputPorts_;
+    std::vector<std::string> lastInputPorts_;
+
     // Callbacks
     NoteOnCallback        noteOnCb_;
     NoteOffCallback       noteOffCb_;

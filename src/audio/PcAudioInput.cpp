@@ -6,6 +6,11 @@
 #include "PcAudioInput.hpp"
 #include <cstdio>
 #include <cstring>
+#include <vector>
+#include <string>
+
+// Cached device list — only log when devices change
+static std::vector<std::string> s_lastInputDevices;
 
 PcAudioInput::PcAudioInput() = default;
 
@@ -31,13 +36,23 @@ bool PcAudioInput::begin(unsigned int inputDevice, uint32_t sampleRate,
     std::vector<unsigned int> ids = rtAudio_->getDeviceIds();
     unsigned int defaultInId = rtAudio_->getDefaultInputDevice();
 
-    printf("[AudioIn] Available INPUT devices (%u):\n", (unsigned)ids.size());
+    std::vector<std::string> currentDevices;
     for (unsigned int id : ids) {
         RtAudio::DeviceInfo info = rtAudio_->getDeviceInfo(id);
-        if (info.inputChannels > 0) {
-            printf("  [%u] %s (%u ch, %u Hz%s)\n", id, info.name.c_str(),
-                   info.inputChannels, info.preferredSampleRate,
-                   (id == defaultInId) ? ", default" : "");
+        if (info.inputChannels > 0)
+            currentDevices.push_back(info.name);
+    }
+
+    if (currentDevices != s_lastInputDevices) {
+        s_lastInputDevices = currentDevices;
+        printf("[AudioIn] Available INPUT devices (%u):\n", (unsigned)ids.size());
+        for (unsigned int id : ids) {
+            RtAudio::DeviceInfo info = rtAudio_->getDeviceInfo(id);
+            if (info.inputChannels > 0) {
+                printf("  [%u] %s (%u ch, %u Hz%s)\n", id, info.name.c_str(),
+                       info.inputChannels, info.preferredSampleRate,
+                       (id == defaultInId) ? ", default" : "");
+            }
         }
     }
 

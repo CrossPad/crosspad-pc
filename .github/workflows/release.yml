@@ -179,16 +179,16 @@ jobs:
         id: release_type
         run: |
           TAG="${{ steps.tag.outputs.name }}"
-          if echo "$TAG" | grep -qiE 'nightly|alpha|beta|rc|dev|pre'; then
-            echo "type=nightly" >> $GITHUB_OUTPUT
-            echo "label=🌙 Nightly" >> $GITHUB_OUTPUT
-            echo "color=16750848" >> $GITHUB_OUTPUT
-            echo "role_id=${{ vars.DISCORD_ROLE_NIGHTLY }}" >> $GITHUB_OUTPUT
-          else
+          if echo "$TAG" | grep -qE '^(CR-)?v[0-9]+\.[0-9]+\.[0-9]+$'; then
             echo "type=stable" >> $GITHUB_OUTPUT
             echo "label=✅ Stable" >> $GITHUB_OUTPUT
             echo "color=5814783" >> $GITHUB_OUTPUT
             echo "role_id=${{ vars.DISCORD_ROLE_STABLE }}" >> $GITHUB_OUTPUT
+          else
+            echo "type=nightly" >> $GITHUB_OUTPUT
+            echo "label=🌙 Nightly" >> $GITHUB_OUTPUT
+            echo "color=16750848" >> $GITHUB_OUTPUT
+            echo "role_id=${{ vars.DISCORD_ROLE_NIGHTLY }}" >> $GITHUB_OUTPUT
           fi
 
       - name: Notify Discord

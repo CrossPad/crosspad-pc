@@ -26,8 +26,6 @@ bool PcMidi::begin(unsigned int outPort, unsigned int inPort)
 {
     bool anyOpen = false;
 
-    printf("[MIDI] Initializing MIDI subsystem (RtMidi)...\n");
-
     // --- Output ---
     try {
         midiOut_ = std::make_unique<RtMidiOut>();
@@ -37,9 +35,16 @@ bool PcMidi::begin(unsigned int outPort, unsigned int inPort)
 
     if (midiOut_) {
         unsigned int count = midiOut_->getPortCount();
-        printf("[MIDI] Available OUTPUT ports (%u):\n", count);
-        for (unsigned int i = 0; i < count; i++) {
-            printf("  [%u] %s\n", i, midiOut_->getPortName(i).c_str());
+        std::vector<std::string> currentPorts;
+        for (unsigned int i = 0; i < count; i++)
+            currentPorts.push_back(midiOut_->getPortName(i));
+
+        if (currentPorts != lastOutputPorts_) {
+            lastOutputPorts_ = currentPorts;
+            printf("[MIDI] Available OUTPUT ports (%u):\n", count);
+            for (unsigned int i = 0; i < count; i++) {
+                printf("  [%u] %s\n", i, currentPorts[i].c_str());
+            }
         }
 
         if (count > 0 && outPort < count) {
@@ -65,9 +70,16 @@ bool PcMidi::begin(unsigned int outPort, unsigned int inPort)
 
     if (midiIn_) {
         unsigned int count = midiIn_->getPortCount();
-        printf("[MIDI] Available INPUT ports (%u):\n", count);
-        for (unsigned int i = 0; i < count; i++) {
-            printf("  [%u] %s\n", i, midiIn_->getPortName(i).c_str());
+        std::vector<std::string> currentPorts;
+        for (unsigned int i = 0; i < count; i++)
+            currentPorts.push_back(midiIn_->getPortName(i));
+
+        if (currentPorts != lastInputPorts_) {
+            lastInputPorts_ = currentPorts;
+            printf("[MIDI] Available INPUT ports (%u):\n", count);
+            for (unsigned int i = 0; i < count; i++) {
+                printf("  [%u] %s\n", i, currentPorts[i].c_str());
+            }
         }
 
         if (count > 0 && inPort < count) {
@@ -158,7 +170,6 @@ bool PcMidi::beginAutoConnect(const std::string& keyword)
 
 bool PcMidi::reconnect()
 {
-    printf("[MIDI] Reconnecting (keyword='%s')...\n", autoConnectKeyword_.c_str());
     end();
     return beginAutoConnect(autoConnectKeyword_);
 }
