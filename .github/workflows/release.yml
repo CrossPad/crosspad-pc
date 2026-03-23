@@ -247,8 +247,10 @@ jobs:
             --arg url "https://github.com/${{ github.repository }}/releases/tag/${TAG_NAME}" \
             --argjson color "${RELEASE_COLOR}" \
             --arg label "$RELEASE_LABEL" \
+            --arg role_id "$ROLE_ID" \
             '{
               content: $content,
+              allowed_mentions: { roles: (if $role_id != "" then [$role_id] else [] end) },
               embeds: [{
                 title: $title,
                 url: $url,
