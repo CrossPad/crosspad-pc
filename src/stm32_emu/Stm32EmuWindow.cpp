@@ -12,6 +12,9 @@
 #include <cstdio>
 #include <cstdint>
 #include <cstdlib>
+#include <string>
+
+#include "crosspad_pc_version.h"
 
 #include <SDL2/SDL.h>
 #include "crosspad-gui/platform/IGuiPlatform.h"
@@ -134,7 +137,8 @@ lv_obj_t* Stm32EmuWindow::init()
     screen_ = lv_screen_active();
 
     lv_display_t* disp = lv_display_get_default();
-    lv_sdl_window_set_title(disp, "CrossPad");
+    std::string title = std::string("CrossPad v") + CROSSPAD_PC_VERSION;
+    lv_sdl_window_set_title(disp, title.c_str());
 
     buildLayout();
 
