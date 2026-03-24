@@ -16,7 +16,7 @@ Windows with MSVC (Visual Studio 2022 Community):
 ```
 build.bat
 ```
-This calls `vcvarsall.bat x64`, then cmake+ninja with vcpkg toolchain. Enables FreeRTOS by default. Output: `bin/main.exe`.
+This calls `vcvarsall.bat x64`, then cmake+ninja with vcpkg toolchain. Enables FreeRTOS by default. Output: `bin/CrossPad.exe`.
 
 Manual build (incremental — without wiping build dir):
 ```bash
@@ -24,7 +24,7 @@ cmake -B build -G Ninja -DCMAKE_TOOLCHAIN_FILE=C:/vcpkg/scripts/buildsystems/vcp
 cmake --build build
 ```
 
-Run: `bin/main.exe`
+Run: `bin/CrossPad.exe`
 
 **Dependencies:** SDL2 via vcpkg (`vcpkg install sdl2:x64-windows`), vcpkg at `C:\vcpkg`.
 
@@ -172,21 +172,17 @@ The simulator includes a built-in TCP server (`src/remote/RemoteControl.cpp`) on
 
 Commands: `ping`, `screenshot`, `click`, `pad_press`, `pad_release`, `encoder_rotate`, `encoder_press`, `encoder_release`, `key`, `stats`, `settings_get`, `settings_set`.
 
-Used by the MCP server tools — see `tools/mcp-server/` below.
+Used by the MCP server tools — see MCP Development Server section below.
 
 ## MCP Development Server
 
-A Model Context Protocol server at `tools/mcp-server/` provides 16 tools for Claude Code integration. Configured in `.claude/settings.local.json`.
+A Model Context Protocol server in the [`crosspad-mcp`](https://github.com/CrossPad/crosspad-mcp) repository provides 17 tools for Claude Code integration. Configured in `.claude.json` (project section).
 
 ### Setup
 
-```bash
-cd tools/mcp-server
-npm install
-npm run build
-```
+Clone and build the MCP server repo, then restart Claude Code / VS Code to pick up the server.
 
-Restart Claude Code / VS Code after building to pick up the server.
+See [`crosspad-mcp` README](https://github.com/CrossPad/crosspad-mcp) for full setup instructions.
 
 ### Tools Reference
 
@@ -195,9 +191,10 @@ Restart Claude Code / VS Code after building to pick up the server.
 | Tool | Description |
 |---|---|
 | `crosspad_build` | Build simulator (incremental / clean / reconfigure) |
-| `crosspad_run` | Launch `bin/main.exe`, return PID |
+| `crosspad_run` | Launch `bin/CrossPad.exe`, return PID |
 | `crosspad_build_check` | Quick health check: stale exe, new source files, submodule drift |
 | `crosspad_log` | Launch exe, capture stdout/stderr for N seconds, kill it |
+| `crosspad_idf_build` | Build ESP32-S3 firmware via idf.py (build / clean / fullclean) |
 
 **Testing:**
 
@@ -234,7 +231,7 @@ Restart Claude Code / VS Code after building to pick up the server.
 ### Architecture
 
 ```
-tools/mcp-server/
+crosspad-mcp/
   src/
     index.ts              — tool registrations (McpServer)
     config.ts             — paths: repos, vcvarsall, vcpkg, build dir
