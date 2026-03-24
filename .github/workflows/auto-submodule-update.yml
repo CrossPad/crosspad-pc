@@ -1,0 +1,196 @@
+name: Auto Submodule Update
+
+on:
+  repository_dispatch:
+    types: [submodule-update]
+
+concurrency:
+  group: auto-submodule-${{ github.event.client_payload.lib }}
+  cancel-in-progress: true
+
+# Note: permissions block governs GITHUB_TOKEN only.
+# All gh/git operations use SUBMODULE_PAT which has its own repo scope.
+permissions:
+  contents: write
+  pull-requests: write
+
+jobs:
+  update-and-build:
+    runs-on: windows-latest
+
+    env:
+      LIB: ${{ github.event.client_payload.lib }}
+      SHA: ${{ github.event.client_payload.sha }}
+      SHORT_SHA: ${{ github.event.client_payload.short_sha }}
+      REF: ${{ github.event.client_payload.ref }}
+      # Submodule path matches the lib name in this repo (root level)
+      SUBMODULE_PATH: ${{ github.event.client_payload.lib }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
+          token: ${{ secrets.SUBMODULE_PAT }}
+          fetch-depth: 0
+
+      - name: Check for existing PR
+        id: existing
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.SUBMODULE_PAT }}
+        run: |
+          EXISTING=$(gh pr list --state open --json number,headRefName \
+            --jq "[.[] | select(.headRefName | startswith(\"auto/update-${LIB}-\"))][0]")
+          if [ -n "$EXISTING" ] && [ "$EXISTING" != "null" ]; then
+            EXISTING_NUM=$(echo "$EXISTING" | jq -r '.number')
+            echo "found=true" >> $GITHUB_OUTPUT
+            echo "number=$EXISTING_NUM" >> $GITHUB_OUTPUT
+          else
+            echo "found=false" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Close superseded PR
+        if: steps.existing.outputs.found == 'true'
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.SUBMODULE_PAT }}
+        run: |
+          gh pr close ${{ steps.existing.outputs.number }} \
+            --comment "Superseded by update to ${SHORT_SHA}" \
+            --delete-branch || true
+
+      - name: Record old submodule pin
+        id: old_pin
+        shell: bash
+        run: |
+          OLD_SHA=$(git -C "$SUBMODULE_PATH" rev-parse HEAD)
+          echo "sha=$OLD_SHA" >> $GITHUB_OUTPUT
+
+      - name: Create branch and update submodule
+        shell: bash
+        run: |
+          git checkout -b "auto/update-${LIB}-${SHORT_SHA}"
+          git -C "$SUBMODULE_PATH" fetch origin
+          git -C "$SUBMODULE_PATH" checkout "$SHA"
+          git add "$SUBMODULE_PATH"
+
+      - name: Generate changelog
+        id: changelog
+        shell: bash
+        run: |
+          OLD="${{ steps.old_pin.outputs.sha }}"
+          NEW="$SHA"
+          if [ "$OLD" = "$NEW" ]; then
+            echo "skip=true" >> $GITHUB_OUTPUT
+            exit 0
+          fi
+          CHANGELOG=$(git -C "$SUBMODULE_PATH" log --oneline "${OLD}..${NEW}" --max-count=50 2>/dev/null || \
+                      git -C "$SUBMODULE_PATH" log --oneline -1 "$NEW")
+          {
+            echo "log<<CHANGELOG_EOF"
+            echo "$CHANGELOG"
+            echo "CHANGELOG_EOF"
+          } >> $GITHUB_OUTPUT
+
+      - name: Commit and push
+        if: steps.changelog.outputs.skip != 'true'
+        shell: bash
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git commit -m "chore: update ${LIB} to ${SHORT_SHA}"
+          git push origin "auto/update-${LIB}-${SHORT_SHA}"
+
+      - name: Create PR
+        if: steps.changelog.outputs.skip != 'true'
+        id: pr
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.SUBMODULE_PAT }}
+        run: |
+          OLD_SHORT="${{ steps.old_pin.outputs.sha }}"
+          OLD_SHORT="${OLD_SHORT:0:7}"
+          BODY="## Submodule update: ${LIB}
+          Updated from \`${OLD_SHORT}\` → \`${SHORT_SHA}\`
+
+          ### Changelog
+          ${{ steps.changelog.outputs.log }}
+
+          Triggered by: ${REF}"
+          PR_URL=$(gh pr create \
+            --title "chore: update ${LIB} to ${SHORT_SHA}" \
+            --body "$BODY" \
+            --base "${{ github.event.repository.default_branch }}")
+          echo "url=$PR_URL" >> $GITHUB_OUTPUT
+          PR_NUM=$(echo "$PR_URL" | grep -oE '[0-9]+$')
+          echo "number=$PR_NUM" >> $GITHUB_OUTPUT
+
+      # --- Build section (mirrors ci.yml) ---
+      - name: Set up vcpkg
+        if: steps.changelog.outputs.skip != 'true'
+        uses: lukka/run-vcpkg@v11
+        with:
+          vcpkgGitCommitId: 'b472291f295551b7127359ea38fdd2ca092f6f1b'
+
+      - name: Cache vcpkg installed packages
+        if: steps.changelog.outputs.skip != 'true'
+        uses: actions/cache@v4
+        with:
+          path: ${{ env.RUNVCPKG_VCPKG_ROOT }}/installed
+          key: vcpkg-${{ runner.os }}-${{ hashFiles('**/vcpkgGitCommitId') }}-sdl2
+          restore-keys: vcpkg-${{ runner.os }}-
+
+      - name: Install SDL2
+        if: steps.changelog.outputs.skip != 'true'
+        run: ${{ env.VCPKG_ROOT }}/vcpkg install sdl2:x64-windows
+
+      - name: Set up MSVC
+        if: steps.changelog.outputs.skip != 'true'
+        uses: ilammy/msvc-dev-cmd@v1
+        with:
+          arch: x64
+
+      - name: Configure
+        if: steps.changelog.outputs.skip != 'true'
+        run: >
+          cmake -B build -G Ninja
+          -DCMAKE_TOOLCHAIN_FILE="${{ env.RUNVCPKG_VCPKG_ROOT }}/scripts/buildsystems/vcpkg.cmake"
+          -DCMAKE_BUILD_TYPE=Debug
+
+      - name: Build
+        id: build
+        if: steps.changelog.outputs.skip != 'true'
+        continue-on-error: true
+        run: cmake --build build
+
+      # --- Failure handling ---
+      - name: Label PR on build failure
+        if: steps.build.outcome == 'failure'
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.SUBMODULE_PAT }}
+        run: |
+          gh pr edit ${{ steps.pr.outputs.number }} --add-label "build-failed"
+
+      - name: Discord notification on build failure
+        if: steps.build.outcome == 'failure'
+        shell: bash
+        run: |
+          PAYLOAD=$(jq -n \
+            --arg title "Build failed: crosspad-pc" \
+            --arg desc "Submodule update of **${{ env.LIB }}** to \`${{ env.SHORT_SHA }}\` broke the build." \
+            --arg url "${{ steps.pr.outputs.url }}" \
+            '{
+              embeds: [{
+                title: $title,
+                description: $desc,
+                url: $url,
+                color: 16711680
+              }]
+            }')
+          curl -s -H "Content-Type: application/json" -d "$PAYLOAD" "${{ secrets.DISCORD_RELEASE_WEBHOOK }}"
+
+      - name: Fail workflow if build failed
+        if: steps.build.outcome == 'failure'
+        run: exit 1
