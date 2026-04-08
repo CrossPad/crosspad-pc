@@ -41,6 +41,7 @@
 #include "crosspad-gui/components/app_launcher.h"
 #include "crosspad-gui/components/main_screen.h"
 #include "crosspad-gui/components/app_orchestrator.h"
+#include "crosspad-gui/platform/IGuiPlatform.h"
 #include "crosspad-gui/components/volume_overlay.h"
 
 #ifdef USE_MIDI
@@ -55,8 +56,8 @@
 #include "crosspad-gui/components/vu_meter.h"
 #include "crosspad/audio/PeakMeter.hpp"
 #include "synth/MlPianoSynth.hpp"
-#include "apps/mixer/AudioMixerEngine.hpp"
-#include "apps/mixer/MixerPadLogic.hpp"
+#include "crosspad-mixer/AudioMixerEngine.hpp"
+#include "crosspad-mixer/MixerPadLogic.hpp"
 #include <RtAudio.h>
 #endif
 
@@ -279,10 +280,26 @@ static crosspad_gui::ILvglApp* pc_app_factory(
     return new App(container, name, icon, createLVGL, destroyLVGL);
 }
 
+/// Resolve short icon names (e.g. "info.png") to full asset paths.
+/// Icons that already contain a path separator are left unchanged.
+static std::vector<std::string> s_resolvedIcons;
+static const char* pc_icon_resolver(size_t /*index*/, const char* icon) {
+    if (!icon || !*icon) return icon;
+    // Already a full path?
+    if (strchr(icon, '/') || strchr(icon, '\\')) return icon;
+    // LVGL symbols (UTF-8 private use area, start with 0xEF)
+    if ((unsigned char)icon[0] >= 0xC0) return icon;
+    // Prepend asset prefix
+    std::string resolved = crosspad_gui::getGuiPlatform().assetPathPrefix();
+    resolved += icon;
+    s_resolvedIcons.push_back(std::move(resolved));
+    return s_resolvedIcons.back().c_str();
+}
+
 static void InitializeOrchestrator() {
     crosspad_gui::OrchestratorConfig config;
     config.app_factory = pc_app_factory;
-    // PC has no pre-launch hook (no kit selector) and no icon resolver needed
+    config.icon_resolver = pc_icon_resolver;
     crosspad_gui::AppOrchestrator::getInstance().init(config);
 }
 

@@ -211,37 +211,36 @@ if(USE_AUDIO)
         lib/ml_synth/ml_utils_stub.cpp
     )
 
-    # ML Piano app (own CMakeLists.txt exports ML_PIANO_APP_SOURCES)
-    add_subdirectory(src/apps/ml_piano)
-
-    # Audio Mixer app
-    add_subdirectory(src/apps/mixer)
-
     # Synth engine wrapper (platform-level, like ESP32's audio codec)
     set(ML_PIANO_SYNTH_SOURCES src/synth/MlPianoSynth.cpp)
 
-    list(APPEND MAIN_SOURCES ${ML_SYNTH_SOURCES} ${ML_PIANO_SYNTH_SOURCES} ${ML_PIANO_APP_SOURCES} ${MIXER_APP_SOURCES})
+    list(APPEND MAIN_SOURCES ${ML_SYNTH_SOURCES} ${ML_PIANO_SYNTH_SOURCES})
 endif()
 
-# Settings app (always available)
-add_subdirectory(src/apps/settings)
-list(APPEND MAIN_SOURCES ${SETTINGS_APP_SOURCES})
+# ── Built-in apps (always present) ──────────────────────────────────────
+foreach(_builtin settings citest update)
+    if(EXISTS "${CMAKE_SOURCE_DIR}/src/apps/${_builtin}/CMakeLists.txt")
+        add_subdirectory(src/apps/${_builtin})
+    endif()
+endforeach()
+list(APPEND MAIN_SOURCES ${SETTINGS_APP_SOURCES} ${CITEST_APP_SOURCES} ${UPDATE_APP_SOURCES})
 
-# CI Test app (audio pipeline integration tests)
-add_subdirectory(src/apps/citest)
-list(APPEND MAIN_SOURCES ${CITEST_APP_SOURCES})
+# ── Installable apps (submodules in src/apps/crosspad-*) ────────────────
+file(GLOB _app_submodule_dirs "${CMAKE_SOURCE_DIR}/src/apps/crosspad-*/")
+foreach(_app_dir ${_app_submodule_dirs})
+    if(NOT IS_DIRECTORY "${_app_dir}")
+        continue()
+    endif()
+    get_filename_component(_app_name "${_app_dir}" NAME)
 
-# Instructions app (markdown-rendered help/shortcuts reference)
-add_subdirectory(src/apps/instructions)
-list(APPEND MAIN_SOURCES ${INSTRUCTIONS_APP_SOURCES})
+    # Collect sources from src/
+    file(GLOB _app_sources "${_app_dir}/src/*.cpp")
+    if(_app_sources)
+        list(APPEND MAIN_SOURCES ${_app_sources})
+    endif()
 
-# Serial Monitor app (UART output viewer)
-add_subdirectory(src/apps/serial_monitor)
-list(APPEND MAIN_SOURCES ${SERIAL_MONITOR_APP_SOURCES})
-
-# Update app (version check, download, auto-update)
-add_subdirectory(src/apps/update)
-list(APPEND MAIN_SOURCES ${UPDATE_APP_SOURCES})
+    message(STATUS "App submodule: ${_app_name} (${_app_sources})")
+endforeach()
 
 # Updater module (version check, download, self-update)
 list(APPEND MAIN_SOURCES src/updater/PcUpdater.cpp)
@@ -336,6 +335,17 @@ target_include_directories(CrossPad PRIVATE
     ${PROJECT_SOURCE_DIR}/lvgl/src
     ${CMAKE_BINARY_DIR}/generated
 )
+# Add include dirs from installable app submodules
+foreach(_app_dir ${_app_submodule_dirs})
+    if(IS_DIRECTORY "${_app_dir}/include")
+        target_include_directories(CrossPad PRIVATE "${_app_dir}/include")
+        # Also add the nested dir so apps can use short includes (e.g. "MixerApp.hpp")
+        get_filename_component(_app_name "${_app_dir}" NAME)
+        if(IS_DIRECTORY "${_app_dir}/include/${_app_name}")
+            target_include_directories(CrossPad PRIVATE "${_app_dir}/include/${_app_name}")
+        endif()
+    endif()
+endforeach()
 target_link_libraries(CrossPad ${MAIN_LIBS})
 
 # Winsock + COM (folder picker dialog) for Windows

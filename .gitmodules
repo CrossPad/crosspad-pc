@@ -13,3 +13,15 @@
 [submodule "crosspad-gui"]
 	path = crosspad-gui
 	url = https://github.com/CrossPad/crosspad-gui.git
+[submodule "src/apps/crosspad-mixer"]
+	path = src/apps/crosspad-mixer
+	url = https://github.com/CrossPad/crosspad-mixer.git
+[submodule "src/apps/crosspad-piano"]
+	path = src/apps/crosspad-piano
+	url = https://github.com/CrossPad/crosspad-piano.git
+[submodule "src/apps/crosspad-instructions"]
+	path = src/apps/crosspad-instructions
+	url = https://github.com/CrossPad/crosspad-instructions.git
+[submodule "src/apps/crosspad-serial-monitor"]
+	path = src/apps/crosspad-serial-monitor
+	url = https://github.com/CrossPad/crosspad-serial-monitor.git

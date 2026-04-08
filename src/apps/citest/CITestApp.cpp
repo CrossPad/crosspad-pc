@@ -9,7 +9,7 @@
 
 #include "pc_stubs/PcApp.hpp"
 #include "pc_stubs/pc_platform.h"
-#include "apps/mixer/AudioMixerEngine.hpp"
+#include "crosspad-mixer/AudioMixerEngine.hpp"
 #include "synth/MlPianoSynth.hpp"
 
 #include "crosspad/app/AppRegistrar.hpp"
