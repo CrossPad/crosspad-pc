@@ -905,7 +905,11 @@
 /** Setting a default driver letter allows skipping the driver prefix in filepaths.
  *  Documentation about how to use the below driver-identifier letters can be found at
  *  https://docs.lvgl.io/master/main-modules/fs.html#lv-fs-identifier-letters . */
-#define LV_FS_DEFAULT_DRIVER_LETTER '\0'
+#ifdef _WIN32
+    #define LV_FS_DEFAULT_DRIVER_LETTER '\0'
+#else
+    #define LV_FS_DEFAULT_DRIVER_LETTER 'C'  /* Linux/Mac: route unprefixed paths to POSIX driver */
+#endif
 
 /** API for fopen, fread, etc. */
 #define LV_USE_FS_STDIO 1

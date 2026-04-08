@@ -120,18 +120,44 @@ jobs:
       - name: Build
         run: cmake --build build
 
-      - name: Package
+      - name: Create AppImage icon
         run: |
-          mkdir -p dist/CrossPad
-          cp bin/CrossPad dist/CrossPad/CrossPad
-          chmod +x dist/CrossPad/CrossPad
-          cp -r crosspad-gui/assets dist/CrossPad/assets
+          python3 -c "
+          from PIL import Image
+          img = Image.open('logo.png')
+          img.thumbnail((256, 256), Image.LANCZOS)
+          new_img = Image.new('RGBA', (256, 256), (0, 0, 0, 0))
+          x = (256 - img.width) // 2
+          y = (256 - img.height) // 2
+          new_img.paste(img, (x, y))
+          new_img.save('CrossPad.png')
+          "
+
+      - name: Build AppImage
+        run: |
+          # Download linuxdeploy
+          wget -q https://github.com/linuxdeploy/linuxdeploy/releases/download/continuous/linuxdeploy-x86_64.AppImage
+          chmod +x linuxdeploy-x86_64.AppImage
+
+          # Prepare AppDir
+          mkdir -p AppDir/usr/bin
+          cp bin/CrossPad AppDir/usr/bin/CrossPad
+          chmod +x AppDir/usr/bin/CrossPad
+          cp -r crosspad-gui/assets AppDir/usr/bin/assets
+
+          # Build AppImage
+          export OUTPUT=CrossPad-Linux-x86_64.AppImage
+          ./linuxdeploy-x86_64.AppImage \
+            --appdir=AppDir \
+            --desktop-file=CrossPad.desktop \
+            --icon-file=CrossPad.png \
+            --output=appimage
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
           name: CrossPad-Linux-x64
-          path: dist/CrossPad
+          path: CrossPad-Linux-x86_64.AppImage
 
   release:
     needs: [build-windows, build-linux]
@@ -149,11 +175,12 @@ jobs:
         with:
           name: CrossPad-Linux-x64
           path: CrossPad-Linux-x64
+          merge-multiple: true
 
       - name: Create archives
         run: |
           cd CrossPad-Windows-x64 && zip -r ../CrossPad-Windows-x64.zip . && cd ..
-          tar -czf CrossPad-Linux-x64.tar.gz -C CrossPad-Linux-x64 .
+          cp CrossPad-Linux-x64/CrossPad-Linux-x86_64.AppImage .
 
       - name: Checkout (for changelog generation)
         uses: actions/checkout@v4
@@ -209,7 +236,7 @@ jobs:
           prerelease: ${{ steps.tag.outputs.prerelease == 'true' }}
           files: |
             CrossPad-Windows-x64.zip
-            CrossPad-Linux-x64.tar.gz
+            CrossPad-Linux-x86_64.AppImage
 
       - name: Detect release type
         id: release_type
