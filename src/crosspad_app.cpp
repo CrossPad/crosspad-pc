@@ -56,8 +56,11 @@
 #include "crosspad-gui/components/vu_meter.h"
 #include "crosspad/audio/PeakMeter.hpp"
 #include "synth/MlPianoSynth.hpp"
+#if __has_include("crosspad-mixer/AudioMixerEngine.hpp")
 #include "crosspad-mixer/AudioMixerEngine.hpp"
 #include "crosspad-mixer/MixerPadLogic.hpp"
+#define HAS_MIXER 1
+#endif
 #include <RtAudio.h>
 #endif
 
@@ -89,8 +92,10 @@ static PcAudioOutput pcAudio2;     // OUT2
 static PcAudioInput  pcAudioIn1;   // IN1
 static PcAudioInput  pcAudioIn2;   // IN2
 static MlPianoSynth fmSynth;
+#ifdef HAS_MIXER
 static AudioMixerEngine s_mixerEngine;
 static std::shared_ptr<MixerPadLogic> s_mixerPadLogic;
+#endif
 #endif
 
 /* ── Virtual USB/UART ─────────────────────────────────────────────────── */
@@ -523,20 +528,21 @@ void crosspad_app_init()
     fmSynth.init();
     crosspad::getPlatformServices().setSynthEngine(&fmSynth);
 
+#ifdef HAS_MIXER
     // Load mixer state from preferences (or set defaults)
     s_mixerEngine.loadState(getMixerStatePath());
 
     // Register mixer pad logic globally (always available)
     s_mixerPadLogic = std::make_shared<MixerPadLogic>(s_mixerEngine);
     s_mixerPadLogic->setOnStateChanged([]() {
-        // Save mixer state on every pad-driven change
         s_mixerEngine.saveState(getMixerStatePath());
     });
     crosspad::getPadManager().registerPadLogic("Mixer", s_mixerPadLogic);
     crosspad::getPadManager().setActivePadLogic("Mixer");
 
-    // Start the mixer engine (replaces the old default synth-only audio thread)
+    // Start the mixer engine
     s_mixerEngine.start();
+#endif
 
     // Save preferences now that we know actual connected device names
     saveDevicePrefs();
@@ -965,14 +971,18 @@ PcAudioOutput* pc_platform_get_audio_output(int index)
     return nullptr;
 }
 
+#ifdef HAS_MIXER
 AudioMixerEngine& getMixerEngine()
 {
     return s_mixerEngine;
 }
+#endif
 
 void pc_platform_save_mixer_state()
 {
+#ifdef HAS_MIXER
     s_mixerEngine.saveState(getMixerStatePath());
+#endif
 }
 #else
 PcAudioOutput* pc_platform_get_audio_output(int /*index*/) { return nullptr; }

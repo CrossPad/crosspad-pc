@@ -1,11 +1,5 @@
 {
   "installed": {
-    "mixer": {
-      "version": "33af3c07",
-      "ref": "main",
-      "repo": "https://github.com/CrossPad/crosspad-mixer.git",
-      "installed_at": "2026-04-08T13:23:42.502483+00:00"
-    },
     "piano": {
       "version": "73376751",
       "ref": "main",
@@ -23,6 +17,12 @@
       "ref": "main",
       "repo": "https://github.com/CrossPad/crosspad-serial-monitor.git",
       "installed_at": "2026-04-08T18:45:16.225115+00:00"
+    },
+    "mixer": {
+      "version": "33af3c07",
+      "ref": "main",
+      "repo": "https://github.com/CrossPad/crosspad-mixer.git",
+      "installed_at": "2026-04-08T19:20:43.090578+00:00"
     }
   }
 }
