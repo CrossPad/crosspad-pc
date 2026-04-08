@@ -25,3 +25,6 @@
 [submodule "src/apps/crosspad-serial-monitor"]
 	path = src/apps/crosspad-serial-monitor
 	url = https://github.com/CrossPad/crosspad-serial-monitor.git
+[submodule "src/apps/crosspad-appstore"]
+	path = src/apps/crosspad-appstore
+	url = https://github.com/CrossPad/crosspad-appstore.git

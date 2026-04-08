@@ -85,15 +85,46 @@ src/
     PcApp.cpp                   — lightweight App class for launcher (no sequencer/CLI)
     pc_platform.h               — public API: pc_platform_init(), set_midi/audio/synth
 lib/ml_synth/                   — vendored ML_SynthTools FM synth engine
+lib/crosspad-core/              — submodule: portable C++ library
+lib/crosspad-gui/               — submodule: shared LVGL UI components
+scripts/
+  app_manager.py                — Python app manager (wrapper for crosspad-apps core)
+  run.sh                        — Smart build+run script
 tools/mcp-server/               — MCP development server (TypeScript, 16 tools)
 ```
 
 ### Submodules
 
+**Shared libraries** (in `lib/`):
+
 - **crosspad-core**: Portable C++ library — AppRegistry, IEventBus, PadManager, PadLedController, CrosspadSettings (IKeyValueStore), Stm32MessageHandler, platform interfaces (IClock, IMidiOutput, ILedStrip, IAudioOutput, ISynthEngine). Originally an ESP-IDF component; sources are listed manually in CMakeLists.txt.
 - **crosspad-gui**: LVGL UI components — theme, styles, launcher, status bar, widgets (keypad buttons, spinbox, radial menu, VU meter, file explorer, DFU panel, modals/toasts). Originally an ESP-IDF component; sources listed manually.
 - **lvgl**: LVGL v9.x graphics library
 - **FreeRTOS**: FreeRTOS Kernel (MSVC-MingW port on Windows, GCC POSIX on Linux/Mac)
+
+**Installable apps** (in `src/apps/crosspad-*/`, managed by app manager):
+
+- **crosspad-appstore**: Built-in App Store (cannot be removed)
+- **crosspad-mixer**, **crosspad-piano**, **crosspad-instructions**, **crosspad-serial-monitor**: Installable via `python3 scripts/app_manager.py install <name>` or via the App Store UI
+
+### App Management
+
+Apps are installed as git submodules in `src/apps/crosspad-*/`. CMake auto-discovers them via `file(GLOB)`. The app manager (`scripts/app_manager.py`) wraps the shared [crosspad-apps](https://github.com/CrossPad/crosspad-apps) core.
+
+**CLI commands:**
+
+```bash
+python3 scripts/app_manager.py list              # List available apps
+python3 scripts/app_manager.py install mixer     # Install an app
+python3 scripts/app_manager.py remove mixer      # Remove an app
+python3 scripts/app_manager.py update --all      # Update all installed apps
+python3 scripts/app_manager.py sync              # Sync manifest with disk
+python3 scripts/app_manager.py                   # Launch interactive TUI
+```
+
+**After install/remove:** `cmake -B build -G Ninja && cmake --build build` (CMake reconfigure picks up new sources).
+
+**Creating a new app:** See the [crosspad-appstore README](https://github.com/CrossPad/crosspad-appstore#creating-a-crosspad-app) for the app repo structure, `crosspad-app.json` format, and registration pattern.
 
 ### Platform Abstraction Pattern
 
