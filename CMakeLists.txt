@@ -233,6 +233,12 @@ foreach(_app_dir ${_app_submodule_dirs})
     endif()
     get_filename_component(_app_name "${_app_dir}" NAME)
 
+    # App Store is dev-only — skip when BUILD_TESTING is OFF (release builds)
+    if(NOT BUILD_TESTING AND _app_name STREQUAL "crosspad-appstore")
+        message(STATUS "Skipping dev-only app: ${_app_name}")
+        continue()
+    endif()
+
     # Collect sources from src/
     file(GLOB _app_sources "${_app_dir}/src/*.cpp")
     if(_app_sources)
@@ -259,7 +265,11 @@ configure_file(cmake/version.h.in "${CMAKE_BINARY_DIR}/generated/crosspad_pc_ver
 # Auto-generate app registry initialization
 include(cmake/generate_registry.cmake)
 set(APP_REGISTRY_FILE "${CMAKE_BINARY_DIR}/app_registry_init.cpp")
-generate_app_registry("${APP_REGISTRY_FILE}" "${PROJECT_SOURCE_DIR}/src/apps")
+set(_registry_excludes "")
+if(NOT BUILD_TESTING)
+    list(APPEND _registry_excludes "crosspad-appstore")
+endif()
+generate_app_registry("${APP_REGISTRY_FILE}" "${PROJECT_SOURCE_DIR}/src/apps" ${_registry_excludes})
 list(APPEND MAIN_SOURCES "${APP_REGISTRY_FILE}")
 
 # Custom target to run the executable

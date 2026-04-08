@@ -22,9 +22,9 @@
 [submodule "src/apps/crosspad-instructions"]
 	path = src/apps/crosspad-instructions
 	url = https://github.com/CrossPad/crosspad-instructions.git
-[submodule "src/apps/crosspad-serial-monitor"]
-	path = src/apps/crosspad-serial-monitor
-	url = https://github.com/CrossPad/crosspad-serial-monitor.git
 [submodule "src/apps/crosspad-appstore"]
 	path = src/apps/crosspad-appstore
 	url = https://github.com/CrossPad/crosspad-appstore.git
+[submodule "src/apps/crosspad-serial-monitor"]
+	path = src/apps/crosspad-serial-monitor
+	url = https://github.com/CrossPad/crosspad-serial-monitor.git
