@@ -23,3 +23,4 @@ _build_*.bat
 
 # Screenshots (dev/test artifacts)
 screenshots/
+app-registry.json
