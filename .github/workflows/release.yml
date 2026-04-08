@@ -72,7 +72,7 @@ jobs:
           # Copy SDL2.dll from vcpkg installed dir
           cp "$RUNVCPKG_VCPKG_ROOT/installed/x64-windows/bin/SDL2.dll" dist/CrossPad/
           # Copy assets
-          cp -r crosspad-gui/assets dist/CrossPad/assets
+          cp -r lib/crosspad-gui/assets dist/CrossPad/assets
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4
@@ -143,7 +143,7 @@ jobs:
           mkdir -p AppDir/usr/bin
           cp bin/CrossPad AppDir/usr/bin/CrossPad
           chmod +x AppDir/usr/bin/CrossPad
-          cp -r crosspad-gui/assets AppDir/usr/bin/assets
+          cp -r lib/crosspad-gui/assets AppDir/usr/bin/assets
 
           # Build AppImage
           export OUTPUT=CrossPad-Linux-x86_64.AppImage

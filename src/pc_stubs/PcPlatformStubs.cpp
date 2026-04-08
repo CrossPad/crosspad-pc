@@ -332,9 +332,9 @@ private:
                     return;
                 }
             }
-            // Try exe-relative: exe_dir/../crosspad-gui/assets/ (dev layout)
+            // Try exe-relative: exe_dir/../lib/crosspad-gui/assets/ (dev layout)
             {
-                fs::path candidate = exeDir / ".." / "crosspad-gui" / "assets";
+                fs::path candidate = exeDir / ".." / "lib" / "crosspad-gui" / "assets";
                 std::error_code ec;
                 if (fs::exists(candidate, ec)) {
                     std::string resolved = fs::canonical(candidate, ec).string();
@@ -358,7 +358,7 @@ private:
         // Fallback: cwd-relative
         {
             std::error_code ec;
-            fs::path candidate = fs::current_path(ec) / "crosspad-gui" / "assets";
+            fs::path candidate = fs::current_path(ec) / "lib" / "crosspad-gui" / "assets";
             if (fs::exists(candidate, ec)) {
                 std::string resolved = fs::canonical(candidate, ec).string();
                 for (char& c : resolved) { if (c == '\\') c = '/'; }

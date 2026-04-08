@@ -130,20 +130,20 @@ if(MSVC)
 endif()
 
 # ── crosspad-core portable sources (auto-discover, excluding platform-specific) ──
-file(GLOB_RECURSE CROSSPAD_CORE_SOURCES crosspad-core/src/*.cpp)
+file(GLOB_RECURSE CROSSPAD_CORE_SOURCES lib/crosspad-core/src/*.cpp)
 list(FILTER CROSSPAD_CORE_SOURCES EXCLUDE REGEX "EspEventBus\\.cpp$")
 list(FILTER CROSSPAD_CORE_SOURCES EXCLUDE REGEX "SyncEventBus\\.cpp$")
 list(FILTER CROSSPAD_CORE_SOURCES EXCLUDE REGEX "Stm32Manager\\.cpp$")
 # FreeRtosEventBus.cpp stays — used as the event bus implementation
 
 # ── crosspad-gui sources (auto-discover) ──
-file(GLOB_RECURSE CROSSPAD_GUI_SOURCES crosspad-gui/src/*.cpp)
+file(GLOB_RECURSE CROSSPAD_GUI_SOURCES lib/crosspad-gui/src/*.cpp)
 
 # ── Auto-reconfigure when source files are added/removed ──
 # Ninja watches these directories and triggers cmake reconfigure on changes
 set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS
-    "${CMAKE_SOURCE_DIR}/crosspad-core/src"
-    "${CMAKE_SOURCE_DIR}/crosspad-gui/src"
+    "${CMAKE_SOURCE_DIR}/lib/crosspad-core/src"
+    "${CMAKE_SOURCE_DIR}/lib/crosspad-gui/src"
     "${CMAKE_SOURCE_DIR}/src/apps"
     "${CMAKE_SOURCE_DIR}/src/pc_stubs"
     "${CMAKE_SOURCE_DIR}/src/updater"
@@ -328,8 +328,8 @@ target_compile_definitions(CrossPad PRIVATE
 )
 target_include_directories(CrossPad PRIVATE
     ${PROJECT_SOURCE_DIR}/src
-    ${PROJECT_SOURCE_DIR}/crosspad-core/include
-    ${PROJECT_SOURCE_DIR}/crosspad-gui/include
+    ${PROJECT_SOURCE_DIR}/lib/crosspad-core/include
+    ${PROJECT_SOURCE_DIR}/lib/crosspad-gui/include
     ${PROJECT_SOURCE_DIR}/lib/ml_synth
     ${PROJECT_SOURCE_DIR}/lib
     ${PROJECT_SOURCE_DIR}/lvgl/src
