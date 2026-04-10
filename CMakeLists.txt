@@ -121,7 +121,7 @@ if(USE_BLE)
     FetchContent_MakeAvailable(simpleble)
     # SimpleBLE sets /WX /W1 internally — override to suppress warnings
     if(MSVC)
-        target_compile_options(simpleble PRIVATE /w)
+        target_compile_options(simpleble PRIVATE /w /WX-)
     endif()
     message(STATUS "BLE support enabled (SimpleBLE)")
 endif()
