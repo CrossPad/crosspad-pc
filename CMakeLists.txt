@@ -14,6 +14,7 @@ set(LVGL_PRO_PROJECT_DIR
 
 option(USE_MIDI "Enable MIDI input/output via RtMidi" ON)
 option(USE_AUDIO "Enable system audio output via RtAudio" ON)
+option(USE_BLE "Enable BLE MIDI via SimpleBLE" ON)
 
 # FreeRTOS — always enabled (required for crosspad-core event bus & LVGL OSAL)
 add_library(freertos_config INTERFACE)
@@ -109,6 +110,18 @@ if(USE_AUDIO)
     message(STATUS "Audio support enabled (RtAudio)")
 endif()
 
+# BLE MIDI support via SimpleBLE
+if(USE_BLE)
+    FetchContent_Declare(
+        simpleble
+        GIT_REPOSITORY https://github.com/OpenBluetoothToolbox/SimpleBLE.git
+        GIT_TAG        v0.7.3
+        SOURCE_SUBDIR  simpleble
+    )
+    FetchContent_MakeAvailable(simpleble)
+    message(STATUS "BLE support enabled (SimpleBLE)")
+endif()
+
 # Add compile definitions based on the selected options
 add_compile_definitions($<$<BOOL:${LV_USE_DRAW_SDL}>:LV_USE_DRAW_SDL=1>)
 add_compile_definitions($<$<BOOL:${LV_USE_LIBPNG}>:LV_USE_LIBPNG=1>)
@@ -197,6 +210,12 @@ if(USE_MIDI)
     if(WIN32)
         list(APPEND MAIN_LIBS winmm)
     endif()
+endif()
+
+# BLE MIDI sources and libraries
+if(USE_BLE)
+    list(APPEND MAIN_SOURCES src/midi/PcBleMidi.cpp)
+    list(APPEND MAIN_LIBS simpleble::simpleble)
 endif()
 
 # Audio sources and libraries
@@ -386,6 +405,10 @@ target_compile_definitions(CrossPad PRIVATE USE_FREERTOS=1)
 # MIDI compile definition
 if(USE_MIDI)
     target_compile_definitions(CrossPad PRIVATE USE_MIDI=1)
+endif()
+
+if(USE_BLE)
+    target_compile_definitions(CrossPad PRIVATE USE_BLE=1)
 endif()
 
 if(USE_AUDIO)

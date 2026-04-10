@@ -1,4 +1,5 @@
 {
+  "VsCodeTaskButtons.showCounter": false,
   "VsCodeTaskButtons.tasks": [
     {
       "label": "$(package) CP Tools",

@@ -50,6 +50,13 @@
 #include "crosspad/status/CrosspadStatus.hpp"
 #endif
 
+#include "crosspad/midi/MidiInputHandler.hpp"
+
+#ifdef USE_BLE
+#include "midi/PcBleMidi.hpp"
+#include "apps/settings/settings_app.h"
+#endif
+
 #ifdef USE_AUDIO
 #include "audio/PcAudio.hpp"
 #include "audio/PcAudioInput.hpp"
@@ -80,10 +87,21 @@ static lv_obj_t* app_c = nullptr;
 static lv_obj_t* s_lcdContainer = nullptr;
 static Stm32EmuWindow stm32Emu;
 
+// Central MIDI router — distributes pad output to USB + BLE + STM32
+static crosspad::MidiInputHandler s_midiHandler;
+
+namespace crosspad {
+MidiInputHandler& getMidiInputHandler() { return s_midiHandler; }
+}
+
 #ifdef USE_MIDI
 static PcMidi midi;
 static crosspad::Stm32MessageHandler stm32Handler;
 extern CrosspadStatus status;
+#endif
+
+#ifdef USE_BLE
+PcBleMidi bleMidi;
 #endif
 
 #ifdef USE_AUDIO
@@ -114,6 +132,8 @@ struct DevicePreferences {
     std::string sdcardPath;
     std::string uartPort;
     uint32_t    uartBaud = 115200;
+    std::string bleDevice;    // Last connected BLE MIDI device address
+    uint8_t     bleMode = 0;  // 0=Host, 1=Server
 };
 
 static DevicePreferences s_devicePrefs;
@@ -152,6 +172,8 @@ static void loadDevicePrefs() {
     if (doc["sdcard_path"].is<const char*>()) s_devicePrefs.sdcardPath = doc["sdcard_path"].as<const char*>();
     if (doc["uart_port"].is<const char*>())  s_devicePrefs.uartPort   = doc["uart_port"].as<const char*>();
     if (doc["uart_baud"].is<uint32_t>())     s_devicePrefs.uartBaud   = doc["uart_baud"].as<uint32_t>();
+    if (doc["ble_device"].is<const char*>()) s_devicePrefs.bleDevice  = doc["ble_device"].as<const char*>();
+    if (doc["ble_mode"].is<uint8_t>())       s_devicePrefs.bleMode    = doc["ble_mode"].as<uint8_t>();
 
     printf("[DevPrefs] Loaded: out1='%s' out2='%s' in1='%s' in2='%s' midiOut='%s' midiIn='%s' sd='%s' uart='%s@%u'\n",
            s_devicePrefs.audioOut1.c_str(), s_devicePrefs.audioOut2.c_str(),
@@ -173,6 +195,8 @@ static void saveDevicePrefs() {
     doc["sdcard_path"] = s_devicePrefs.sdcardPath;
     doc["uart_port"]   = s_devicePrefs.uartPort;
     doc["uart_baud"]   = s_devicePrefs.uartBaud;
+    doc["ble_device"]  = s_devicePrefs.bleDevice;
+    doc["ble_mode"]    = s_devicePrefs.bleMode;
 
     std::ofstream f(path);
     if (!f.is_open()) {
@@ -388,6 +412,12 @@ void crosspad_app_init()
     lv_obj_remove_flag(overlayLayer, (lv_obj_flag_t)(LV_OBJ_FLAG_CLICKABLE | LV_OBJ_FLAG_SCROLLABLE));
     crosspad_gui::setOverlayParent(overlayLayer);
 
+    // Init MidiInputHandler — central routing brain (same pattern as ESP32).
+    // Routes pad output to USB + BLE + STM32 based on KeypadSettings flags.
+    s_midiHandler.init(crosspad::getPadManager(), crosspad::getEventBus(),
+                       crosspad::CrosspadSettings::getInstance());
+    crosspad::getPlatformServices().setMidiOutput(&s_midiHandler);
+
 #ifdef USE_MIDI
     // Initialize STM32 message handler
     stm32Handler.init(crosspad::getPadManager(), status);
@@ -398,36 +428,40 @@ void crosspad_app_init()
         int inPort  = findMidiPortByName(s_devicePrefs.midiIn, false);
 
         if (outPort >= 0 && inPort >= 0) {
-            // Both saved prefs found — connect to those specific ports
             midi.begin((unsigned)outPort, (unsigned)inPort);
             midi.setAutoConnectKeyword("CrossPad");
             printf("[MIDI] Connected from saved prefs: out=%d in=%d\n", outPort, inPort);
         } else {
-            // Missing or stale prefs — use auto-connect keyword
             midi.beginAutoConnect("CrossPad");
         }
-        crosspad::getPlatformServices().setMidiOutput(&midi);
+        s_midiHandler.setUsbOutput(&midi);
     }
 
     midi.setHandleNoteOn([](uint8_t channel, uint8_t note, uint8_t velocity) {
         printf("[MIDI IN] NoteOn  ch=%u note=%u vel=%u\n", channel + 1, note, velocity);
-        auto& pm = crosspad::getPadManager();
-        uint8_t padIdx = pm.getPadForMidiNote(note);
-        if (padIdx < 16) {
-            pm.handlePadPress(padIdx, velocity);
-        } else {
-            pm.handleMidiNoteOn(channel, note, velocity);
-        }
+        struct D { uint8_t ch, note, vel; };
+        auto* d = new D{channel, note, velocity};
+        lv_async_call([](void* ud) {
+            auto* n = static_cast<D*>(ud);
+            auto& pm = crosspad::getPadManager();
+            uint8_t padIdx = pm.getPadForMidiNote(n->note);
+            if (padIdx < 16) pm.handlePadPress(padIdx, n->vel);
+            else pm.handleMidiNoteOn(n->ch, n->note, n->vel);
+            delete n;
+        }, d);
     });
     midi.setHandleNoteOff([](uint8_t channel, uint8_t note, uint8_t velocity) {
         printf("[MIDI IN] NoteOff ch=%u note=%u vel=%u\n", channel + 1, note, velocity);
-        auto& pm = crosspad::getPadManager();
-        uint8_t padIdx = pm.getPadForMidiNote(note);
-        if (padIdx < 16) {
-            pm.handlePadRelease(padIdx);
-        } else {
-            pm.handleMidiNoteOff(channel, note);
-        }
+        struct D { uint8_t ch, note; };
+        auto* d = new D{channel, note};
+        lv_async_call([](void* ud) {
+            auto* n = static_cast<D*>(ud);
+            auto& pm = crosspad::getPadManager();
+            uint8_t padIdx = pm.getPadForMidiNote(n->note);
+            if (padIdx < 16) pm.handlePadRelease(padIdx);
+            else pm.handleMidiNoteOff(n->ch, n->note);
+            delete n;
+        }, d);
     });
     midi.setHandleControlChange([](uint8_t channel, uint8_t cc, uint8_t value) {
         printf("[MIDI IN] CC      ch=%u cc=%u  val=%u\n", channel + 1, cc, value);
@@ -464,6 +498,83 @@ void crosspad_app_init()
         jp.setConnected(EmuJackPanel::MIDI_OUT, midi.isOutputOpen());
         jp.setConnected(EmuJackPanel::MIDI_IN, midi.isInputOpen());
     }, 3000, nullptr);
+#endif
+
+#ifdef USE_BLE
+    // ── BLE MIDI — same pattern as USB MIDI ──
+    {
+        auto* settings = crosspad::CrosspadSettings::getInstance();
+        // Use saved mode from device prefs if available
+        if (s_devicePrefs.bleMode <= 1) {
+            settings->wireless.bleMidiMode = s_devicePrefs.bleMode;
+        }
+        auto mode = settings->wireless.bleMidiMode == 0
+            ? crosspad::BleMidiMode::Host : crosspad::BleMidiMode::Server;
+
+        bleMidi.setNoteOffset(settings->wireless.bleMidiNoteOffset);
+        bleMidi.begin(mode);
+
+        // Wire into routing system
+        crosspad::getPlatformServices().setBleMidi(&bleMidi);
+        s_midiHandler.setBleOutput(&bleMidi);  // Route pad output to BLE
+
+        // Input callbacks — dispatch to LVGL thread via lv_async_call.
+        // RtMidi callbacks run on a separate thread, but PadManager/LED updates
+        // touch LVGL which is NOT thread-safe. Must dispatch to the LVGL task.
+        // Echo is already filtered by PcBleMidi's anti-loopback ring buffer.
+        bleMidi.setHandleNoteOn([](uint8_t channel, uint8_t note, uint8_t velocity) {
+            printf("[BLE IN] NoteOn  ch=%u note=%u vel=%u\n", channel + 1, note, velocity);
+            ble_settings_log_midi_in(0x90 | channel, note, velocity);
+
+            struct NoteData { uint8_t ch; uint8_t note; uint8_t vel; };
+            auto* d = new NoteData{channel, note, velocity};
+            lv_async_call([](void* ud) {
+                auto* n = static_cast<NoteData*>(ud);
+                auto& pm = crosspad::getPadManager();
+                uint8_t padIdx = pm.getPadForMidiNote(n->note);
+                if (padIdx < 16)
+                    pm.handlePadPress(padIdx, n->vel);
+                else
+                    pm.handleMidiNoteOn(n->ch, n->note, n->vel);
+                delete n;
+            }, d);
+        });
+        bleMidi.setHandleNoteOff([](uint8_t channel, uint8_t note, uint8_t velocity) {
+            printf("[BLE IN] NoteOff ch=%u note=%u vel=%u\n", channel + 1, note, velocity);
+            ble_settings_log_midi_in(0x80 | channel, note, velocity);
+
+            struct NoteData { uint8_t ch; uint8_t note; };
+            auto* d = new NoteData{channel, note};
+            lv_async_call([](void* ud) {
+                auto* n = static_cast<NoteData*>(ud);
+                auto& pm = crosspad::getPadManager();
+                uint8_t padIdx = pm.getPadForMidiNote(n->note);
+                if (padIdx < 16)
+                    pm.handlePadRelease(padIdx);
+                else
+                    pm.handleMidiNoteOff(n->ch, n->note);
+                delete n;
+            }, d);
+        });
+        bleMidi.setHandleControlChange([](uint8_t channel, uint8_t cc, uint8_t value) {
+            printf("[BLE IN] CC      ch=%u cc=%u  val=%u\n", channel + 1, cc, value);
+            ble_settings_log_midi_in(0xB0 | channel, cc, value);
+        });
+
+        // Connection state → status bar bluetooth icon + persist device address
+        bleMidi.setOnConnectionChanged([](bool connected, const crosspad::BleMidiDevice& dev) {
+            printf("[BLE MIDI] %s: %s (%s)\n",
+                   connected ? "Connected" : "Disconnected",
+                   dev.name.c_str(), dev.address.c_str());
+            auto* st = crosspad::getPlatformServices().status;
+            if (st) st->bluetoothConnected = connected;
+
+            if (connected) {
+                s_devicePrefs.bleDevice = dev.address;
+                saveDevicePrefs();
+            }
+        });
+    }
 #endif
 
 #ifdef USE_AUDIO
