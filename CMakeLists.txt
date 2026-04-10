@@ -14,6 +14,7 @@ set(LVGL_PRO_PROJECT_DIR
 
 option(USE_MIDI "Enable MIDI input/output via RtMidi" ON)
 option(USE_AUDIO "Enable system audio output via RtAudio" ON)
+option(USE_BLE "Enable BLE MIDI via SimpleBLE" ON)
 
 # FreeRTOS — always enabled (required for crosspad-core event bus & LVGL OSAL)
 add_library(freertos_config INTERFACE)
@@ -109,6 +110,22 @@ if(USE_AUDIO)
     message(STATUS "Audio support enabled (RtAudio)")
 endif()
 
+# BLE MIDI support via SimpleBLE
+if(USE_BLE)
+    FetchContent_Declare(
+        simpleble
+        GIT_REPOSITORY https://github.com/OpenBluetoothToolbox/SimpleBLE.git
+        GIT_TAG        v0.7.3
+        SOURCE_SUBDIR  simpleble
+    )
+    FetchContent_MakeAvailable(simpleble)
+    # SimpleBLE sets /WX /W1 internally — override to suppress warnings
+    if(MSVC)
+        target_compile_options(simpleble PRIVATE /w /WX-)
+    endif()
+    message(STATUS "BLE support enabled (SimpleBLE)")
+endif()
+
 # Add compile definitions based on the selected options
 add_compile_definitions($<$<BOOL:${LV_USE_DRAW_SDL}>:LV_USE_DRAW_SDL=1>)
 add_compile_definitions($<$<BOOL:${LV_USE_LIBPNG}>:LV_USE_LIBPNG=1>)
@@ -130,20 +147,24 @@ if(MSVC)
 endif()
 
 # ── crosspad-core portable sources (auto-discover, excluding platform-specific) ──
-file(GLOB_RECURSE CROSSPAD_CORE_SOURCES crosspad-core/src/*.cpp)
+file(GLOB_RECURSE CROSSPAD_CORE_SOURCES lib/crosspad-core/src/*.cpp)
 list(FILTER CROSSPAD_CORE_SOURCES EXCLUDE REGEX "EspEventBus\\.cpp$")
 list(FILTER CROSSPAD_CORE_SOURCES EXCLUDE REGEX "SyncEventBus\\.cpp$")
 list(FILTER CROSSPAD_CORE_SOURCES EXCLUDE REGEX "Stm32Manager\\.cpp$")
+if(MSVC)
+    # PortableKitLoader uses dirent.h (POSIX-only)
+    list(FILTER CROSSPAD_CORE_SOURCES EXCLUDE REGEX "PortableKitLoader\\.cpp$")
+endif()
 # FreeRtosEventBus.cpp stays — used as the event bus implementation
 
 # ── crosspad-gui sources (auto-discover) ──
-file(GLOB_RECURSE CROSSPAD_GUI_SOURCES crosspad-gui/src/*.cpp)
+file(GLOB_RECURSE CROSSPAD_GUI_SOURCES lib/crosspad-gui/src/*.cpp)
 
 # ── Auto-reconfigure when source files are added/removed ──
 # Ninja watches these directories and triggers cmake reconfigure on changes
 set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS
-    "${CMAKE_SOURCE_DIR}/crosspad-core/src"
-    "${CMAKE_SOURCE_DIR}/crosspad-gui/src"
+    "${CMAKE_SOURCE_DIR}/lib/crosspad-core/src"
+    "${CMAKE_SOURCE_DIR}/lib/crosspad-gui/src"
     "${CMAKE_SOURCE_DIR}/src/apps"
     "${CMAKE_SOURCE_DIR}/src/pc_stubs"
     "${CMAKE_SOURCE_DIR}/src/updater"
@@ -199,6 +220,12 @@ if(USE_MIDI)
     endif()
 endif()
 
+# BLE MIDI sources and libraries
+if(USE_BLE)
+    list(APPEND MAIN_SOURCES src/midi/PcBleMidi.cpp)
+    list(APPEND MAIN_LIBS simpleble::simpleble)
+endif()
+
 # Audio sources and libraries
 if(USE_AUDIO)
     list(APPEND MAIN_SOURCES src/audio/PcAudio.cpp src/audio/PcAudioInput.cpp src/audio/PcAudioModule.cpp)
@@ -211,37 +238,42 @@ if(USE_AUDIO)
         lib/ml_synth/ml_utils_stub.cpp
     )
 
-    # ML Piano app (own CMakeLists.txt exports ML_PIANO_APP_SOURCES)
-    add_subdirectory(src/apps/ml_piano)
-
-    # Audio Mixer app
-    add_subdirectory(src/apps/mixer)
-
     # Synth engine wrapper (platform-level, like ESP32's audio codec)
     set(ML_PIANO_SYNTH_SOURCES src/synth/MlPianoSynth.cpp)
 
-    list(APPEND MAIN_SOURCES ${ML_SYNTH_SOURCES} ${ML_PIANO_SYNTH_SOURCES} ${ML_PIANO_APP_SOURCES} ${MIXER_APP_SOURCES})
+    list(APPEND MAIN_SOURCES ${ML_SYNTH_SOURCES} ${ML_PIANO_SYNTH_SOURCES})
 endif()
 
-# Settings app (always available)
-add_subdirectory(src/apps/settings)
-list(APPEND MAIN_SOURCES ${SETTINGS_APP_SOURCES})
+# ── Built-in apps (always present) ──────────────────────────────────────
+foreach(_builtin settings citest update)
+    if(EXISTS "${CMAKE_SOURCE_DIR}/src/apps/${_builtin}/CMakeLists.txt")
+        add_subdirectory(src/apps/${_builtin})
+    endif()
+endforeach()
+list(APPEND MAIN_SOURCES ${SETTINGS_APP_SOURCES} ${CITEST_APP_SOURCES} ${UPDATE_APP_SOURCES})
 
-# CI Test app (audio pipeline integration tests)
-add_subdirectory(src/apps/citest)
-list(APPEND MAIN_SOURCES ${CITEST_APP_SOURCES})
+# ── Installable apps (submodules in src/apps/crosspad-*) ────────────────
+file(GLOB _app_submodule_dirs "${CMAKE_SOURCE_DIR}/src/apps/crosspad-*/")
+foreach(_app_dir ${_app_submodule_dirs})
+    if(NOT IS_DIRECTORY "${_app_dir}")
+        continue()
+    endif()
+    get_filename_component(_app_name "${_app_dir}" NAME)
 
-# Instructions app (markdown-rendered help/shortcuts reference)
-add_subdirectory(src/apps/instructions)
-list(APPEND MAIN_SOURCES ${INSTRUCTIONS_APP_SOURCES})
+    # App Store is dev-only — skip when BUILD_TESTING is OFF (release builds)
+    if(NOT BUILD_TESTING AND _app_name STREQUAL "crosspad-appstore")
+        message(STATUS "Skipping dev-only app: ${_app_name}")
+        continue()
+    endif()
 
-# Serial Monitor app (UART output viewer)
-add_subdirectory(src/apps/serial_monitor)
-list(APPEND MAIN_SOURCES ${SERIAL_MONITOR_APP_SOURCES})
+    # Collect sources from src/
+    file(GLOB _app_sources "${_app_dir}/src/*.cpp")
+    if(_app_sources)
+        list(APPEND MAIN_SOURCES ${_app_sources})
+    endif()
 
-# Update app (version check, download, auto-update)
-add_subdirectory(src/apps/update)
-list(APPEND MAIN_SOURCES ${UPDATE_APP_SOURCES})
+    message(STATUS "App submodule: ${_app_name} (${_app_sources})")
+endforeach()
 
 # Updater module (version check, download, self-update)
 list(APPEND MAIN_SOURCES src/updater/PcUpdater.cpp)
@@ -260,7 +292,11 @@ configure_file(cmake/version.h.in "${CMAKE_BINARY_DIR}/generated/crosspad_pc_ver
 # Auto-generate app registry initialization
 include(cmake/generate_registry.cmake)
 set(APP_REGISTRY_FILE "${CMAKE_BINARY_DIR}/app_registry_init.cpp")
-generate_app_registry("${APP_REGISTRY_FILE}" "${PROJECT_SOURCE_DIR}/src/apps")
+set(_registry_excludes "")
+if(NOT BUILD_TESTING)
+    list(APPEND _registry_excludes "crosspad-appstore")
+endif()
+generate_app_registry("${APP_REGISTRY_FILE}" "${PROJECT_SOURCE_DIR}/src/apps" ${_registry_excludes})
 list(APPEND MAIN_SOURCES "${APP_REGISTRY_FILE}")
 
 # Custom target to run the executable
@@ -326,16 +362,28 @@ target_compile_definitions(CrossPad PRIVATE
     CP_LCD_HOR_RES=320
     CP_LCD_VER_RES=240
     PLATFORM_PC=1
+    CROSSPAD_REGISTER_APP_NAMED_FUNCTIONS=1
 )
 target_include_directories(CrossPad PRIVATE
     ${PROJECT_SOURCE_DIR}/src
-    ${PROJECT_SOURCE_DIR}/crosspad-core/include
-    ${PROJECT_SOURCE_DIR}/crosspad-gui/include
+    ${PROJECT_SOURCE_DIR}/lib/crosspad-core/include
+    ${PROJECT_SOURCE_DIR}/lib/crosspad-gui/include
     ${PROJECT_SOURCE_DIR}/lib/ml_synth
     ${PROJECT_SOURCE_DIR}/lib
     ${PROJECT_SOURCE_DIR}/lvgl/src
     ${CMAKE_BINARY_DIR}/generated
 )
+# Add include dirs from installable app submodules
+foreach(_app_dir ${_app_submodule_dirs})
+    if(IS_DIRECTORY "${_app_dir}/include")
+        target_include_directories(CrossPad PRIVATE "${_app_dir}/include")
+        # Also add the nested dir so apps can use short includes (e.g. "MixerApp.hpp")
+        get_filename_component(_app_name "${_app_dir}" NAME)
+        if(IS_DIRECTORY "${_app_dir}/include/${_app_name}")
+            target_include_directories(CrossPad PRIVATE "${_app_dir}/include/${_app_name}")
+        endif()
+    endif()
+endforeach()
 target_link_libraries(CrossPad ${MAIN_LIBS})
 
 # Winsock + COM (folder picker dialog) for Windows
@@ -362,10 +410,19 @@ endif()
 
 target_compile_definitions(CrossPad PRIVATE USE_FREERTOS=1)
 
+# Dev build flag — exposed to C++ so apps can show dev-only info
+if(BUILD_TESTING)
+    target_compile_definitions(CrossPad PRIVATE CROSSPAD_DEV_BUILD=1)
+endif()
+
 
 # MIDI compile definition
 if(USE_MIDI)
     target_compile_definitions(CrossPad PRIVATE USE_MIDI=1)
+endif()
+
+if(USE_BLE)
+    target_compile_definitions(CrossPad PRIVATE USE_BLE=1)
 endif()
 
 if(USE_AUDIO)

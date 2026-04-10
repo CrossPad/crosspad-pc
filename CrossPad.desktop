@@ -1,0 +1,8 @@
+[Desktop Entry]
+Type=Application
+Name=CrossPad
+Comment=CrossPad device simulator
+Exec=CrossPad
+Icon=CrossPad
+Categories=Audio;Music;Midi;
+Terminal=false

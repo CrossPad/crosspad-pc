@@ -13,29 +13,29 @@ FetchContent_MakeAvailable(Catch2)
 # ── crosspad-core sources needed by tests (explicit list) ──
 set(CORE_TEST_SOURCES
     # Platform init + services
-    ${PROJECT_SOURCE_DIR}/crosspad-core/src/platform/CrosspadPlatformInit.cpp
-    ${PROJECT_SOURCE_DIR}/crosspad-core/src/platform/PlatformCapabilities.cpp
-    ${PROJECT_SOURCE_DIR}/crosspad-core/src/platform/PlatformServices.cpp
+    ${PROJECT_SOURCE_DIR}/lib/crosspad-core/src/platform/CrosspadPlatformInit.cpp
+    ${PROJECT_SOURCE_DIR}/lib/crosspad-core/src/platform/PlatformCapabilities.cpp
+    ${PROJECT_SOURCE_DIR}/lib/crosspad-core/src/platform/PlatformServices.cpp
 
     # Event bus (FreeRTOS — same as main target)
-    ${PROJECT_SOURCE_DIR}/crosspad-core/src/event/FreeRtosEventBus.cpp
+    ${PROJECT_SOURCE_DIR}/lib/crosspad-core/src/event/FreeRtosEventBus.cpp
 
     # Pad system
-    ${PROJECT_SOURCE_DIR}/crosspad-core/src/pad/PadManager.cpp
-    ${PROJECT_SOURCE_DIR}/crosspad-core/src/pad/PadLedController.cpp
-    ${PROJECT_SOURCE_DIR}/crosspad-core/src/pad/PadAnimator.cpp
-    ${PROJECT_SOURCE_DIR}/crosspad-core/src/pad/RGBCallbackManager.cpp
+    ${PROJECT_SOURCE_DIR}/lib/crosspad-core/src/pad/PadManager.cpp
+    ${PROJECT_SOURCE_DIR}/lib/crosspad-core/src/pad/PadLedController.cpp
+    ${PROJECT_SOURCE_DIR}/lib/crosspad-core/src/pad/PadAnimator.cpp
+    ${PROJECT_SOURCE_DIR}/lib/crosspad-core/src/pad/RGBCallbackManager.cpp
 
     # App system
-    ${PROJECT_SOURCE_DIR}/crosspad-core/src/app/AppRegistry.cpp
-    ${PROJECT_SOURCE_DIR}/crosspad-core/src/app/AppManagerBase.cpp
+    ${PROJECT_SOURCE_DIR}/lib/crosspad-core/src/app/AppRegistry.cpp
+    ${PROJECT_SOURCE_DIR}/lib/crosspad-core/src/app/AppManagerBase.cpp
 
     # Settings
-    ${PROJECT_SOURCE_DIR}/crosspad-core/src/settings/CrosspadSettings.cpp
-    ${PROJECT_SOURCE_DIR}/crosspad-core/src/settings/ISettingsUI.cpp
+    ${PROJECT_SOURCE_DIR}/lib/crosspad-core/src/settings/CrosspadSettings.cpp
+    ${PROJECT_SOURCE_DIR}/lib/crosspad-core/src/settings/ISettingsUI.cpp
 
     # MIDI input routing (for e2e tests)
-    ${PROJECT_SOURCE_DIR}/crosspad-core/src/midi/MidiInputHandler.cpp
+    ${PROJECT_SOURCE_DIR}/lib/crosspad-core/src/midi/MidiInputHandler.cpp
 )
 
 # ── Test sources ──
@@ -60,8 +60,8 @@ target_compile_definitions(crosspad_tests PRIVATE
 
 target_include_directories(crosspad_tests PRIVATE
     ${PROJECT_SOURCE_DIR}/src
-    ${PROJECT_SOURCE_DIR}/crosspad-core/include
-    ${PROJECT_SOURCE_DIR}/crosspad-gui/include
+    ${PROJECT_SOURCE_DIR}/lib/crosspad-core/include
+    ${PROJECT_SOURCE_DIR}/lib/crosspad-gui/include
 )
 
 target_link_libraries(crosspad_tests PRIVATE

@@ -6,8 +6,10 @@ bin/
 .*/
 !.github/
 
-# VSCode
-.vscode
+# VSCode — ignore all except shared config
+.vscode/*
+!.vscode/settings.json
+!.vscode/tasks.json
 
 # MacOS file
 .DS_Store
@@ -23,3 +25,5 @@ _build_*.bat
 
 # Screenshots (dev/test artifacts)
 screenshots/
+app-registry.json
+apps.json

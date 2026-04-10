@@ -1,4 +1,0 @@
-set(INSTRUCTIONS_APP_SOURCES
-    ${CMAKE_CURRENT_SOURCE_DIR}/InstructionsApp.cpp
-    PARENT_SCOPE
-)

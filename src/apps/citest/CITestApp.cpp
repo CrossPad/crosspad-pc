@@ -9,7 +9,10 @@
 
 #include "pc_stubs/PcApp.hpp"
 #include "pc_stubs/pc_platform.h"
-#include "apps/mixer/AudioMixerEngine.hpp"
+#if __has_include("crosspad-mixer/AudioMixerEngine.hpp")
+#include "crosspad-mixer/AudioMixerEngine.hpp"
+#define HAS_MIXER 1
+#endif
 #include "synth/MlPianoSynth.hpp"
 
 #include "crosspad/app/AppRegistrar.hpp"
@@ -162,7 +165,9 @@ static void drainTap(crosspad::AudioRingBuffer<int16_t>& tap) {
 static void testRunnerTask(void* pvParam) {
     (void)pvParam;
 
+#ifdef HAS_MIXER
     auto& mixer = getMixerEngine();
+#endif
     auto* synth = pc_platform_get_synth_engine();
 
     // Tap buffer: 2 seconds stereo at 48kHz
@@ -176,6 +181,14 @@ static void testRunnerTask(void* pvParam) {
         return;
     }
 
+#ifndef HAS_MIXER
+    // No mixer installed — skip all mixer-dependent tests
+    for (int i = 0; i < NUM_STAGES; i++)
+        setStage(i, StageResult::FAIL, "mixer not installed");
+    s_testRunning.store(false);
+    vTaskDelete(nullptr);
+    return;
+#else
     // Save original mixer state
     float origSynthVol = mixer.getChannelVolume(MixerInput::SYNTH);
     bool origSynthMuted = mixer.isChannelMuted(MixerInput::SYNTH);
@@ -396,6 +409,7 @@ static void testRunnerTask(void* pvParam) {
 
         setStage(6, StageResult::PASS, "mixer restored");
     }
+#endif // HAS_MIXER
 
     // Count results
     int pass = 0, fail = 0;

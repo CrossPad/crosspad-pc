@@ -1,9 +1,12 @@
 /**
  * @file PcUpdater.cpp
- * @brief Auto-update implementation for Windows
+ * @brief Auto-update implementation for Windows and Linux
  *
- * WinHTTP for downloads, PowerShell for zip extraction, batch script for
- * exe replacement. Supports version caching and rollback.
+ * Cross-platform version check via IHttpClient + GitHub Releases API.
+ * Windows: WinHTTP for binary downloads, PowerShell for zip extraction,
+ *          batch script for exe replacement.
+ * Linux:   curl for AppImage downloads, shell script for replacement.
+ * Supports version caching and rollback on all platforms.
  */
 
 #include "updater/PcUpdater.hpp"
@@ -96,6 +99,20 @@ static std::string stripVersionPrefix(const std::string& tag)
     return t;
 }
 
+/* ── Platform asset matching ─────────────────────────────────────────── */
+
+static bool matchPlatformAsset(const char* name)
+{
+#ifdef _WIN32
+    return strstr(name, "Windows") && strstr(name, ".zip");
+#elif defined(__linux__)
+    return strstr(name, "Linux") && strstr(name, ".AppImage");
+#else
+    (void)name;
+    return false;
+#endif
+}
+
 /* ── Helper: parse a single release JSON object into ReleaseInfo ────── */
 
 static bool parseReleaseJson(JsonObject rel, ReleaseInfo& out, const char* currentVersion)
@@ -109,11 +126,11 @@ static bool parseReleaseJson(JsonObject rel, ReleaseInfo& out, const char* curre
     out.releaseNotes = rel["body"] | "";
     out.isCurrent = (out.version == currentVersion);
 
-    // Find Windows zip asset
+    // Find platform-specific asset
     JsonArray assets = rel["assets"].as<JsonArray>();
     for (JsonObject asset : assets) {
         const char* name = asset["name"] | "";
-        if (strstr(name, "Windows") && strstr(name, ".zip")) {
+        if (matchPlatformAsset(name)) {
             out.downloadUrl = asset["browser_download_url"] | "";
             out.assetSize = asset["size"] | (uint64_t)0;
             break;
@@ -121,6 +138,133 @@ static bool parseReleaseJson(JsonObject rel, ReleaseInfo& out, const char* curre
     }
     return !out.downloadUrl.empty();
 }
+
+/* ── Version Check (shared — uses IHttpClient) ──────────────────────── */
+
+UpdateInfo PcUpdater::checkForUpdate()
+{
+    return checkForUpdate(false);
+}
+
+UpdateInfo PcUpdater::checkForUpdate(bool includePrereleases)
+{
+    UpdateInfo info;
+    info.currentVersion = CROSSPAD_PC_VERSION;
+
+    auto& http = crosspad::getHttpClient();
+    if (!http.isAvailable()) {
+        info.errorMessage = "HTTP client not available";
+        return info;
+    }
+
+    crosspad::HttpRequest req;
+    // /releases/latest skips prereleases; to include them, fetch the list
+    if (includePrereleases) {
+        req.url = "https://api.github.com/repos/CrossPad/crosspad-pc/releases?per_page=1";
+    } else {
+        req.url = "https://api.github.com/repos/CrossPad/crosspad-pc/releases/latest";
+    }
+    req.timeoutMs = 10000;
+    req.headers.push_back({"Accept", "application/vnd.github.v3+json"});
+    req.headers.push_back({"User-Agent", "CrossPad/" CROSSPAD_PC_VERSION});
+
+    printf("[Updater] Checking for updates (prereleases=%s)...\n",
+           includePrereleases ? "yes" : "no");
+    auto resp = http.get(req);
+
+    if (!resp.success()) {
+        if (resp.statusCode == 0)
+            info.errorMessage = resp.errorMessage.empty() ? "Network error" : resp.errorMessage;
+        else if (resp.statusCode == 404)
+            info.errorMessage = "No releases found";
+        else
+            info.errorMessage = "GitHub API error: HTTP " + std::to_string(resp.statusCode);
+        return info;
+    }
+
+    JsonDocument doc;
+    if (deserializeJson(doc, resp.body)) {
+        info.errorMessage = "JSON parse error";
+        return info;
+    }
+
+    // /releases?per_page=1 returns an array, /releases/latest returns an object
+    JsonObject releaseObj;
+    if (includePrereleases) {
+        JsonArray arr = doc.as<JsonArray>();
+        if (arr.size() == 0) { info.errorMessage = "No releases found"; return info; }
+        releaseObj = arr[0].as<JsonObject>();
+    } else {
+        releaseObj = doc.as<JsonObject>();
+    }
+
+    const char* tagName = releaseObj["tag_name"] | "";
+    if (strlen(tagName) == 0) {
+        info.errorMessage = "No tag_name in release";
+        return info;
+    }
+
+    info.latestVersion = stripVersionPrefix(tagName);
+    info.releaseNotes = releaseObj["body"] | "";
+
+    JsonArray assets = releaseObj["assets"].as<JsonArray>();
+    for (JsonObject asset : assets) {
+        const char* name = asset["name"] | "";
+        if (matchPlatformAsset(name)) {
+            info.downloadUrl = asset["browser_download_url"] | "";
+            info.assetSize = asset["size"] | (uint64_t)0;
+            break;
+        }
+    }
+
+    if (info.downloadUrl.empty()) {
+        info.errorMessage = "No compatible asset in release";
+        return info;
+    }
+
+    info.updateAvailable = compareSemver(info.latestVersion, info.currentVersion) > 0;
+
+    printf("[Updater] Current: %s, Latest: %s, Update: %s\n",
+           info.currentVersion.c_str(), info.latestVersion.c_str(),
+           info.updateAvailable ? "YES" : "no");
+    return info;
+}
+
+/* ── List Releases (shared — uses IHttpClient) ──────────────────────── */
+
+std::vector<ReleaseInfo> PcUpdater::listReleases()
+{
+    std::vector<ReleaseInfo> releases;
+
+    auto& http = crosspad::getHttpClient();
+    if (!http.isAvailable()) return releases;
+
+    crosspad::HttpRequest req;
+    req.url = "https://api.github.com/repos/CrossPad/crosspad-pc/releases?per_page=10";
+    req.timeoutMs = 10000;
+    req.headers.push_back({"Accept", "application/vnd.github.v3+json"});
+    req.headers.push_back({"User-Agent", "CrossPad/" CROSSPAD_PC_VERSION});
+
+    auto resp = http.get(req);
+    if (!resp.success()) return releases;
+
+    JsonDocument doc;
+    if (deserializeJson(doc, resp.body)) return releases;
+
+    JsonArray arr = doc.as<JsonArray>();
+    for (JsonObject rel : arr) {
+        ReleaseInfo info;
+        if (parseReleaseJson(rel, info, CROSSPAD_PC_VERSION)) {
+            info.isCached = isCached(info.version);
+            releases.push_back(info);
+        }
+    }
+
+    printf("[Updater] Listed %zu releases\n", releases.size());
+    return releases;
+}
+
+/* ══════════════════════════════════════════════════════════════════════ */
 
 #ifdef _WIN32
 
@@ -221,131 +365,6 @@ std::vector<std::string> PcUpdater::getCachedVersions() const
         }
     }
     return versions;
-}
-
-/* ── Version Check ───────────────────────────────────────────────────── */
-
-UpdateInfo PcUpdater::checkForUpdate()
-{
-    return checkForUpdate(false);
-}
-
-UpdateInfo PcUpdater::checkForUpdate(bool includePrereleases)
-{
-    UpdateInfo info;
-    info.currentVersion = CROSSPAD_PC_VERSION;
-
-    auto& http = crosspad::getHttpClient();
-    if (!http.isAvailable()) {
-        info.errorMessage = "HTTP client not available";
-        return info;
-    }
-
-    crosspad::HttpRequest req;
-    // /releases/latest skips prereleases; to include them, fetch the list
-    if (includePrereleases) {
-        req.url = "https://api.github.com/repos/CrossPad/crosspad-pc/releases?per_page=1";
-    } else {
-        req.url = "https://api.github.com/repos/CrossPad/crosspad-pc/releases/latest";
-    }
-    req.timeoutMs = 10000;
-    req.headers.push_back({"Accept", "application/vnd.github.v3+json"});
-    req.headers.push_back({"User-Agent", "CrossPad/" CROSSPAD_PC_VERSION});
-
-    printf("[Updater] Checking for updates (prereleases=%s)...\n",
-           includePrereleases ? "yes" : "no");
-    auto resp = http.get(req);
-
-    if (!resp.success()) {
-        if (resp.statusCode == 0)
-            info.errorMessage = resp.errorMessage.empty() ? "Network error" : resp.errorMessage;
-        else if (resp.statusCode == 404)
-            info.errorMessage = "No releases found";
-        else
-            info.errorMessage = "GitHub API error: HTTP " + std::to_string(resp.statusCode);
-        return info;
-    }
-
-    JsonDocument doc;
-    if (deserializeJson(doc, resp.body)) {
-        info.errorMessage = "JSON parse error";
-        return info;
-    }
-
-    // /releases?per_page=1 returns an array, /releases/latest returns an object
-    JsonObject releaseObj;
-    if (includePrereleases) {
-        JsonArray arr = doc.as<JsonArray>();
-        if (arr.size() == 0) { info.errorMessage = "No releases found"; return info; }
-        releaseObj = arr[0].as<JsonObject>();
-    } else {
-        releaseObj = doc.as<JsonObject>();
-    }
-
-    const char* tagName = releaseObj["tag_name"] | "";
-    if (strlen(tagName) == 0) {
-        info.errorMessage = "No tag_name in release";
-        return info;
-    }
-
-    info.latestVersion = stripVersionPrefix(tagName);
-    info.releaseNotes = releaseObj["body"] | "";
-
-    JsonArray assets = releaseObj["assets"].as<JsonArray>();
-    for (JsonObject asset : assets) {
-        const char* name = asset["name"] | "";
-        if (strstr(name, "Windows") && strstr(name, ".zip")) {
-            info.downloadUrl = asset["browser_download_url"] | "";
-            info.assetSize = asset["size"] | (uint64_t)0;
-            break;
-        }
-    }
-
-    if (info.downloadUrl.empty()) {
-        info.errorMessage = "No Windows asset in release";
-        return info;
-    }
-
-    info.updateAvailable = compareSemver(info.latestVersion, info.currentVersion) > 0;
-
-    printf("[Updater] Current: %s, Latest: %s, Update: %s\n",
-           info.currentVersion.c_str(), info.latestVersion.c_str(),
-           info.updateAvailable ? "YES" : "no");
-    return info;
-}
-
-/* ── List Releases ───────────────────────────────────────────────────── */
-
-std::vector<ReleaseInfo> PcUpdater::listReleases()
-{
-    std::vector<ReleaseInfo> releases;
-
-    auto& http = crosspad::getHttpClient();
-    if (!http.isAvailable()) return releases;
-
-    crosspad::HttpRequest req;
-    req.url = "https://api.github.com/repos/CrossPad/crosspad-pc/releases?per_page=10";
-    req.timeoutMs = 10000;
-    req.headers.push_back({"Accept", "application/vnd.github.v3+json"});
-    req.headers.push_back({"User-Agent", "CrossPad/" CROSSPAD_PC_VERSION});
-
-    auto resp = http.get(req);
-    if (!resp.success()) return releases;
-
-    JsonDocument doc;
-    if (deserializeJson(doc, resp.body)) return releases;
-
-    JsonArray arr = doc.as<JsonArray>();
-    for (JsonObject rel : arr) {
-        ReleaseInfo info;
-        if (parseReleaseJson(rel, info, CROSSPAD_PC_VERSION)) {
-            info.isCached = isCached(info.version);
-            releases.push_back(info);
-        }
-    }
-
-    printf("[Updater] Listed %zu releases\n", releases.size());
-    return releases;
 }
 
 /* ── WinHTTP binary download helper ──────────────────────────────────── */
@@ -766,19 +785,332 @@ std::string PcUpdater::getCachedMetadataJson(const std::string& version)
                         std::istreambuf_iterator<char>());
 }
 
-#else // ── Non-Windows stubs ─────────────────────────────────────────── */
+#elif defined(__linux__) // ── Linux implementation (AppImage) ────────── */
 
-UpdateInfo PcUpdater::checkForUpdate() { return checkForUpdate(false); }
+#include <chrono>
+#include <climits>
+#include <filesystem>
+#include <fstream>
+#include <sys/stat.h>
+#include <sys/wait.h>
+#include <unistd.h>
 
-UpdateInfo PcUpdater::checkForUpdate(bool)
+namespace fs = std::filesystem;
+
+/* ── Linux helpers ──────────────────────────────────────────────────── */
+
+static std::string getTempUpdateDir()
 {
-    UpdateInfo info;
-    info.currentVersion = CROSSPAD_PC_VERSION;
-    info.errorMessage = "Auto-update not available on this platform";
-    return info;
+    return "/tmp/crosspad_update";
 }
 
-std::vector<ReleaseInfo> PcUpdater::listReleases() { return {}; }
+std::string PcUpdater::getCurrentExePath()
+{
+    char buf[PATH_MAX];
+    ssize_t len = readlink("/proc/self/exe", buf, sizeof(buf) - 1);
+    if (len < 0) return "";
+    buf[len] = '\0';
+    return std::string(buf);
+}
+
+std::string PcUpdater::getCacheDir()
+{
+    const char* home = getenv("HOME");
+    if (!home) return "/tmp/crosspad/versions";
+    return std::string(home) + "/.local/share/crosspad/versions";
+}
+
+bool PcUpdater::isCached(const std::string& version) const
+{
+    return fs::exists(fs::path(getCacheDir()) / ("CrossPad_v" + version + ".AppImage"));
+}
+
+std::vector<std::string> PcUpdater::getCachedVersions() const
+{
+    std::vector<std::string> versions;
+    std::string cacheDir = getCacheDir();
+    if (!fs::exists(cacheDir)) return versions;
+    for (auto& entry : fs::directory_iterator(cacheDir)) {
+        std::string name = entry.path().filename().string();
+        // Pattern: CrossPad_v0.3.1.AppImage
+        if (name.find("CrossPad_v") == 0 && name.size() > 19 &&
+            name.substr(name.size() - 9) == ".AppImage") {
+            versions.push_back(name.substr(10, name.size() - 19));
+        }
+    }
+    return versions;
+}
+
+/* ── curl-based download with progress ──────────────────────────────── */
+
+static bool curlDownload(const std::string& url, const std::string& outputPath,
+                          uint64_t expectedSize, UpdateProgressCallback progressCb)
+{
+    if (progressCb) progressCb(UpdateState::Downloading, 0, "Connecting...");
+
+    pid_t pid = fork();
+    if (pid == 0) {
+        execlp("curl", "curl", "-L", "-f", "-s",
+               "-o", outputPath.c_str(), url.c_str(), (char*)nullptr);
+        _exit(127);
+    }
+    if (pid < 0) {
+        if (progressCb) progressCb(UpdateState::Error, 0, "Failed to start download");
+        return false;
+    }
+
+    // Poll file size for progress while curl downloads
+    int status;
+    while (waitpid(pid, &status, WNOHANG) == 0) {
+        if (expectedSize > 0 && progressCb) {
+            std::error_code ec;
+            if (fs::exists(outputPath, ec)) {
+                auto size = fs::file_size(outputPath, ec);
+                if (!ec) {
+                    int pct = (int)((size * 100) / expectedSize);
+                    char msg[64];
+                    snprintf(msg, sizeof(msg), "%.1f / %.1f MB",
+                             size / 1048576.0, expectedSize / 1048576.0);
+                    progressCb(UpdateState::Downloading, pct, msg);
+                }
+            }
+        }
+        usleep(500000);
+    }
+
+    if (!WIFEXITED(status) || WEXITSTATUS(status) != 0) {
+        if (progressCb) progressCb(UpdateState::Error, 0, "Download failed");
+        std::error_code ec;
+        fs::remove(outputPath, ec);
+        return false;
+    }
+
+    if (progressCb) progressCb(UpdateState::Downloading, 100, "Download complete");
+    return true;
+}
+
+/* ── Download and cache AppImage ────────────────────────────────────── */
+
+static bool downloadAndCacheAppImage(const ReleaseInfo& release,
+                                      UpdateProgressCallback progressCb,
+                                      std::string& outCachedPath)
+{
+    std::string cacheDir = PcUpdater::getCacheDir();
+    fs::create_directories(cacheDir);
+
+    std::string cachedPath = (fs::path(cacheDir) /
+        ("CrossPad_v" + release.version + ".AppImage")).string();
+
+    if (!curlDownload(release.downloadUrl, cachedPath, release.assetSize, progressCb))
+        return false;
+
+    // Make executable
+    chmod(cachedPath.c_str(), 0755);
+
+    // Save release notes
+    std::string prefix = (fs::path(cacheDir) / ("CrossPad_v" + release.version)).string();
+    if (!release.releaseNotes.empty()) {
+        std::ofstream nf(prefix + ".md");
+        if (nf.is_open()) nf << release.releaseNotes;
+    }
+
+    // Save release metadata JSON
+    {
+        JsonDocument meta;
+        meta["version"]       = release.version;
+        meta["tag_name"]      = release.tagName;
+        meta["release_name"]  = release.releaseName;
+        meta["asset_size"]    = release.assetSize;
+        meta["cached_at"]     = (int64_t)std::chrono::duration_cast<std::chrono::seconds>(
+            std::chrono::system_clock::now().time_since_epoch()).count();
+
+        std::ofstream mf(prefix + ".json");
+        if (mf.is_open()) serializeJsonPretty(meta, mf);
+    }
+
+    outCachedPath = cachedPath;
+    printf("[Updater] Cached AppImage: %s\n", cachedPath.c_str());
+    return true;
+}
+
+/* ── Public download methods ────────────────────────────────────────── */
+
+bool PcUpdater::downloadUpdate(const UpdateInfo& info, UpdateProgressCallback progressCb)
+{
+    if (info.downloadUrl.empty()) {
+        if (progressCb) progressCb(UpdateState::Error, 0, "No download URL");
+        return false;
+    }
+
+    ReleaseInfo rel;
+    rel.version      = info.latestVersion;
+    rel.tagName      = "v" + info.latestVersion;
+    rel.releaseName  = "";
+    rel.downloadUrl  = info.downloadUrl;
+    rel.releaseNotes = info.releaseNotes;
+    rel.assetSize    = info.assetSize;
+
+    std::string cachedPath;
+    bool ok = downloadAndCacheAppImage(rel, progressCb, cachedPath);
+    if (ok) {
+        extractDir_ = cachedPath;
+        if (progressCb) progressCb(UpdateState::ReadyToInstall, 100, "Ready to install");
+    }
+    return ok;
+}
+
+bool PcUpdater::downloadAndCache(const ReleaseInfo& release, UpdateProgressCallback progressCb)
+{
+    if (release.downloadUrl.empty()) {
+        if (progressCb) progressCb(UpdateState::Error, 0, "No download URL");
+        return false;
+    }
+
+    std::string cachedPath;
+    bool ok = downloadAndCacheAppImage(release, progressCb, cachedPath);
+    if (ok && progressCb)
+        progressCb(UpdateState::ReadyToInstall, 100, "Ready to install");
+    return ok;
+}
+
+/* ── Shell script generation ────────────────────────────────────────── */
+
+std::string PcUpdater::prepareInstall()
+{
+    if (extractDir_.empty()) return "";
+
+    std::string exePath = getCurrentExePath();
+    std::string tempDir = getTempUpdateDir();
+    fs::create_directories(tempDir);
+    std::string scriptPath = tempDir + "/update.sh";
+
+    std::ofstream script(scriptPath);
+    if (!script.is_open()) return "";
+
+    script << "#!/bin/bash\n";
+    script << "echo 'Updating CrossPad...'\n";
+    script << "while kill -0 " << getpid() << " 2>/dev/null; do sleep 0.5; done\n";
+    script << "cp '" << extractDir_ << "' '" << exePath << "'\n";
+    script << "chmod +x '" << exePath << "'\n";
+    script << "echo 'Update complete! Restarting...'\n";
+    script << "'" << exePath << "' &\n";
+    script << "sleep 2\n";
+    script << "rm -rf '" << tempDir << "'\n";
+    script.close();
+
+    chmod(scriptPath.c_str(), 0755);
+    printf("[Updater] Update script written to %s\n", scriptPath.c_str());
+    return scriptPath;
+}
+
+std::string PcUpdater::prepareInstallFromCache(const std::string& version)
+{
+    std::string cachedAppImage = (fs::path(getCacheDir()) /
+        ("CrossPad_v" + version + ".AppImage")).string();
+    if (!fs::exists(cachedAppImage)) {
+        printf("[Updater] Cached AppImage not found: %s\n", cachedAppImage.c_str());
+        return "";
+    }
+
+    std::string exePath = getCurrentExePath();
+    std::string tempDir = getTempUpdateDir();
+    fs::create_directories(tempDir);
+    std::string scriptPath = tempDir + "/update.sh";
+
+    std::ofstream script(scriptPath);
+    if (!script.is_open()) return "";
+
+    script << "#!/bin/bash\n";
+    script << "echo 'Updating CrossPad...'\n";
+    script << "while kill -0 " << getpid() << " 2>/dev/null; do sleep 0.5; done\n";
+    script << "cp '" << cachedAppImage << "' '" << exePath << "'\n";
+    script << "chmod +x '" << exePath << "'\n";
+    script << "echo 'Update complete! Restarting...'\n";
+    script << "'" << exePath << "' &\n";
+    script << "sleep 2\n";
+    script << "rm -rf '" << tempDir << "'\n";
+    script.close();
+
+    chmod(scriptPath.c_str(), 0755);
+    printf("[Updater] Cache install script written to %s\n", scriptPath.c_str());
+    return scriptPath;
+}
+
+/* ── Cache current AppImage before switching ────────────────────────── */
+
+static void cacheCurrentExe()
+{
+    std::string curVersion = CROSSPAD_PC_VERSION;
+    std::string cacheDir = PcUpdater::getCacheDir();
+    fs::create_directories(cacheDir);
+    std::string cachedPath = (fs::path(cacheDir) /
+        ("CrossPad_v" + curVersion + ".AppImage")).string();
+
+    if (fs::exists(cachedPath)) return;
+
+    std::string curExe = PcUpdater::getCurrentExePath();
+    std::error_code ec;
+    fs::copy_file(curExe, cachedPath, fs::copy_options::none, ec);
+    if (!ec) {
+        printf("[Updater] Cached current AppImage (v%s)\n", curVersion.c_str());
+    } else {
+        printf("[Updater] Warning: failed to cache current AppImage: %s\n", ec.message().c_str());
+    }
+}
+
+/* ── Launch script and exit ─────────────────────────────────────────── */
+
+static void launchScriptAndExit(const std::string& scriptPath)
+{
+    pid_t pid = fork();
+    if (pid == 0) {
+        setsid();
+        execl("/bin/bash", "bash", scriptPath.c_str(), (char*)nullptr);
+        _exit(127);
+    }
+    if (pid > 0) {
+        printf("[Updater] Update script launched (PID %d), exiting...\n", pid);
+        fflush(stdout);
+        _exit(0);
+    }
+    printf("[Updater] ERROR: Failed to fork for update script\n");
+}
+
+void PcUpdater::installAndRestart()
+{
+    std::string scriptPath = prepareInstall();
+    if (scriptPath.empty()) return;
+    cacheCurrentExe();
+    launchScriptAndExit(scriptPath);
+}
+
+void PcUpdater::installCachedAndRestart(const std::string& version)
+{
+    std::string scriptPath = prepareInstallFromCache(version);
+    if (scriptPath.empty()) return;
+    cacheCurrentExe();
+    launchScriptAndExit(scriptPath);
+}
+
+std::string PcUpdater::getCachedReleaseNotes(const std::string& version)
+{
+    auto path = fs::path(getCacheDir()) / ("CrossPad_v" + version + ".md");
+    if (!fs::exists(path)) return "";
+    std::ifstream f(path);
+    return std::string((std::istreambuf_iterator<char>(f)),
+                        std::istreambuf_iterator<char>());
+}
+
+std::string PcUpdater::getCachedMetadataJson(const std::string& version)
+{
+    auto path = fs::path(getCacheDir()) / ("CrossPad_v" + version + ".json");
+    if (!fs::exists(path)) return "";
+    std::ifstream f(path);
+    return std::string((std::istreambuf_iterator<char>(f)),
+                        std::istreambuf_iterator<char>());
+}
+
+#else // ── Stubs for unsupported platforms ───────────────────────────── */
 
 bool PcUpdater::downloadUpdate(const UpdateInfo&, UpdateProgressCallback cb)
 {

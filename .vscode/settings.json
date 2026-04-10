@@ -1,0 +1,13 @@
+{
+  "VsCodeTaskButtons.showCounter": false,
+  "VsCodeTaskButtons.tasks": [
+    {
+      "label": "$(package) CP Tools",
+      "task": "CrossPad: App Manager"
+    },
+    {
+      "label": "$(zap) Run",
+      "task": "CrossPad: Run"
+    }
+  ]
+}
