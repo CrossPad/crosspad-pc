@@ -597,6 +597,49 @@ lv_obj_t* Update_create(lv_obj_t* parent, App* a)
     lv_obj_add_flag(s_versionListBox, LV_OBJ_FLAG_SCROLLABLE);
     lv_obj_set_scrollbar_mode(s_versionListBox, LV_SCROLLBAR_MODE_AUTO);
 
+#ifndef CROSSPAD_DEV_BUILD
+    /* ── Apps (release only) ─────────────────────────────────── */
+    create_section_header(cont, "Apps");
+
+    lv_obj_t* appsInfoLabel = lv_label_create(cont);
+    lv_label_set_text(appsInfoLabel,
+        LV_SYMBOL_WARNING " App management is available in the\n"
+        "developer build (BUILD_TESTING=ON).");
+    lv_obj_set_style_text_font(appsInfoLabel, &lv_font_montserrat_10, 0);
+    lv_obj_set_style_text_color(appsInfoLabel, lv_color_hex(0xFFAA33), 0);
+    lv_obj_set_width(appsInfoLabel, lv_pct(100));
+    lv_label_set_long_mode(appsInfoLabel, LV_LABEL_LONG_WRAP);
+
+    // List registered apps
+    lv_obj_t* appsInfoLabel2 = lv_label_create(cont);
+    lv_label_set_text(appsInfoLabel2, "Installed apps:");
+    lv_obj_set_style_text_font(appsInfoLabel2, &lv_font_montserrat_10, 0);
+    lv_obj_set_style_text_color(appsInfoLabel2, lv_color_hex(0x888888), 0);
+    lv_obj_set_width(appsInfoLabel2, lv_pct(100));
+    lv_obj_set_style_pad_top(appsInfoLabel2, 4, 0);
+
+    auto& registry = crosspad::AppRegistry::getInstance();
+    for (int i = 0; i < registry.getAppCount(); i++) {
+        const auto* entry = registry.getApp(i);
+        if (!entry) continue;
+        lv_obj_t* appRow = lv_obj_create(cont);
+        lv_obj_set_size(appRow, lv_pct(100), 20);
+        lv_obj_set_style_bg_opa(appRow, LV_OPA_TRANSP, 0);
+        lv_obj_set_style_border_width(appRow, 0, 0);
+        lv_obj_set_style_pad_all(appRow, 0, 0);
+        lv_obj_set_style_pad_left(appRow, 8, 0);
+        lv_obj_remove_flag(appRow, LV_OBJ_FLAG_SCROLLABLE);
+
+        lv_obj_t* appLbl = lv_label_create(appRow);
+        static char appBuf[64];
+        snprintf(appBuf, sizeof(appBuf), LV_SYMBOL_OK " %s", entry->name);
+        lv_label_set_text(appLbl, appBuf);
+        lv_obj_set_style_text_font(appLbl, &lv_font_montserrat_10, 0);
+        lv_obj_set_style_text_color(appLbl, lv_color_hex(0xBBBBBB), 0);
+        lv_obj_align(appLbl, LV_ALIGN_LEFT_MID, 0, 0);
+    }
+#endif
+
     /* ── Timer ───────────────────────────────────────────────── */
     s_updateTimer = lv_timer_create(update_timer_cb, 500, nullptr);
 

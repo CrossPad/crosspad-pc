@@ -202,10 +202,129 @@ void pc_http_client_init() {
     printf("[PC] HTTP client initialized (WinHTTP)\n");
 }
 
-#else // Linux/Mac — no WinHTTP, use NullHttpClient default
+#else // Linux/Mac — use curl command-line
+
+#include <cstdlib>
+#include <fstream>
+#include <sstream>
+#include <unistd.h>
+
+namespace {
+
+class PcHttpClient : public crosspad::IHttpClient {
+public:
+    bool isAvailable() const override {
+        return system("command -v curl > /dev/null 2>&1") == 0;
+    }
+
+    crosspad::HttpResponse get(const crosspad::HttpRequest& request) override {
+        return perform(request, "GET");
+    }
+
+    crosspad::HttpResponse post(const crosspad::HttpRequest& request) override {
+        return perform(request, "POST");
+    }
+
+private:
+    /// Shell-escape for single-quoted strings (replace ' with '\'')
+    static std::string shellEscape(const std::string& s) {
+        std::string out;
+        out.reserve(s.size() + 8);
+        for (char c : s) {
+            if (c == '\'') out += "'\\''";
+            else out += c;
+        }
+        return out;
+    }
+
+    crosspad::HttpResponse perform(const crosspad::HttpRequest& request,
+                                    const char* method)
+    {
+        crosspad::HttpResponse resp;
+
+        // Temp file for response body
+        char tmpPath[] = "/tmp/crosspad_http_XXXXXX";
+        int fd = mkstemp(tmpPath);
+        if (fd < 0) {
+            resp.errorMessage = "Failed to create temp file";
+            return resp;
+        }
+        close(fd);
+
+        // Build curl command: body → temp file, status code → stdout
+        std::string cmd = "curl -s -L";
+        cmd += " -X ";
+        cmd += method;
+        cmd += " -o '";
+        cmd += tmpPath;
+        cmd += "' -w '%{http_code}'";
+        cmd += " --max-time ";
+        cmd += std::to_string(std::max(1u, request.timeoutMs / 1000));
+
+        for (const auto& h : request.headers) {
+            cmd += " -H '";
+            cmd += shellEscape(h.first);
+            cmd += ": ";
+            cmd += shellEscape(h.second);
+            cmd += "'";
+        }
+
+        if (!request.contentType.empty()) {
+            cmd += " -H 'Content-Type: ";
+            cmd += shellEscape(request.contentType);
+            cmd += "'";
+        }
+
+        if (!request.body.empty()) {
+            cmd += " --data-raw '";
+            cmd += shellEscape(request.body);
+            cmd += "'";
+        }
+
+        cmd += " '";
+        cmd += shellEscape(request.url);
+        cmd += "' 2>/dev/null";
+
+        FILE* pipe = popen(cmd.c_str(), "r");
+        if (!pipe) {
+            unlink(tmpPath);
+            resp.errorMessage = "Failed to execute curl";
+            return resp;
+        }
+
+        // curl -w '%{http_code}' prints the status code to stdout
+        char statusBuf[16] = {};
+        if (fgets(statusBuf, sizeof(statusBuf), pipe)) {
+            resp.statusCode = atoi(statusBuf);
+        }
+        pclose(pipe);
+
+        // Read body from temp file
+        {
+            std::ifstream f(tmpPath, std::ios::binary);
+            if (f.is_open()) {
+                std::ostringstream ss;
+                ss << f.rdbuf();
+                resp.body = ss.str();
+            }
+        }
+        unlink(tmpPath);
+
+        if (resp.statusCode == 0) {
+            resp.errorMessage = "curl request failed";
+        }
+
+        return resp;
+    }
+};
+
+static PcHttpClient s_pcHttpClient;
+
+} // anonymous namespace
 
 void pc_http_client_init() {
-    printf("[PC] HTTP client not available (no WinHTTP on this platform)\n");
+    crosspad::getPlatformServices().setHttpClient(&s_pcHttpClient);
+    printf("[PC] HTTP client initialized (curl)\n");
 }
 
 #endif

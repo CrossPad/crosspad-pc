@@ -401,6 +401,11 @@ endif()
 
 target_compile_definitions(CrossPad PRIVATE USE_FREERTOS=1)
 
+# Dev build flag — exposed to C++ so apps can show dev-only info
+if(BUILD_TESTING)
+    target_compile_definitions(CrossPad PRIVATE CROSSPAD_DEV_BUILD=1)
+endif()
+
 
 # MIDI compile definition
 if(USE_MIDI)

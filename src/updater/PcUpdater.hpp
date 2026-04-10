@@ -4,9 +4,11 @@
  * @file PcUpdater.hpp
  * @brief Auto-update system — checks GitHub Releases, downloads, caches, and self-replaces
  *
- * Windows-only. Uses WinHTTP for binary downloads and PowerShell for zip
- * extraction. Self-update works via a batch script that replaces the exe
- * after the process exits. Supports version caching and rollback.
+ * Cross-platform version check via IHttpClient + GitHub Releases API.
+ * Platform-specific download and install:
+ *   - Windows: WinHTTP download, PowerShell zip extraction, batch script replacement
+ *   - Linux:   curl download, AppImage caching, shell script replacement
+ * Supports version caching and rollback on all platforms.
  */
 
 #include <cstdint>

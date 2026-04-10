@@ -4,7 +4,15 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Default Tools
 
-**Always prefer CrossPad MCP tools** (`crosspad_build`, `crosspad_run`, `crosspad_screenshot`, `crosspad_log`, `crosspad_test`, etc.) over manual bash commands for building, running, testing, and interacting with the simulator. The MCP server handles MSVC environment setup, paths, and simulator communication automatically.
+**Always prefer CrossPad MCP tools** over manual bash commands for building, running, testing, and interacting with the simulator. The MCP server handles MSVC/GCC environment setup, paths, and simulator communication automatically.
+
+Key tools:
+- `crosspad_build` — build/run/check simulator (`action: pc/pc_run/pc_check/pc_log`) and ESP-IDF firmware (`action: idf`)
+- `crosspad_test` — run Catch2 tests (`action: run/scaffold`)
+- `crosspad_sim` — screenshots, input, stats, settings (`action: screenshot/input/stats/settings_get/settings_set`)
+- `crosspad_repo` — git status and submodule diffs (`action: status/diff`)
+- `crosspad_code` — search symbols, query interfaces, list apps, scaffold (`action: search/interfaces/apps/scaffold`)
+- `crosspad_apps` — app package manager (`action: list/install/remove/update/sync`)
 
 ## Project Overview
 
