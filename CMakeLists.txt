@@ -119,6 +119,10 @@ if(USE_BLE)
         SOURCE_SUBDIR  simpleble
     )
     FetchContent_MakeAvailable(simpleble)
+    # SimpleBLE sets /WX /W1 internally — override to suppress warnings
+    if(MSVC)
+        target_compile_options(simpleble PRIVATE /w)
+    endif()
     message(STATUS "BLE support enabled (SimpleBLE)")
 endif()
 
@@ -354,6 +358,7 @@ target_compile_definitions(CrossPad PRIVATE
     CP_LCD_HOR_RES=320
     CP_LCD_VER_RES=240
     PLATFORM_PC=1
+    CROSSPAD_REGISTER_APP_NAMED_FUNCTIONS=1
 )
 target_include_directories(CrossPad PRIVATE
     ${PROJECT_SOURCE_DIR}/src
