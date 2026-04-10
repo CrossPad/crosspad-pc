@@ -151,6 +151,10 @@ file(GLOB_RECURSE CROSSPAD_CORE_SOURCES lib/crosspad-core/src/*.cpp)
 list(FILTER CROSSPAD_CORE_SOURCES EXCLUDE REGEX "EspEventBus\\.cpp$")
 list(FILTER CROSSPAD_CORE_SOURCES EXCLUDE REGEX "SyncEventBus\\.cpp$")
 list(FILTER CROSSPAD_CORE_SOURCES EXCLUDE REGEX "Stm32Manager\\.cpp$")
+if(MSVC)
+    # PortableKitLoader uses dirent.h (POSIX-only)
+    list(FILTER CROSSPAD_CORE_SOURCES EXCLUDE REGEX "PortableKitLoader\\.cpp$")
+endif()
 # FreeRtosEventBus.cpp stays — used as the event bus implementation
 
 # ── crosspad-gui sources (auto-discover) ──
