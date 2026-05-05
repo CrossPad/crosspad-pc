@@ -644,6 +644,13 @@ void crosspad_app_init()
     crosspad::getPlatformServices().setSynthEngine(&fmSynth);
 
     // ── Audio module pipeline (float bus + node chain) ──
+    // Module is configured and registered via PlatformServices for code that
+    // queries getAudioModule(), but the audio thread is NOT started while
+    // AudioMixerEngine still owns OUT1/OUT2 routing. Mixer renders the synth
+    // (channel 2) and writes to pcAudio directly on its own thread. Two writers
+    // to the same RtAudio output and two FmSynth_Process call sites would race
+    // and distort. PR-3.5 will migrate AudioMixerEngine to IAudioNode and
+    // start() the module.
     {
         auto* settings = crosspad::CrosspadSettings::getInstance();
         crosspad::AudioModuleConfig cfg;
@@ -658,7 +665,9 @@ void crosspad_app_init()
         s_synthNode.setEngine(&fmSynth);
         s_audioModule.addNode(&s_synthNode);
         crosspad::getPlatformServices().setAudioModule(&s_audioModule);
+#ifndef HAS_MIXER
         s_audioModule.start();
+#endif
     }
 
 #ifdef HAS_MIXER
