@@ -587,7 +587,6 @@ void crosspad_app_init()
         auto outDevices = enumerateAudioOutputDevices();
         unsigned int dev1 = findDeviceByName(outDevices, s_devicePrefs.audioOut1);
         pcAudio.begin(dev1);
-        crosspad::getPlatformServices().setAudioOutput(&pcAudio);
 
         // Save actual device name if we connected
         if (pcAudio.isOpen()) {
@@ -622,7 +621,6 @@ void crosspad_app_init()
                 if (pcAudioIn1.isOpen()) {
                     printf("[Audio] IN1 auto-connected: %s @ %u Hz\n",
                            pcAudioIn1.getCurrentDeviceName().c_str(), pcAudioIn1.getSampleRate());
-                    crosspad::getPlatformServices().setAudioInput(&pcAudioIn1);
                 }
             }
         }
@@ -667,12 +665,18 @@ void crosspad_app_init()
         crosspad::AudioModuleConfig cfg;
         cfg.sampleRate   = pcAudio.isOpen() ? pcAudio.getSampleRate()
                           : (settings ? settings->audioEngine.sampleRate : 48000);
-        // PC: match RtAudio output period (typically 256) to keep the ringbuffer
-        // saturated and avoid underrun-driven artifacts. Smaller frame counts
-        // make sense on embedded I2S where blocking write provides backpressure
-        // — RtAudio uses an asynchronous callback so the audio thread must
-        // generate enough per call to keep up with the callback rate.
-        cfg.frameCount   = 256;
+        // PC: floor at 128 so the audio thread always generates enough per call
+        // to keep RtAudio's async-callback ringbuffer fed. Below that we'd see
+        // underrun-driven distortion. Embedded I2S keeps lower values OK because
+        // its blocking write provides natural backpressure.
+        {
+            uint32_t userFrames = settings ? settings->audioEngine.frameCount : 256;
+            cfg.frameCount = userFrames < 128 ? 128 : userFrames;
+            if (cfg.frameCount != userFrames) {
+                printf("[PcAudioModule] frameCount %u clamped to %u (RtAudio min)\n",
+                       userFrames, cfg.frameCount);
+            }
+        }
         cfg.channelCount = 2;
         cfg.streamCount  = 2;
         s_audioModule.setOutputDevice(0, &pcAudio);
