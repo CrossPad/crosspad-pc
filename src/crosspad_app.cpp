@@ -643,35 +643,9 @@ void crosspad_app_init()
     fmSynth.init();
     crosspad::getPlatformServices().setSynthEngine(&fmSynth);
 
-    // ── Audio module pipeline (float bus + node chain) ──
-    // Module is configured and registered via PlatformServices for code that
-    // queries getAudioModule(), but the audio thread is NOT started while
-    // AudioMixerEngine still owns OUT1/OUT2 routing. Mixer renders the synth
-    // (channel 2) and writes to pcAudio directly on its own thread. Two writers
-    // to the same RtAudio output and two FmSynth_Process call sites would race
-    // and distort. PR-3.5 will migrate AudioMixerEngine to IAudioNode and
-    // start() the module.
-    {
-        auto* settings = crosspad::CrosspadSettings::getInstance();
-        crosspad::AudioModuleConfig cfg;
-        cfg.sampleRate   = pcAudio.isOpen() ? pcAudio.getSampleRate()
-                          : (settings ? settings->audioEngine.sampleRate : 48000);
-        cfg.frameCount   = settings ? settings->audioEngine.frameCount : 64;
-        cfg.channelCount = 2;
-        cfg.streamCount  = 2;
-        s_audioModule.setOutputDevice(0, &pcAudio);
-        s_audioModule.setOutputDevice(1, &pcAudio2);
-        s_audioModule.setup(cfg);
-        s_synthNode.setEngine(&fmSynth);
-        s_audioModule.addNode(&s_synthNode);
-        crosspad::getPlatformServices().setAudioModule(&s_audioModule);
-#ifndef HAS_MIXER
-        s_audioModule.start();
-#endif
-    }
-
 #ifdef HAS_MIXER
-    // Load mixer state from preferences (or set defaults)
+    // Load mixer state BEFORE audio module starts, so the audio thread's first
+    // render() call sees the saved route matrix instead of all-disabled defaults.
     s_mixerEngine.loadState(getMixerStatePath());
 
     // Register mixer pad logic globally (always available)
@@ -681,10 +655,38 @@ void crosspad_app_init()
     });
     crosspad::getPadManager().registerPadLogic("Mixer", s_mixerPadLogic);
     crosspad::getPadManager().setActivePadLogic("Mixer");
-
-    // Start the mixer engine
-    s_mixerEngine.start();
 #endif
+
+    // ── Audio module pipeline (float bus + node chain or mixer override) ──
+    // When HAS_MIXER, the AudioMixerEngine is plugged in as a sync renderer
+    // (no separate mixer thread) — single-writer to OUT1/OUT2, single FmSynth
+    // call site, eliminates the distortion seen with parallel mixer + audio
+    // threads.
+    {
+        auto* settings = crosspad::CrosspadSettings::getInstance();
+        crosspad::AudioModuleConfig cfg;
+        cfg.sampleRate   = pcAudio.isOpen() ? pcAudio.getSampleRate()
+                          : (settings ? settings->audioEngine.sampleRate : 48000);
+        // PC: match RtAudio output period (typically 256) to keep the ringbuffer
+        // saturated and avoid underrun-driven artifacts. Smaller frame counts
+        // make sense on embedded I2S where blocking write provides backpressure
+        // — RtAudio uses an asynchronous callback so the audio thread must
+        // generate enough per call to keep up with the callback rate.
+        cfg.frameCount   = 256;
+        cfg.channelCount = 2;
+        cfg.streamCount  = 2;
+        s_audioModule.setOutputDevice(0, &pcAudio);
+        s_audioModule.setOutputDevice(1, &pcAudio2);
+        s_audioModule.setup(cfg);
+#ifdef HAS_MIXER
+        s_audioModule.setMixerEngine(&s_mixerEngine);
+#else
+        s_synthNode.setEngine(&fmSynth);
+        s_audioModule.addNode(&s_synthNode);
+#endif
+        crosspad::getPlatformServices().setAudioModule(&s_audioModule);
+        s_audioModule.start();
+    }
 
     // Save preferences now that we know actual connected device names
     saveDevicePrefs();
