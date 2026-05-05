@@ -33,6 +33,7 @@
 #include "crosspad/app/AppRegistry.hpp"
 #include "crosspad/audio/IAudioModule.hpp"
 #include "crosspad/synth/ISynthEngine.hpp"
+#include "apps/citest/CITestApi.hpp"
 
 // PC platform
 #include "pc_stubs/pc_platform.h"
@@ -647,6 +648,56 @@ static std::string handle_midi_note_off(const std::string& json) {
     return "{" + json_bool("ok", true) + "," + json_int("note", note) + "}";
 }
 
+static std::string handle_citest_run(const std::string& /*json*/) {
+    if (citest::isRunning()) {
+        return "{" + json_bool("ok", false) + "," + json_string("error", "already running") + "}";
+    }
+    if (!citest::start()) {
+        return "{" + json_bool("ok", false) + "," + json_string("error", "failed to start") + "}";
+    }
+    return "{" + json_bool("ok", true) + "}";
+}
+
+static std::string handle_citest_status(const std::string& /*json*/) {
+    const size_t n = citest::stageCount();
+    std::string body;
+    body.reserve(512);
+    body += "{";
+    body += json_bool("ok", true);
+    body += ",";
+    body += json_bool("running", citest::isRunning());
+    body += ",\"stages\":[";
+
+    int passCount = 0, failCount = 0;
+    for (size_t i = 0; i < n; ++i) {
+        const char* name = "";
+        const char* detail = "";
+        citest::Result r = citest::Result::Pending;
+        if (!citest::stageAt(i, name, r, detail)) continue;
+        const char* rs = "pending";
+        switch (r) {
+            case citest::Result::Pending: rs = "pending"; break;
+            case citest::Result::Running: rs = "running"; break;
+            case citest::Result::Pass:    rs = "pass"; ++passCount; break;
+            case citest::Result::Fail:    rs = "fail"; ++failCount; break;
+        }
+        if (i > 0) body += ",";
+        body += "{";
+        body += json_string("name",   name);
+        body += ",";
+        body += json_string("result", rs);
+        body += ",";
+        body += json_string("detail", detail);
+        body += "}";
+    }
+    body += "],";
+    body += json_int("pass", passCount);
+    body += ",";
+    body += json_int("fail", failCount);
+    body += "}";
+    return body;
+}
+
 static std::string handle_audio_level(const std::string& json) {
     int stream = json_get_int(json, "stream", 0);
     float l = 0.0f, r = 0.0f;
@@ -710,6 +761,12 @@ static std::string dispatch_command(const std::string& json) {
     }
     if (cmd == "audio_level") {
         return handle_audio_level(json);
+    }
+    if (cmd == "citest_run") {
+        return handle_citest_run(json);
+    }
+    if (cmd == "citest_status") {
+        return handle_citest_status(json);
     }
 
     return "{" + json_bool("ok", false) + "," + json_string("error", "unknown command: " + cmd) + "}";

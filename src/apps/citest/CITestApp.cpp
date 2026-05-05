@@ -7,6 +7,8 @@
  * Shows pass/fail results on an LVGL status screen.
  */
 
+#include "CITestApi.hpp"
+
 #include "pc_stubs/PcApp.hpp"
 #include "pc_stubs/pc_platform.h"
 #if __has_include("crosspad-mixer/AudioMixerEngine.hpp")
@@ -485,6 +487,45 @@ static void CITest_destroy(lv_obj_t* obj) {
     lv_obj_delete_async(obj);
     printf("[CITest] App destroyed\n");
 }
+
+// ── Public C++ API for headless / remote-driven runs ────────────────────
+
+namespace citest {
+
+bool start() {
+    if (s_testRunning.exchange(true)) return false;
+    for (auto& st : s_stages) {
+        st.result = StageResult::PENDING;
+        st.detail[0] = '\0';
+    }
+    s_uiDirty.store(true);
+    BaseType_t ok = xTaskCreate(testRunnerTask, "CITest", 8192, nullptr, 1, nullptr);
+    if (ok != pdPASS) {
+        s_testRunning.store(false);
+        return false;
+    }
+    return true;
+}
+
+bool isRunning() { return s_testRunning.load(); }
+
+size_t stageCount() { return static_cast<size_t>(NUM_STAGES); }
+
+bool stageAt(size_t index, const char*& nameOut, Result& resultOut, const char*& detailOut) {
+    if (index >= static_cast<size_t>(NUM_STAGES)) return false;
+    const auto& st = s_stages[index];
+    nameOut = st.name;
+    detailOut = st.detail;
+    switch (st.result) {
+        case StageResult::PENDING: resultOut = Result::Pending; break;
+        case StageResult::RUNNING: resultOut = Result::Running; break;
+        case StageResult::PASS:    resultOut = Result::Pass;    break;
+        case StageResult::FAIL:    resultOut = Result::Fail;    break;
+    }
+    return true;
+}
+
+} // namespace citest
 
 void _register_CITest_app() {
     static char icon_path[256];

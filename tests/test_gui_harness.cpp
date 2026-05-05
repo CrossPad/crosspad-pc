@@ -216,6 +216,14 @@ public:
         return sendCommand("{\"cmd\":\"audio_level\",\"stream\":" + std::to_string(stream) + "}");
     }
 
+    std::string citestRun() {
+        return sendCommand(R"({"cmd":"citest_run"})");
+    }
+
+    std::string citestStatus() {
+        return sendCommand(R"({"cmd":"citest_status"})");
+    }
+
     void waitFrames(int n = 3) {
         // Wait for LVGL to process N frames (~5ms each)
         std::this_thread::sleep_for(std::chrono::milliseconds(n * 20));
@@ -501,76 +509,65 @@ TEST_CASE("GUI: Launch app by clicking its launcher icon", "[gui]") {
     g_client.waitFrames(10);
 }
 
-// ── Tier 3 in-app integration: audio pipeline driven by the live PC sim ──
+// ── Tier 3 in-app integration: drive the existing CITest app over TCP ────
+//
+// CITestApp.cpp owns the canonical audio-pipeline test sequence (synth →
+// mixer → output → tap capture, 7 stages). We orchestrate it via the
+// citest_run / citest_status remote cmds and assert all stages PASS.
 
-TEST_CASE("Audio in-app: audio_level returns ok with no input", "[gui][audio]") {
-    auto resp = g_client.audioLevel(0);
-    REQUIRE(json_get_bool(resp, "ok") == true);
-    REQUIRE(json_get_int(resp, "stream") == 0);
-
-    const double l = json_get_double(resp, "left");
-    const double r = json_get_double(resp, "right");
-    REQUIRE(l >= 0.0);
-    REQUIRE(l <= 1.0);
-    REQUIRE(r >= 0.0);
-    REQUIRE(r <= 1.0);
-}
-
-TEST_CASE("Audio in-app: midi_note_on lights the audio meter", "[gui][audio]") {
-    // Make sure we start from a quiet state
-    auto baseline = g_client.audioLevel(0);
-    REQUIRE(json_get_bool(baseline, "ok") == true);
-
-    // Hit C4
-    auto onResp = g_client.midiNoteOn(60, 100);
-    REQUIRE(json_get_bool(onResp, "ok") == true);
-
-    // Poll audio_level for up to ~500ms — audio thread + mixer + synth should
-    // produce non-zero peak within a few frames. Tolerate slow startup.
-    bool sawSignal = false;
-    double observedPeak = 0.0;
-    for (int i = 0; i < 25 && !sawSignal; ++i) {
-        std::this_thread::sleep_for(std::chrono::milliseconds(20));
+TEST_CASE("Audio in-app: smoke primitives respond", "[gui][audio]") {
+    SECTION("audio_level returns ok with bounded values") {
         auto resp = g_client.audioLevel(0);
-        if (!json_get_bool(resp, "ok")) continue;
-        const double l = json_get_double(resp, "left");
-        const double r = json_get_double(resp, "right");
-        const double peak = std::max(l, r);
-        if (peak > observedPeak) observedPeak = peak;
-        if (peak > 0.001) sawSignal = true;
+        REQUIRE(json_get_bool(resp, "ok") == true);
+        REQUIRE(json_get_int(resp, "stream") == 0);
+        REQUIRE(json_get_double(resp, "left")  >= 0.0);
+        REQUIRE(json_get_double(resp, "left")  <= 1.0);
     }
-    g_client.midiNoteOff(60);
-
-    INFO("observed peak = " << observedPeak);
-    REQUIRE(sawSignal);
+    SECTION("midi_note_on rejects out-of-range note") {
+        auto resp = g_client.midiNoteOn(200, 100);
+        REQUIRE(json_get_bool(resp, "ok") == false);
+    }
+    SECTION("midi_note_on accepts valid note") {
+        auto on = g_client.midiNoteOn(60, 100);
+        REQUIRE(json_get_bool(on, "ok") == true);
+        g_client.midiNoteOff(60);
+    }
 }
 
-TEST_CASE("Audio in-app: midi_note_off lets meter decay", "[gui][audio]") {
-    g_client.midiNoteOn(64, 110);   // E4
-    std::this_thread::sleep_for(std::chrono::milliseconds(120));
-    g_client.midiNoteOff(64);
+TEST_CASE("Audio in-app: CITest end-to-end (7 stages)", "[gui][audio][citest]") {
+    auto run = g_client.citestRun();
+    REQUIRE(json_get_bool(run, "ok") == true);
 
-    // After release + decay, peak should drop to near-zero within ~1.5s.
-    // AbstractAudioModule decay is 0.93/frame ≈ -0.6 dB per cycle; combined
-    // with synth's release, signal falls fast.
-    bool decayed = false;
-    double finalPeak = 1.0;
-    for (int i = 0; i < 80 && !decayed; ++i) {
-        std::this_thread::sleep_for(std::chrono::milliseconds(20));
-        auto resp = g_client.audioLevel(0);
-        if (!json_get_bool(resp, "ok")) continue;
-        const double l = json_get_double(resp, "left");
-        const double r = json_get_double(resp, "right");
-        finalPeak = std::max(l, r);
-        if (finalPeak < 0.01) decayed = true;
+    // Run does ~5–6s of mixer/synth gymnastics. Poll up to 15s.
+    bool finished = false;
+    std::string finalStatus;
+    for (int i = 0; i < 75 && !finished; ++i) {
+        std::this_thread::sleep_for(std::chrono::milliseconds(200));
+        finalStatus = g_client.citestStatus();
+        if (!json_get_bool(finalStatus, "ok")) continue;
+        if (!json_get_bool(finalStatus, "running")) finished = true;
     }
-    INFO("final peak after 1.6s = " << finalPeak);
-    REQUIRE(decayed);
-}
 
-TEST_CASE("Audio in-app: invalid note id rejected", "[gui][audio]") {
-    auto resp = g_client.midiNoteOn(200, 100);
-    REQUIRE(json_get_bool(resp, "ok") == false);
+    INFO("final status = " << finalStatus);
+    REQUIRE(finished);
+
+    // Naive json_get_int gets confused by "result":"pass" appearing earlier
+    // than the top-level "pass":N. Count stage results directly via substring
+    // matching instead.
+    auto countOccurrences = [&](const std::string& needle) {
+        size_t pos = 0;
+        int n = 0;
+        while ((pos = finalStatus.find(needle, pos)) != std::string::npos) {
+            ++n;
+            pos += needle.size();
+        }
+        return n;
+    };
+    const int passCount = countOccurrences("\"result\":\"pass\"");
+    const int failCount = countOccurrences("\"result\":\"fail\"");
+    INFO("pass=" << passCount << " fail=" << failCount);
+    REQUIRE(failCount == 0);
+    REQUIRE(passCount == 7);
 }
 
 TEST_CASE("GUI: Multiple rapid pad presses don't crash", "[gui]") {
