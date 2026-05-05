@@ -31,6 +31,8 @@
 #include "crosspad/settings/CrosspadSettings.hpp"
 #include "crosspad/platform/PlatformCapabilities.hpp"
 #include "crosspad/app/AppRegistry.hpp"
+#include "crosspad/audio/IAudioModule.hpp"
+#include "crosspad/synth/ISynthEngine.hpp"
 
 // PC platform
 #include "pc_stubs/pc_platform.h"
@@ -611,6 +613,56 @@ static std::string handle_settings_set(const std::string& json) {
     return "{" + json_bool("ok", true) + "," + json_string("key", key) + "," + json_int("value", value) + "}";
 }
 
+// ── Audio integration helpers (Tier 3 in-app driver) ──────────────────────
+
+static std::string handle_midi_note_on(const std::string& json) {
+    (void)json_get_int(json, "channel", 0);
+    int note     = json_get_int(json, "note",    -1);
+    int velocity = json_get_int(json, "velocity", 100);
+    if (note < 0 || note > 127) {
+        return "{" + json_bool("ok", false) + "," + json_string("error", "invalid note (0-127)") + "}";
+    }
+    // Drive the synth engine directly — the event bus path requires an active
+    // app handler to route NoteOn → synth, which the launcher doesn't have.
+    // Bypassing that gives a deterministic audio-pipeline smoke test.
+    crosspad::ISynthEngine* synth = pc_platform_get_synth_engine();
+    if (!synth) {
+        return "{" + json_bool("ok", false) + "," + json_string("error", "no synth engine") + "}";
+    }
+    synth->noteOn(static_cast<uint8_t>(note), static_cast<uint8_t>(velocity));
+    return "{" + json_bool("ok", true) + "," + json_int("note", note) + "}";
+}
+
+static std::string handle_midi_note_off(const std::string& json) {
+    (void)json_get_int(json, "channel", 0);
+    int note = json_get_int(json, "note", -1);
+    if (note < 0 || note > 127) {
+        return "{" + json_bool("ok", false) + "," + json_string("error", "invalid note (0-127)") + "}";
+    }
+    crosspad::ISynthEngine* synth = pc_platform_get_synth_engine();
+    if (!synth) {
+        return "{" + json_bool("ok", false) + "," + json_string("error", "no synth engine") + "}";
+    }
+    synth->noteOff(static_cast<uint8_t>(note));
+    return "{" + json_bool("ok", true) + "," + json_int("note", note) + "}";
+}
+
+static std::string handle_audio_level(const std::string& json) {
+    int stream = json_get_int(json, "stream", 0);
+    float l = 0.0f, r = 0.0f;
+    crosspad::getAudioModule().getOutputLevel(static_cast<uint8_t>(stream), l, r);
+    char buf[128];
+    std::snprintf(buf, sizeof(buf), "%.6f", static_cast<double>(l));
+    std::string ls = buf;
+    std::snprintf(buf, sizeof(buf), "%.6f", static_cast<double>(r));
+    std::string rs = buf;
+    // Custom JSON build because json_int helpers are int-only.
+    return std::string("{") + json_bool("ok", true) + "," +
+           json_int("stream", stream) + "," +
+           "\"left\":"  + ls + "," +
+           "\"right\":" + rs + "}";
+}
+
 static std::string dispatch_command(const std::string& json) {
     std::string cmd = json_get_string(json, "cmd");
 
@@ -649,6 +701,15 @@ static std::string dispatch_command(const std::string& json) {
     }
     if (cmd == "settings_set") {
         return handle_settings_set(json);
+    }
+    if (cmd == "midi_note_on") {
+        return handle_midi_note_on(json);
+    }
+    if (cmd == "midi_note_off") {
+        return handle_midi_note_off(json);
+    }
+    if (cmd == "audio_level") {
+        return handle_audio_level(json);
     }
 
     return "{" + json_bool("ok", false) + "," + json_string("error", "unknown command: " + cmd) + "}";

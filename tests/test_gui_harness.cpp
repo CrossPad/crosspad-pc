@@ -76,6 +76,17 @@ static int json_get_int(const std::string& json, const std::string& key, int dfl
     try { return std::stoi(json.substr(pos)); } catch (...) { return dflt; }
 }
 
+static double json_get_double(const std::string& json, const std::string& key, double dflt = 0.0) {
+    std::string search = "\"" + key + "\"";
+    auto pos = json.find(search);
+    if (pos == std::string::npos) return dflt;
+    pos = json.find(':', pos + search.size());
+    if (pos == std::string::npos) return dflt;
+    pos++;
+    while (pos < json.size() && (json[pos] == ' ' || json[pos] == '\t')) pos++;
+    try { return std::stod(json.substr(pos)); } catch (...) { return dflt; }
+}
+
 static bool json_get_bool(const std::string& json, const std::string& key, bool dflt = false) {
     std::string search = "\"" + key + "\"";
     auto pos = json.find(search);
@@ -188,6 +199,21 @@ public:
     std::string settingsSet(const std::string& key, int value) {
         return sendCommand("{\"cmd\":\"settings_set\",\"key\":\"" + key +
                           "\",\"value\":" + std::to_string(value) + "}");
+    }
+
+    std::string midiNoteOn(int note, int velocity = 100, int channel = 0) {
+        return sendCommand("{\"cmd\":\"midi_note_on\",\"channel\":" + std::to_string(channel) +
+                          ",\"note\":" + std::to_string(note) +
+                          ",\"velocity\":" + std::to_string(velocity) + "}");
+    }
+
+    std::string midiNoteOff(int note, int channel = 0) {
+        return sendCommand("{\"cmd\":\"midi_note_off\",\"channel\":" + std::to_string(channel) +
+                          ",\"note\":" + std::to_string(note) + "}");
+    }
+
+    std::string audioLevel(int stream = 0) {
+        return sendCommand("{\"cmd\":\"audio_level\",\"stream\":" + std::to_string(stream) + "}");
     }
 
     void waitFrames(int n = 3) {
@@ -473,6 +499,78 @@ TEST_CASE("GUI: Launch app by clicking its launcher icon", "[gui]") {
     // Go back to launcher — press Escape key (SDL keycode 27)
     g_client.sendCommand(R"({"cmd":"key","keycode":27})");
     g_client.waitFrames(10);
+}
+
+// ── Tier 3 in-app integration: audio pipeline driven by the live PC sim ──
+
+TEST_CASE("Audio in-app: audio_level returns ok with no input", "[gui][audio]") {
+    auto resp = g_client.audioLevel(0);
+    REQUIRE(json_get_bool(resp, "ok") == true);
+    REQUIRE(json_get_int(resp, "stream") == 0);
+
+    const double l = json_get_double(resp, "left");
+    const double r = json_get_double(resp, "right");
+    REQUIRE(l >= 0.0);
+    REQUIRE(l <= 1.0);
+    REQUIRE(r >= 0.0);
+    REQUIRE(r <= 1.0);
+}
+
+TEST_CASE("Audio in-app: midi_note_on lights the audio meter", "[gui][audio]") {
+    // Make sure we start from a quiet state
+    auto baseline = g_client.audioLevel(0);
+    REQUIRE(json_get_bool(baseline, "ok") == true);
+
+    // Hit C4
+    auto onResp = g_client.midiNoteOn(60, 100);
+    REQUIRE(json_get_bool(onResp, "ok") == true);
+
+    // Poll audio_level for up to ~500ms — audio thread + mixer + synth should
+    // produce non-zero peak within a few frames. Tolerate slow startup.
+    bool sawSignal = false;
+    double observedPeak = 0.0;
+    for (int i = 0; i < 25 && !sawSignal; ++i) {
+        std::this_thread::sleep_for(std::chrono::milliseconds(20));
+        auto resp = g_client.audioLevel(0);
+        if (!json_get_bool(resp, "ok")) continue;
+        const double l = json_get_double(resp, "left");
+        const double r = json_get_double(resp, "right");
+        const double peak = std::max(l, r);
+        if (peak > observedPeak) observedPeak = peak;
+        if (peak > 0.001) sawSignal = true;
+    }
+    g_client.midiNoteOff(60);
+
+    INFO("observed peak = " << observedPeak);
+    REQUIRE(sawSignal);
+}
+
+TEST_CASE("Audio in-app: midi_note_off lets meter decay", "[gui][audio]") {
+    g_client.midiNoteOn(64, 110);   // E4
+    std::this_thread::sleep_for(std::chrono::milliseconds(120));
+    g_client.midiNoteOff(64);
+
+    // After release + decay, peak should drop to near-zero within ~1.5s.
+    // AbstractAudioModule decay is 0.93/frame ≈ -0.6 dB per cycle; combined
+    // with synth's release, signal falls fast.
+    bool decayed = false;
+    double finalPeak = 1.0;
+    for (int i = 0; i < 80 && !decayed; ++i) {
+        std::this_thread::sleep_for(std::chrono::milliseconds(20));
+        auto resp = g_client.audioLevel(0);
+        if (!json_get_bool(resp, "ok")) continue;
+        const double l = json_get_double(resp, "left");
+        const double r = json_get_double(resp, "right");
+        finalPeak = std::max(l, r);
+        if (finalPeak < 0.01) decayed = true;
+    }
+    INFO("final peak after 1.6s = " << finalPeak);
+    REQUIRE(decayed);
+}
+
+TEST_CASE("Audio in-app: invalid note id rejected", "[gui][audio]") {
+    auto resp = g_client.midiNoteOn(200, 100);
+    REQUIRE(json_get_bool(resp, "ok") == false);
 }
 
 TEST_CASE("GUI: Multiple rapid pad presses don't crash", "[gui]") {
