@@ -60,8 +60,10 @@
 #ifdef USE_AUDIO
 #include "audio/PcAudio.hpp"
 #include "audio/PcAudioInput.hpp"
+#include "audio/PcAudioModule.hpp"
 #include "crosspad-gui/components/vu_meter.h"
 #include "crosspad/audio/PeakMeter.hpp"
+#include "crosspad/audio/SynthEngineNode.hpp"
 #include "synth/MlPianoSynth.hpp"
 #if __has_include("crosspad-mixer/AudioMixerEngine.hpp")
 #include "crosspad-mixer/AudioMixerEngine.hpp"
@@ -110,6 +112,8 @@ static PcAudioOutput pcAudio2;     // OUT2
 static PcAudioInput  pcAudioIn1;   // IN1
 static PcAudioInput  pcAudioIn2;   // IN2
 static MlPianoSynth fmSynth;
+static crosspad_pc::PcAudioModule s_audioModule;
+static crosspad::SynthEngineNode s_synthNode;
 #ifdef HAS_MIXER
 static AudioMixerEngine s_mixerEngine;
 static std::shared_ptr<MixerPadLogic> s_mixerPadLogic;
@@ -638,6 +642,24 @@ void crosspad_app_init()
     fmSynth.setSampleRate(pcAudio.getSampleRate());
     fmSynth.init();
     crosspad::getPlatformServices().setSynthEngine(&fmSynth);
+
+    // ── Audio module pipeline (float bus + node chain) ──
+    {
+        auto* settings = crosspad::CrosspadSettings::getInstance();
+        crosspad::AudioModuleConfig cfg;
+        cfg.sampleRate   = pcAudio.isOpen() ? pcAudio.getSampleRate()
+                          : (settings ? settings->audioEngine.sampleRate : 48000);
+        cfg.frameCount   = settings ? settings->audioEngine.frameCount : 64;
+        cfg.channelCount = 2;
+        cfg.streamCount  = 2;
+        s_audioModule.setOutputDevice(0, &pcAudio);
+        s_audioModule.setOutputDevice(1, &pcAudio2);
+        s_audioModule.setup(cfg);
+        s_synthNode.setEngine(&fmSynth);
+        s_audioModule.addNode(&s_synthNode);
+        crosspad::getPlatformServices().setAudioModule(&s_audioModule);
+        s_audioModule.start();
+    }
 
 #ifdef HAS_MIXER
     // Load mixer state from preferences (or set defaults)

@@ -163,3 +163,39 @@ void MlPianoSynth::process(int16_t* stereoOut, uint32_t frames)
     peakL_.store(maxAbs, std::memory_order_relaxed);
     peakR_.store(maxAbs, std::memory_order_relaxed);
 }
+
+void MlPianoSynth::process(float* stereoOut, uint32_t frames)
+{
+    if (!initialized_ || frames == 0) {
+        std::memset(stereoOut, 0, frames * 2 * sizeof(float));
+        return;
+    }
+
+    if (monoBuf_.size() < frames) {
+        monoBuf_.resize(frames);
+    }
+
+    if (mutex_.try_lock()) {
+        FmSynth_Process(nullptr, monoBuf_.data(), static_cast<int>(frames));
+        mutex_.unlock();
+    }
+
+    // Mono → interleaved stereo float, with FmSynth-style 0.5 gain attenuation
+    // (matches the int16 path's *0.5 implicit in << 14 shift).
+    constexpr float kSynthGain = 0.5f;
+    float maxAbs = 0.0f;
+    for (uint32_t i = 0; i < frames; ++i) {
+        float s = monoBuf_[i] * kSynthGain;
+        if (s >  1.0f) s =  1.0f;
+        if (s < -1.0f) s = -1.0f;
+        stereoOut[i * 2 + 0] = s;
+        stereoOut[i * 2 + 1] = s;
+
+        float abs_s = s < 0 ? -s : s;
+        if (abs_s > maxAbs) maxAbs = abs_s;
+    }
+
+    auto peak = static_cast<int16_t>(maxAbs * 32767.0f);
+    peakL_.store(peak, std::memory_order_relaxed);
+    peakR_.store(peak, std::memory_order_relaxed);
+}
