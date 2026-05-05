@@ -13,6 +13,11 @@ class PcUart;
 
 void crosspad_app_init();
 
+/// Release platform resources that must be cleaned up before exit
+/// (virtual audio sinks, RtAudio streams, etc.). Safe to call from
+/// signal handlers and atexit; idempotent.
+void crosspad_app_shutdown();
+
 /// Return to the launcher main screen (destroys running app, reloads launcher)
 void crosspad_app_go_home();
 

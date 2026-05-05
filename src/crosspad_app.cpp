@@ -61,6 +61,13 @@
 #include "audio/PcAudio.hpp"
 #include "audio/PcAudioInput.hpp"
 #include "audio/PcAudioModule.hpp"
+#ifdef USE_VIRTUAL_AUDIO
+#include "audio/virtual/IVirtualSinkManager.hpp"
+#ifdef __linux__
+#include "audio/virtual/PulseMonitorCapture.hpp"
+#endif
+#include <csignal>
+#endif
 #include "crosspad-gui/components/vu_meter.h"
 #include "crosspad/audio/PeakMeter.hpp"
 #include "crosspad/audio/SynthEngineNode.hpp"
@@ -118,6 +125,18 @@ static crosspad::SynthEngineNode s_synthNode;
 static AudioMixerEngine s_mixerEngine;
 static std::shared_ptr<MixerPadLogic> s_mixerPadLogic;
 #endif
+#ifdef USE_VIRTUAL_AUDIO
+static std::unique_ptr<crosspad_pc::IVirtualSinkManager> s_virtualSinkManager;
+static std::atomic<bool> s_shutdownRan{false};
+#ifdef __linux__
+// Two dedicated libpulse-simple capturers for the virtual sink monitors —
+// keeps CrossPad decoupled from RtAudio's PULSE quirks (it aggregates
+// sinks-per-card and hides per-sink sources). When active these are what
+// gets registered with PlatformServices instead of PcAudioInput.
+static crosspad_pc::PulseMonitorCapture s_pulseCap1;
+static crosspad_pc::PulseMonitorCapture s_pulseCap2;
+#endif
+#endif
 #endif
 
 /* ── Virtual USB/UART ─────────────────────────────────────────────────── */
@@ -129,6 +148,12 @@ static PcUart pcUart;
 struct DevicePreferences {
     std::string audioOut1;
     std::string audioOut2;
+    // Technical PA sink name when OUT was routed via `pactl move-sink-input`
+    // to a PulseAudio-only sink (e.g. motherboard analog not exposed by ALSA).
+    // Empty if OUT is bound directly via RtAudio. Persisted across restarts so
+    // the "Family 17h Pro" / "Rembrandt HDMI" pick is restored on next launch.
+    std::string audioOut1Pa;
+    std::string audioOut2Pa;
     std::string audioIn1;
     std::string audioIn2;
     std::string midiOut;
@@ -169,6 +194,8 @@ static void loadDevicePrefs() {
 
     if (doc["audio_out1"].is<const char*>()) s_devicePrefs.audioOut1 = doc["audio_out1"].as<const char*>();
     if (doc["audio_out2"].is<const char*>()) s_devicePrefs.audioOut2 = doc["audio_out2"].as<const char*>();
+    if (doc["audio_out1_pa"].is<const char*>()) s_devicePrefs.audioOut1Pa = doc["audio_out1_pa"].as<const char*>();
+    if (doc["audio_out2_pa"].is<const char*>()) s_devicePrefs.audioOut2Pa = doc["audio_out2_pa"].as<const char*>();
     if (doc["audio_in1"].is<const char*>())  s_devicePrefs.audioIn1  = doc["audio_in1"].as<const char*>();
     if (doc["audio_in2"].is<const char*>())  s_devicePrefs.audioIn2  = doc["audio_in2"].as<const char*>();
     if (doc["midi_out"].is<const char*>())   s_devicePrefs.midiOut   = doc["midi_out"].as<const char*>();
@@ -192,6 +219,8 @@ static void saveDevicePrefs() {
     JsonDocument doc;
     doc["audio_out1"] = s_devicePrefs.audioOut1;
     doc["audio_out2"] = s_devicePrefs.audioOut2;
+    doc["audio_out1_pa"] = s_devicePrefs.audioOut1Pa;
+    doc["audio_out2_pa"] = s_devicePrefs.audioOut2Pa;
     doc["audio_in1"]  = s_devicePrefs.audioIn1;
     doc["audio_in2"]  = s_devicePrefs.audioIn2;
     doc["midi_out"]    = s_devicePrefs.midiOut;
@@ -364,6 +393,18 @@ static void LoadMainScreen(lv_obj_t* parent) {
 
 void crosspad_app_init()
 {
+#if defined(USE_AUDIO) && defined(USE_VIRTUAL_AUDIO)
+    /* Make sure virtual sinks get unloaded whatever the exit path.
+       SDL_QUIT calls crosspad_app_shutdown() directly; atexit and signals
+       catch the remaining cases (normal return, SIGINT, SIGTERM).
+       kill -9 is unrecoverable — sinks will be cleaned up at next launch
+       by LinuxPipewireSinks::cleanupStaleSinks(). */
+    std::atexit(crosspad_app_shutdown);
+    auto sigHandler = [](int sig) { crosspad_app_shutdown(); std::signal(sig, SIG_DFL); std::raise(sig); };
+    std::signal(SIGINT,  sigHandler);
+    std::signal(SIGTERM, sigHandler);
+#endif
+
     /* Platform stubs (event bus, settings, pad manager, GUI) */
     pc_platform_init();
 
@@ -582,29 +623,48 @@ void crosspad_app_init()
 #endif
 
 #ifdef USE_AUDIO
-    // ── Audio OUT1: auto-connect saved device or default ──
-    {
+    // ── Audio OUT1/OUT2: auto-connect saved device or default ──
+    //
+    // Preference resolution order per slot:
+    //   1. If audioOutNPa is set — saved pick was a PulseAudio-only sink
+    //      (motherboard analog / HDMI port hidden from RtAudio's ALSA backend).
+    //      Open RtAudio on "PulseAudio Sound Server" so we have a real
+    //      sink-input, then move it onto the remembered PA sink.
+    //   2. Else if audioOutN matches an RtAudio device name — open that directly.
+    //   3. Else — RtAudio default device.
+    auto openOutputSlot = [&](PcAudioOutput& output, int slot,
+                              std::string& savedName, std::string& savedPa) {
         auto outDevices = enumerateAudioOutputDevices();
-        unsigned int dev1 = findDeviceByName(outDevices, s_devicePrefs.audioOut1);
-        pcAudio.begin(dev1);
-
-        // Save actual device name if we connected
-        if (pcAudio.isOpen()) {
-            s_devicePrefs.audioOut1 = pcAudio.getCurrentDeviceName();
+#if defined(USE_VIRTUAL_AUDIO) && defined(__linux__)
+        if (!savedPa.empty()) {
+            unsigned int paServerId = 0;
+            for (auto& d : outDevices) {
+                if (d.name.find("PulseAudio") != std::string::npos) {
+                    paServerId = d.rtAudioId;
+                    break;
+                }
+            }
+            output.begin(paServerId);
+            if (output.isOpen() &&
+                crosspad_pc::movePulseOutputToSink(slot, savedPa)) {
+                // Keep savedName (human description) untouched — it's what the
+                // dropdown displays. Don't overwrite with RtAudio device name.
+                return;
+            }
+            // Move failed (sink vanished?) — fall through to plain restore.
+            savedPa.clear();
         }
-    }
-
-    // ── Audio OUT2: auto-connect saved device or default ──
-    {
-        auto outDevices = enumerateAudioOutputDevices();
-        unsigned int dev2 = findDeviceByName(outDevices, s_devicePrefs.audioOut2);
-        pcAudio2.begin(dev2);
-        pc_platform_set_audio_output_2(&pcAudio2);
-
-        if (pcAudio2.isOpen()) {
-            s_devicePrefs.audioOut2 = pcAudio2.getCurrentDeviceName();
+#endif
+        unsigned int devId = findDeviceByName(outDevices, savedName);
+        output.begin(devId);
+        if (output.isOpen()) {
+            savedName = output.getCurrentDeviceName();
         }
-    }
+    };
+
+    openOutputSlot(pcAudio,  0, s_devicePrefs.audioOut1, s_devicePrefs.audioOut1Pa);
+    openOutputSlot(pcAudio2, 1, s_devicePrefs.audioOut2, s_devicePrefs.audioOut2Pa);
+    pc_platform_set_audio_output_2(&pcAudio2);
 
     // ── Audio IN1/IN2: auto-connect saved devices ──
     // Use output sample rate so mixer doesn't need sample rate conversion
@@ -612,9 +672,54 @@ void crosspad_app_init()
     pc_platform_set_audio_input(0, &pcAudioIn1);
     pc_platform_set_audio_input(1, &pcAudioIn2);
 
+#ifdef USE_VIRTUAL_AUDIO
+    // Create OS-visible virtual sinks ("CrossPad virtual IN#1/#2") that other
+    // apps and DAWs can route audio to. RtAudio's monitor-source discovery
+    // runs afterwards — the sinks must exist before enumerateAudioInputDevices.
+    s_virtualSinkManager = crosspad_pc::makeVirtualSinkManager();
+    if (s_virtualSinkManager) {
+        if (!s_virtualSinkManager->setup(2)) {
+            printf("[VirtSink] Virtual sinks not available: %s\n",
+                   s_virtualSinkManager->errorHint().c_str());
+        }
+    }
+#endif
+
     {
+#if defined(USE_VIRTUAL_AUDIO) && defined(__linux__)
+        // Prefer virtual sinks over saved physical inputs — the whole point of
+        // the feature is that CrossPad becomes a system-wide mixer by default.
+        // We bind directly via libpulse-simple; see PulseMonitorCapture.
+        bool in1Virtual = false, in2Virtual = false;
+        if (s_virtualSinkManager) {
+            auto sinks = s_virtualSinkManager->list();
+            if (sinks.size() >= 1 &&
+                s_pulseCap1.start(sinks[0].captureDeviceName, outSampleRate)) {
+                printf("[Audio] IN1 connected to virtual sink: %s\n",
+                       sinks[0].displayName.c_str());
+                pc_platform_set_audio_input(0, &s_pulseCap1);
+                in1Virtual = true;
+            }
+            if (sinks.size() >= 2 &&
+                s_pulseCap2.start(sinks[1].captureDeviceName, outSampleRate)) {
+                printf("[Audio] IN2 connected to virtual sink: %s\n",
+                       sinks[1].displayName.c_str());
+                pc_platform_set_audio_input(1, &s_pulseCap2);
+                in2Virtual = true;
+            }
+        }
+        // Block RtAudio fallback for slots that are already serviced by the
+        // Pulse capturer — no need to race two capture paths for the same
+        // logical input.
+        const bool in1Skip = in1Virtual;
+        const bool in2Skip = in2Virtual;
+#else
+        const bool in1Skip = false;
+        const bool in2Skip = false;
+#endif
+
         auto inDevices = enumerateAudioInputDevices();
-        if (!s_devicePrefs.audioIn1.empty()) {
+        if (!in1Skip && !pcAudioIn1.isOpen() && !s_devicePrefs.audioIn1.empty()) {
             unsigned int devId = findDeviceByName(inDevices, s_devicePrefs.audioIn1);
             if (devId != 0) {
                 pcAudioIn1.begin(devId, outSampleRate);
@@ -624,7 +729,7 @@ void crosspad_app_init()
                 }
             }
         }
-        if (!s_devicePrefs.audioIn2.empty()) {
+        if (!in2Skip && !pcAudioIn2.isOpen() && !s_devicePrefs.audioIn2.empty()) {
             unsigned int devId = findDeviceByName(inDevices, s_devicePrefs.audioIn2);
             if (devId != 0) {
                 pcAudioIn2.begin(devId, outSampleRate);
@@ -732,12 +837,28 @@ void crosspad_app_init()
         jp.setDeviceName(EmuJackPanel::AUDIO_OUT2, pcAudio2.getCurrentDeviceName());
         jp.setConnected(EmuJackPanel::AUDIO_OUT2, pcAudio2.isOpen());
 
-        // Audio IN1/IN2 — show device name and connection status
-        jp.setDeviceName(EmuJackPanel::AUDIO_IN1, pcAudioIn1.getCurrentDeviceName());
-        jp.setConnected(EmuJackPanel::AUDIO_IN1, pcAudioIn1.isOpen());
-
-        jp.setDeviceName(EmuJackPanel::AUDIO_IN2, pcAudioIn2.getCurrentDeviceName());
-        jp.setConnected(EmuJackPanel::AUDIO_IN2, pcAudioIn2.isOpen());
+        // Audio IN1/IN2 — current device. On Linux with active virtual sinks
+        // the input slot is served by PulseMonitorCapture, not PcAudioInput,
+        // so we report the virtual sink's display name instead of the empty
+        // RtAudio device name.
+        std::string in1Name = pcAudioIn1.getCurrentDeviceName();
+        std::string in2Name = pcAudioIn2.getCurrentDeviceName();
+        bool in1Connected = pcAudioIn1.isOpen();
+        bool in2Connected = pcAudioIn2.isOpen();
+#if defined(USE_VIRTUAL_AUDIO) && defined(__linux__)
+        if (s_pulseCap1.isOpen() && s_virtualSinkManager) {
+            auto sinks = s_virtualSinkManager->list();
+            if (sinks.size() >= 1) { in1Name = sinks[0].displayName; in1Connected = true; }
+        }
+        if (s_pulseCap2.isOpen() && s_virtualSinkManager) {
+            auto sinks = s_virtualSinkManager->list();
+            if (sinks.size() >= 2) { in2Name = sinks[1].displayName; in2Connected = true; }
+        }
+#endif
+        jp.setDeviceName(EmuJackPanel::AUDIO_IN1, in1Name);
+        jp.setConnected(EmuJackPanel::AUDIO_IN1, in1Connected);
+        jp.setDeviceName(EmuJackPanel::AUDIO_IN2, in2Name);
+        jp.setConnected(EmuJackPanel::AUDIO_IN2, in2Connected);
 
         // Populate device lists for all audio jacks
         {
@@ -745,6 +866,42 @@ void crosspad_app_init()
             std::vector<std::string> outNames;
             outNames.push_back("(None)");
             for (auto& d : outDevices) outNames.push_back(d.name);
+
+#if defined(USE_VIRTUAL_AUDIO) && defined(__linux__)
+            // Add only PulseAudio sinks that RtAudio's ALSA backend missed —
+            // typically the motherboard analog jack and the active HDMI
+            // display, which PipeWire holds as defaults and ALSA exclusive
+            // can't see. Anything that overlaps an RtAudio entry (Thronmax,
+            // already-listed HDMI ports) is filtered to avoid duplicates.
+            auto paSinks = crosspad_pc::enumeratePulseSinks();
+            // Token-overlap dedupe — but only on long, hardware-identifying
+            // tokens. Generic words like "Audio", "HD", "Pro" appear in every
+            // device name and would falsely flag the Pro Audio sink as a dup
+            // of "PulseAudio Sound Server" or "HD-Audio Generic (HDMI N)".
+            static const std::vector<std::string> kStopWords = {
+                "Audio", "HD-Audio", "Generic", "Output", "Stereo", "Default",
+                "Pro", "Sound", "Server", "Pulse", "PulseAudio", "ALSA",
+                "Device", "Analog", "Digital", "Family"
+            };
+            auto isStopWord = [](const std::string& w) {
+                for (auto& sw : kStopWords) if (w == sw) return true;
+                return false;
+            };
+            auto overlapsRtAudio = [&](const std::string& paDesc) {
+                std::istringstream tok(paDesc);
+                std::string w;
+                while (tok >> w) {
+                    if (w.size() < 6 || isStopWord(w)) continue;
+                    for (auto& d : outDevices) {
+                        if (d.name.find(w) != std::string::npos) return true;
+                    }
+                }
+                return false;
+            };
+            for (auto& s : paSinks) {
+                if (!overlapsRtAudio(s.description)) outNames.push_back(s.description);
+            }
+#endif
 
             jp.setDeviceList(EmuJackPanel::AUDIO_OUT1, outNames,
                              findDropdownIndex(outNames, pcAudio.getCurrentDeviceName()));
@@ -756,10 +913,21 @@ void crosspad_app_init()
             inNames.push_back("(None)");
             for (auto& d : inDevices) inNames.push_back(d.name);
 
+#if defined(USE_VIRTUAL_AUDIO) && defined(__linux__)
+            // Append CrossPad virtual sinks at the end of the list so the user
+            // can route them as IN1/IN2 from the Jack panel dropdown. Indices
+            // beyond inDevices.size() in the callback indicate a virtual pick.
+            if (s_virtualSinkManager) {
+                for (const auto& v : s_virtualSinkManager->list()) {
+                    inNames.push_back(v.displayName);
+                }
+            }
+#endif
+
             jp.setDeviceList(EmuJackPanel::AUDIO_IN1, inNames,
-                             findDropdownIndex(inNames, pcAudioIn1.getCurrentDeviceName()));
+                             findDropdownIndex(inNames, in1Name));
             jp.setDeviceList(EmuJackPanel::AUDIO_IN2, inNames,
-                             findDropdownIndex(inNames, pcAudioIn2.getCurrentDeviceName()));
+                             findDropdownIndex(inNames, in2Name));
         }
 #endif
 
@@ -872,14 +1040,20 @@ void crosspad_app_init()
             case EmuJackPanel::AUDIO_OUT1:
             case EmuJackPanel::AUDIO_OUT2: {
                 auto& output = (jackId == EmuJackPanel::AUDIO_OUT1) ? pcAudio : pcAudio2;
+                int slot = (jackId == EmuJackPanel::AUDIO_OUT1) ? 0 : 1;
                 auto jid = static_cast<EmuJackPanel::JackId>(jackId);
 
                 if (deviceIndex == 0) {
                     output.end();
                     jp.setConnected(jid, false);
                     jp.setDeviceName(jid, "");
-                    if (jackId == EmuJackPanel::AUDIO_OUT1) s_devicePrefs.audioOut1.clear();
-                    else s_devicePrefs.audioOut2.clear();
+                    if (jackId == EmuJackPanel::AUDIO_OUT1) {
+                        s_devicePrefs.audioOut1.clear();
+                        s_devicePrefs.audioOut1Pa.clear();
+                    } else {
+                        s_devicePrefs.audioOut2.clear();
+                        s_devicePrefs.audioOut2Pa.clear();
+                    }
                 } else {
                     auto outDevices = enumerateAudioOutputDevices();
                     unsigned int realIdx = deviceIndex - 1;
@@ -887,11 +1061,72 @@ void crosspad_app_init()
                         output.switchDevice(outDevices[realIdx].rtAudioId);
                         jp.setConnected(jid, output.isOpen());
                         jp.setDeviceName(jid, output.getCurrentDeviceName());
-                        if (jackId == EmuJackPanel::AUDIO_OUT1)
+                        if (jackId == EmuJackPanel::AUDIO_OUT1) {
                             s_devicePrefs.audioOut1 = output.getCurrentDeviceName();
-                        else
+                            s_devicePrefs.audioOut1Pa.clear();
+                        } else {
                             s_devicePrefs.audioOut2 = output.getCurrentDeviceName();
+                            s_devicePrefs.audioOut2Pa.clear();
+                        }
                     }
+#if defined(USE_VIRTUAL_AUDIO) && defined(__linux__)
+                    else {
+                        // Index past RtAudio block — must be one of the
+                        // PA-only sinks we appended. Recompute the same
+                        // overlap filter so indices line up.
+                        auto paSinks = crosspad_pc::enumeratePulseSinks();
+                        static const std::vector<std::string> kStopWords = {
+                            "Audio","HD-Audio","Generic","Output","Stereo","Default",
+                            "Pro","Sound","Server","Pulse","PulseAudio","ALSA",
+                            "Device","Analog","Digital","Family"
+                        };
+                        auto isStopWord = [](const std::string& w) {
+                            for (auto& sw : kStopWords) if (w == sw) return true;
+                            return false;
+                        };
+                        auto overlapsRtAudio = [&](const std::string& paDesc) {
+                            std::istringstream tok(paDesc);
+                            std::string w;
+                            while (tok >> w) {
+                                if (w.size() < 6 || isStopWord(w)) continue;
+                                for (auto& d : outDevices) {
+                                    if (d.name.find(w) != std::string::npos) return true;
+                                }
+                            }
+                            return false;
+                        };
+                        std::vector<crosspad_pc::PulseSinkInfo> filtered;
+                        for (auto& s : paSinks) {
+                            if (!overlapsRtAudio(s.description)) filtered.push_back(s);
+                        }
+                        size_t paIdx = realIdx - outDevices.size();
+                        if (paIdx < filtered.size()) {
+                            const auto& sel = filtered[paIdx];
+                            // Ensure RtAudio stream is talking to PA so move
+                            // makes sense — fall back to PulseAudio Sound
+                            // Server if not already open on a PA pseudo-dev.
+                            if (!output.isOpen()) {
+                                for (auto& d : outDevices) {
+                                    if (d.name.find("PulseAudio") != std::string::npos) {
+                                        output.switchDevice(d.rtAudioId);
+                                        break;
+                                    }
+                                }
+                            }
+                            if (crosspad_pc::movePulseOutputToSink(slot, sel.name)) {
+                                jp.setConnected(jid, true);
+                                jp.setDeviceName(jid, sel.description);
+                                if (slot == 0) {
+                                    s_devicePrefs.audioOut1   = sel.description;
+                                    s_devicePrefs.audioOut1Pa = sel.name;
+                                } else {
+                                    s_devicePrefs.audioOut2   = sel.description;
+                                    s_devicePrefs.audioOut2Pa = sel.name;
+                                }
+                            }
+                        }
+                    }
+#endif
                 }
                 saveDevicePrefs();
                 break;
@@ -900,27 +1135,60 @@ void crosspad_app_init()
             case EmuJackPanel::AUDIO_IN1:
             case EmuJackPanel::AUDIO_IN2: {
                 auto& input = (jackId == EmuJackPanel::AUDIO_IN1) ? pcAudioIn1 : pcAudioIn2;
-                auto jid = static_cast<EmuJackPanel::JackId>(jackId);
+                int slot   = (jackId == EmuJackPanel::AUDIO_IN1) ? 0 : 1;
+                auto jid   = static_cast<EmuJackPanel::JackId>(jackId);
+
+                // Always tear down whichever capturer was previously bound to
+                // this slot — saves us juggling state when switching between
+                // physical mics and virtual sinks.
+                input.end();
+#if defined(USE_VIRTUAL_AUDIO) && defined(__linux__)
+                auto& cap = (slot == 0) ? s_pulseCap1 : s_pulseCap2;
+                cap.stop();
+#endif
 
                 if (deviceIndex == 0) {
-                    input.end();
                     jp.setConnected(jid, false);
                     jp.setDeviceName(jid, "");
-                    if (jackId == EmuJackPanel::AUDIO_IN1) s_devicePrefs.audioIn1.clear();
-                    else s_devicePrefs.audioIn2.clear();
-                } else {
-                    auto inDevices = enumerateAudioInputDevices();
-                    unsigned int realIdx = deviceIndex - 1;
-                    if (realIdx < inDevices.size()) {
-                        input.switchDevice(inDevices[realIdx].rtAudioId);
-                        jp.setConnected(jid, input.isOpen());
-                        jp.setDeviceName(jid, input.getCurrentDeviceName());
-                        if (jackId == EmuJackPanel::AUDIO_IN1)
-                            s_devicePrefs.audioIn1 = input.getCurrentDeviceName();
-                        else
-                            s_devicePrefs.audioIn2 = input.getCurrentDeviceName();
+                    pc_platform_set_audio_input(slot, nullptr);
+                    if (slot == 0) s_devicePrefs.audioIn1.clear();
+                    else           s_devicePrefs.audioIn2.clear();
+                    saveDevicePrefs();
+                    break;
+                }
+
+                auto inDevices = enumerateAudioInputDevices();
+                unsigned int realIdx = deviceIndex - 1;
+
+                if (realIdx < inDevices.size()) {
+                    // Physical RtAudio device.
+                    input.switchDevice(inDevices[realIdx].rtAudioId);
+                    jp.setConnected(jid, input.isOpen());
+                    jp.setDeviceName(jid, input.getCurrentDeviceName());
+                    if (input.isOpen()) {
+                        pc_platform_set_audio_input(slot, &input);
+                    }
+                    if (slot == 0) s_devicePrefs.audioIn1 = input.getCurrentDeviceName();
+                    else           s_devicePrefs.audioIn2 = input.getCurrentDeviceName();
+                }
+#if defined(USE_VIRTUAL_AUDIO) && defined(__linux__)
+                else if (s_virtualSinkManager) {
+                    // Virtual sink picked — index past the physical block.
+                    size_t vIdx = realIdx - inDevices.size();
+                    auto sinks = s_virtualSinkManager->list();
+                    if (vIdx < sinks.size()) {
+                        uint32_t rate = pcAudio.isOpen() ? pcAudio.getSampleRate() : 48000;
+                        auto& cap2 = (slot == 0) ? s_pulseCap1 : s_pulseCap2;
+                        if (cap2.start(sinks[vIdx].captureDeviceName, rate, 256)) {
+                            jp.setConnected(jid, true);
+                            jp.setDeviceName(jid, sinks[vIdx].displayName);
+                            pc_platform_set_audio_input(slot, &cap2);
+                            if (slot == 0) s_devicePrefs.audioIn1 = sinks[vIdx].displayName;
+                            else           s_devicePrefs.audioIn2 = sinks[vIdx].displayName;
+                        }
                     }
                 }
+#endif
                 saveDevicePrefs();
                 break;
             }
@@ -1037,18 +1305,19 @@ void crosspad_app_init()
             jp.setLevel(EmuJackPanel::AUDIO_OUT2, s_jpOut2.left(), s_jpOut2.right());
         }
 
-        // IN1 levels → jack panel
-        if (pcAudioIn1.isOpen()) {
+        // IN1/IN2 levels → jack panel. Read polymorphically through the
+        // platform accessor: on Linux with USE_VIRTUAL_AUDIO the live input
+        // is a PulseMonitorCapture (not pcAudioIn*), and the panel VU bars
+        // would otherwise stay flat even though the mixer sees the signal.
+        if (auto* in0 = pc_platform_get_audio_input(0)) {
             int16_t rawL, rawR;
-            pcAudioIn1.getInputLevel(rawL, rawR);
+            in0->getInputLevel(rawL, rawR);
             s_jpIn1.update(rawL, rawR);
             jp.setLevel(EmuJackPanel::AUDIO_IN1, s_jpIn1.left(), s_jpIn1.right());
         }
-
-        // IN2 levels → jack panel
-        if (pcAudioIn2.isOpen()) {
+        if (auto* in1 = pc_platform_get_audio_input(1)) {
             int16_t rawL, rawR;
-            pcAudioIn2.getInputLevel(rawL, rawR);
+            in1->getInputLevel(rawL, rawR);
             s_jpIn2.update(rawL, rawR);
             jp.setLevel(EmuJackPanel::AUDIO_IN2, s_jpIn2.left(), s_jpIn2.right());
         }
@@ -1140,3 +1409,31 @@ void pc_platform_save_mixer_state() {}
 /* ── UART accessor ────────────────────────────────────────────────────── */
 
 PcUart& pc_platform_get_uart() { return pcUart; }
+
+/* ── Graceful shutdown ────────────────────────────────────────────────── */
+
+void crosspad_app_shutdown()
+{
+#if defined(USE_AUDIO) && defined(USE_VIRTUAL_AUDIO)
+    bool expected = false;
+    if (!s_shutdownRan.compare_exchange_strong(expected, true)) return;
+
+    // Order matters: unload the PulseAudio null-sink modules FIRST so they
+    // don't leak into the user's system. In theory this should also sever
+    // in-flight pa_simple_read() calls in our capture threads, but on PipeWire's
+    // pulse shim the read can stay blocked indefinitely even after the module
+    // goes away — so below we detach instead of join.
+    if (s_virtualSinkManager) {
+        s_virtualSinkManager->teardown();
+    }
+
+#ifdef __linux__
+    // Non-blocking: the process is about to _Exit(0), so abandoning the
+    // capture threads is preferable to hanging in a join().
+    s_pulseCap1.detachForShutdown();
+    s_pulseCap2.detachForShutdown();
+#endif
+    pcAudioIn1.end();
+    pcAudioIn2.end();
+#endif
+}

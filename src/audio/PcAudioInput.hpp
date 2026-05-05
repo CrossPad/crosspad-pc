@@ -26,7 +26,17 @@ public:
 
     // -- Lifecycle --
     bool begin(unsigned int inputDevice = 0,
-               uint32_t sampleRate = 44100, uint32_t bufferFrames = 256);
+               uint32_t sampleRate = 44100, uint32_t bufferFrames = 256,
+               RtAudio::Api api = RtAudio::UNSPECIFIED);
+
+    /// Open the first input device whose name contains @p nameSubstring.
+    /// On Linux forces the PulseAudio backend so that null-sink monitor
+    /// sources (used by the virtual mixer sinks) are discoverable.
+    /// Returns false if no match is found or the stream fails to start.
+    bool beginByName(const std::string& nameSubstring,
+                     uint32_t sampleRate = 44100,
+                     uint32_t bufferFrames = 256);
+
     void end();
 
     // -- IAudioInput --

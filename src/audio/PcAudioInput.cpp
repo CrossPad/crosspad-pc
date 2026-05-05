@@ -19,13 +19,13 @@ PcAudioInput::~PcAudioInput() {
 }
 
 bool PcAudioInput::begin(unsigned int inputDevice, uint32_t sampleRate,
-                          uint32_t bufferFrames) {
+                          uint32_t bufferFrames, RtAudio::Api api) {
     sampleRate_ = sampleRate;
     bufferFrames_ = bufferFrames;
 
     printf("[AudioIn] Initializing audio input (RtAudio)...\n");
 
-    rtAudio_ = std::make_unique<RtAudio>();
+    rtAudio_ = std::make_unique<RtAudio>(api);
     if (rtAudio_->getDeviceCount() == 0) {
         printf("[AudioIn] No audio devices found!\n");
         rtAudio_.reset();
@@ -123,6 +123,40 @@ bool PcAudioInput::begin(unsigned int inputDevice, uint32_t sampleRate,
            inDeviceId, inInfo.name.c_str(), sampleRate_, bufferFrames_);
 
     return true;
+}
+
+bool PcAudioInput::beginByName(const std::string& nameSubstring,
+                                uint32_t sampleRate, uint32_t bufferFrames) {
+    if (nameSubstring.empty()) return false;
+
+    // On Linux force the PulseAudio API so that null-sink monitor sources
+    // (created for the virtual mixer inputs) are visible in the device list.
+    // The default RtAudio selection falls back to ALSA which aggregates all
+    // PulseAudio streams behind a single "pulse" device and hides the
+    // per-source routing we need.
+#ifdef __linux__
+    const RtAudio::Api api = RtAudio::LINUX_PULSE;
+#else
+    const RtAudio::Api api = RtAudio::UNSPECIFIED;
+#endif
+
+    try {
+        RtAudio probe(api);
+        for (unsigned int id : probe.getDeviceIds()) {
+            RtAudio::DeviceInfo info = probe.getDeviceInfo(id);
+            if (info.inputChannels < 2) continue;
+            if (info.name.find(nameSubstring) != std::string::npos) {
+                printf("[AudioIn] Matched device [%u] %s for name '%s'\n",
+                       id, info.name.c_str(), nameSubstring.c_str());
+                return begin(id, sampleRate, bufferFrames, api);
+            }
+        }
+    } catch (...) {
+        return false;
+    }
+
+    printf("[AudioIn] No input device found matching '%s'\n", nameSubstring.c_str());
+    return false;
 }
 
 void PcAudioInput::end() {

@@ -15,6 +15,7 @@
 
 #include <SDL2/SDL.h>
 #include "crosspad-gui/platform/IGuiPlatform.h"
+#include "crosspad_app.hpp"
 
 /* ── SDL event watcher (encoder + keyboard capture) ──────────────────── */
 
@@ -30,10 +31,13 @@ static int sdlEventWatcher(void* userdata, SDL_Event* event)
             return 0;  // consumed — don't pass to LVGL
     }
 
-    // Window close — use _exit() to avoid abort() from detached FreeRTOS threads
+    // Window close — use _exit() to avoid abort() from detached FreeRTOS threads.
+    // Call app shutdown first so virtual audio sinks get unloaded cleanly before
+    // the process vanishes (PulseAudio/PipeWire won't auto-clean them for us).
     if (event->type == SDL_QUIT) {
         printf("[PC] Window closed — exiting\n");
         fflush(stdout);
+        crosspad_app_shutdown();
         _Exit(0);
     }
 

@@ -15,6 +15,7 @@ set(LVGL_PRO_PROJECT_DIR
 option(USE_MIDI "Enable MIDI input/output via RtMidi" ON)
 option(USE_AUDIO "Enable system audio output via RtAudio" ON)
 option(USE_BLE "Enable BLE MIDI via SimpleBLE" ON)
+option(USE_VIRTUAL_AUDIO "Enable OS-visible virtual audio sinks (system mixer)" ON)
 
 # FreeRTOS — always enabled (required for crosspad-core event bus & LVGL OSAL)
 add_library(freertos_config INTERFACE)
@@ -106,6 +107,11 @@ if(USE_AUDIO)
     set(RTAUDIO_TARGETNAME_UNINSTALL "rtaudio-uninstall" CACHE STRING "" FORCE)
     # Keep dynamic CRT (/MDd) — don't let RtAudio switch to static /MT
     set(RTAUDIO_STATIC_MSVCRT OFF)
+    # On Linux, enable PulseAudio backend so virtual-sink monitor sources are
+    # discoverable by name. Requires libpulse-dev on the build host.
+    if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
+        set(RTAUDIO_API_PULSE ON CACHE BOOL "" FORCE)
+    endif()
     FetchContent_MakeAvailable(rtaudio)
     message(STATUS "Audio support enabled (RtAudio)")
 endif()
@@ -230,6 +236,22 @@ endif()
 if(USE_AUDIO)
     list(APPEND MAIN_SOURCES src/audio/PcAudio.cpp src/audio/PcAudioInput.cpp src/audio/PcAudioModule.cpp)
     list(APPEND MAIN_LIBS rtaudio)
+
+    if(USE_VIRTUAL_AUDIO)
+        list(APPEND MAIN_SOURCES
+            src/audio/virtual/VirtualSinkFactory.cpp
+            src/audio/virtual/LinuxPipewireSinks.cpp
+        )
+        if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
+            list(APPEND MAIN_SOURCES
+                src/audio/virtual/PulseMonitorCapture.cpp
+            )
+            # libpulse-simple is already pulled in transitively via RtAudio's
+            # PULSE backend, but link explicitly so the build doesn't depend
+            # on that detail.
+            list(APPEND MAIN_LIBS pulse pulse-simple)
+        endif()
+    endif()
 
     # ML_SynthTools vendored FM synth engine
     set(ML_SYNTH_SOURCES
@@ -427,6 +449,9 @@ endif()
 
 if(USE_AUDIO)
     target_compile_definitions(CrossPad PRIVATE USE_AUDIO=1)
+    if(USE_VIRTUAL_AUDIO)
+        target_compile_definitions(CrossPad PRIVATE USE_VIRTUAL_AUDIO=1)
+    endif()
     # Suppress warnings for vendored ML_SynthTools code
     if(MSVC)
         set_source_files_properties(
