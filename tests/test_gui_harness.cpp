@@ -282,7 +282,15 @@ static pid_t s_simPid = 0;
 static bool launchSimulator() {
     s_simPid = fork();
     if (s_simPid == 0) {
-        execl("bin/CrossPad.exe", "CrossPad.exe", NULL);
+        // Try multiple paths — Linux build drops "bin/CrossPad" (no .exe);
+        // legacy ".exe" suffix kept for cross-platform parity.
+        const char* paths[] = {
+            "bin/CrossPad",
+            "./CrossPad",
+            "bin/CrossPad.exe",
+            "../bin/CrossPad",
+        };
+        for (auto p : paths) execl(p, "CrossPad", static_cast<char*>(nullptr));
         _exit(1);
     }
     if (s_simPid < 0) return false;
