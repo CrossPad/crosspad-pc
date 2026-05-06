@@ -76,6 +76,17 @@ static int json_get_int(const std::string& json, const std::string& key, int dfl
     try { return std::stoi(json.substr(pos)); } catch (...) { return dflt; }
 }
 
+static double json_get_double(const std::string& json, const std::string& key, double dflt = 0.0) {
+    std::string search = "\"" + key + "\"";
+    auto pos = json.find(search);
+    if (pos == std::string::npos) return dflt;
+    pos = json.find(':', pos + search.size());
+    if (pos == std::string::npos) return dflt;
+    pos++;
+    while (pos < json.size() && (json[pos] == ' ' || json[pos] == '\t')) pos++;
+    try { return std::stod(json.substr(pos)); } catch (...) { return dflt; }
+}
+
 static bool json_get_bool(const std::string& json, const std::string& key, bool dflt = false) {
     std::string search = "\"" + key + "\"";
     auto pos = json.find(search);
@@ -190,6 +201,29 @@ public:
                           "\",\"value\":" + std::to_string(value) + "}");
     }
 
+    std::string midiNoteOn(int note, int velocity = 100, int channel = 0) {
+        return sendCommand("{\"cmd\":\"midi_note_on\",\"channel\":" + std::to_string(channel) +
+                          ",\"note\":" + std::to_string(note) +
+                          ",\"velocity\":" + std::to_string(velocity) + "}");
+    }
+
+    std::string midiNoteOff(int note, int channel = 0) {
+        return sendCommand("{\"cmd\":\"midi_note_off\",\"channel\":" + std::to_string(channel) +
+                          ",\"note\":" + std::to_string(note) + "}");
+    }
+
+    std::string audioLevel(int stream = 0) {
+        return sendCommand("{\"cmd\":\"audio_level\",\"stream\":" + std::to_string(stream) + "}");
+    }
+
+    std::string citestRun() {
+        return sendCommand(R"({"cmd":"citest_run"})");
+    }
+
+    std::string citestStatus() {
+        return sendCommand(R"({"cmd":"citest_status"})");
+    }
+
     void waitFrames(int n = 3) {
         // Wait for LVGL to process N frames (~5ms each)
         std::this_thread::sleep_for(std::chrono::milliseconds(n * 20));
@@ -248,7 +282,15 @@ static pid_t s_simPid = 0;
 static bool launchSimulator() {
     s_simPid = fork();
     if (s_simPid == 0) {
-        execl("bin/CrossPad.exe", "CrossPad.exe", NULL);
+        // Try multiple paths — Linux build drops "bin/CrossPad" (no .exe);
+        // legacy ".exe" suffix kept for cross-platform parity.
+        const char* paths[] = {
+            "bin/CrossPad",
+            "./CrossPad",
+            "bin/CrossPad.exe",
+            "../bin/CrossPad",
+        };
+        for (auto p : paths) execl(p, "CrossPad", static_cast<char*>(nullptr));
         _exit(1);
     }
     if (s_simPid < 0) return false;
@@ -473,6 +515,67 @@ TEST_CASE("GUI: Launch app by clicking its launcher icon", "[gui]") {
     // Go back to launcher — press Escape key (SDL keycode 27)
     g_client.sendCommand(R"({"cmd":"key","keycode":27})");
     g_client.waitFrames(10);
+}
+
+// ── Tier 3 in-app integration: drive the existing CITest app over TCP ────
+//
+// CITestApp.cpp owns the canonical audio-pipeline test sequence (synth →
+// mixer → output → tap capture, 7 stages). We orchestrate it via the
+// citest_run / citest_status remote cmds and assert all stages PASS.
+
+TEST_CASE("Audio in-app: smoke primitives respond", "[gui][audio]") {
+    SECTION("audio_level returns ok with bounded values") {
+        auto resp = g_client.audioLevel(0);
+        REQUIRE(json_get_bool(resp, "ok") == true);
+        REQUIRE(json_get_int(resp, "stream") == 0);
+        REQUIRE(json_get_double(resp, "left")  >= 0.0);
+        REQUIRE(json_get_double(resp, "left")  <= 1.0);
+    }
+    SECTION("midi_note_on rejects out-of-range note") {
+        auto resp = g_client.midiNoteOn(200, 100);
+        REQUIRE(json_get_bool(resp, "ok") == false);
+    }
+    SECTION("midi_note_on accepts valid note") {
+        auto on = g_client.midiNoteOn(60, 100);
+        REQUIRE(json_get_bool(on, "ok") == true);
+        g_client.midiNoteOff(60);
+    }
+}
+
+TEST_CASE("Audio in-app: CITest end-to-end (7 stages)", "[gui][audio][citest]") {
+    auto run = g_client.citestRun();
+    REQUIRE(json_get_bool(run, "ok") == true);
+
+    // Run does ~5–6s of mixer/synth gymnastics. Poll up to 15s.
+    bool finished = false;
+    std::string finalStatus;
+    for (int i = 0; i < 75 && !finished; ++i) {
+        std::this_thread::sleep_for(std::chrono::milliseconds(200));
+        finalStatus = g_client.citestStatus();
+        if (!json_get_bool(finalStatus, "ok")) continue;
+        if (!json_get_bool(finalStatus, "running")) finished = true;
+    }
+
+    INFO("final status = " << finalStatus);
+    REQUIRE(finished);
+
+    // Naive json_get_int gets confused by "result":"pass" appearing earlier
+    // than the top-level "pass":N. Count stage results directly via substring
+    // matching instead.
+    auto countOccurrences = [&](const std::string& needle) {
+        size_t pos = 0;
+        int n = 0;
+        while ((pos = finalStatus.find(needle, pos)) != std::string::npos) {
+            ++n;
+            pos += needle.size();
+        }
+        return n;
+    };
+    const int passCount = countOccurrences("\"result\":\"pass\"");
+    const int failCount = countOccurrences("\"result\":\"fail\"");
+    INFO("pass=" << passCount << " fail=" << failCount);
+    REQUIRE(failCount == 0);
+    REQUIRE(passCount == 7);
 }
 
 TEST_CASE("GUI: Multiple rapid pad presses don't crash", "[gui]") {

@@ -38,6 +38,14 @@ set(CORE_TEST_SOURCES
     ${PROJECT_SOURCE_DIR}/lib/crosspad-core/src/midi/MidiInputHandler.cpp
 )
 
+# ── Audio pipeline sources (Tier 2 & 3 tests) ──
+set(AUDIO_TEST_SOURCES
+    ${PROJECT_SOURCE_DIR}/src/apps/crosspad-mixer/src/AudioMixerEngine.cpp
+    ${PROJECT_SOURCE_DIR}/src/audio/PcAudio.cpp
+    ${PROJECT_SOURCE_DIR}/src/audio/PcAudioModule.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/audio/audio_test_stubs.cpp
+)
+
 # ── Test sources ──
 set(TEST_SOURCES
     test_main.cpp
@@ -49,7 +57,20 @@ set(TEST_SOURCES
     test_e2e_scenarios.cpp
 )
 
-add_executable(crosspad_tests ${TEST_SOURCES} ${CORE_TEST_SOURCES})
+# ── Audio pipeline test sources (Tier 2 + Tier 3) ──
+set(AUDIO_TEST_FILES
+    audio/test_AudioEngineSettings.cpp
+    audio/test_AudioMixerEngine.cpp
+    audio/test_PcAudioModule.cpp
+    audio/test_MixerGoldens.cpp
+)
+
+add_executable(crosspad_tests
+    ${TEST_SOURCES}
+    ${AUDIO_TEST_FILES}
+    ${CORE_TEST_SOURCES}
+    ${AUDIO_TEST_SOURCES}
+)
 
 target_compile_definitions(crosspad_tests PRIVATE
     PLATFORM_PC=1
@@ -62,14 +83,25 @@ target_include_directories(crosspad_tests PRIVATE
     ${PROJECT_SOURCE_DIR}/src
     ${PROJECT_SOURCE_DIR}/lib/crosspad-core/include
     ${PROJECT_SOURCE_DIR}/lib/crosspad-gui/include
+    ${PROJECT_SOURCE_DIR}/src/apps/crosspad-mixer/include
+    ${PROJECT_SOURCE_DIR}/src/apps/crosspad-mixer/include/crosspad-mixer
+    ${CMAKE_CURRENT_SOURCE_DIR}
+    ${CMAKE_CURRENT_SOURCE_DIR}/audio
 )
 
 target_link_libraries(crosspad_tests PRIVATE
     Catch2::Catch2
+    Catch2::Catch2WithMain  # not strictly required (we have test_main.cpp), kept for matchers
     ArduinoJson
     freertos_config
     freertos_kernel
 )
+
+# RtAudio is required by PcAudio.hpp (transitively via PcAudioModule.cpp).
+# Tests never instantiate PcAudioOutput, but headers + types must compile.
+if(USE_AUDIO AND TARGET rtaudio)
+    target_link_libraries(crosspad_tests PRIVATE rtaudio)
+endif()
 
 # FreeRTOS heap + port sources (pvPortMalloc, vPortFree, port layer)
 # FREERTOS_SOURCES is defined in the top-level CMakeLists.txt and includes

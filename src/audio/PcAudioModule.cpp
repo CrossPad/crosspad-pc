@@ -88,8 +88,8 @@ void PcAudioModule::processMixer() {
         if (l > pl) pl = l;
         if (r > pr) pr = r;
     }
-    peakL_ = pl;
-    peakR_ = pr;
+    peakL_.store(pl, std::memory_order_relaxed);
+    peakR_.store(pr, std::memory_order_relaxed);
 }
 
 void PcAudioModule::teardown() {
