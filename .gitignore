@@ -7,9 +7,11 @@ bin/
 !.github/
 
 # VSCode — ignore all except shared config
+!.vscode/
 .vscode/*
-!.vscode/settings.json
+!.vscode/settings.template.json
 !.vscode/tasks.json
+!.vscode/extensions.json
 
 # MacOS file
 .DS_Store

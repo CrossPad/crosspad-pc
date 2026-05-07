@@ -1,6 +1,18 @@
 cmake_minimum_required(VERSION 3.14)
 project(crosspad_pc VERSION 0.3.1 LANGUAGES C CXX)
 
+# First-run: generate .vscode/settings.json from template (idempotent)
+if(NOT EXISTS "${CMAKE_CURRENT_LIST_DIR}/.vscode/settings.json"
+   AND EXISTS "${CMAKE_CURRENT_LIST_DIR}/.vscode/settings.template.json")
+    find_program(_setup_vscode_python NAMES python3 python)
+    if(_setup_vscode_python)
+        execute_process(
+            COMMAND "${_setup_vscode_python}" "${CMAKE_CURRENT_LIST_DIR}/scripts/setup_vscode.py"
+            WORKING_DIRECTORY "${CMAKE_CURRENT_LIST_DIR}"
+        )
+    endif()
+endif()
+
 # Set the correct FreeRTOS port for the current compiler
 if(MSVC OR MINGW)
     set(FREERTOS_PORT MSVC_MINGW CACHE STRING "FreeRTOS port" FORCE)
@@ -288,7 +300,7 @@ foreach(_app_dir ${_app_submodule_dirs})
         continue()
     endif()
 
-    # Collect sources from src/
+    # All app sources live in src/ — single MixerApp.cpp is portable.
     file(GLOB _app_sources "${_app_dir}/src/*.cpp")
     if(_app_sources)
         list(APPEND MAIN_SOURCES ${_app_sources})
