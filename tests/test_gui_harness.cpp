@@ -45,6 +45,9 @@
 #  include <arpa/inet.h>
 #  include <unistd.h>
 #  include <signal.h>
+#  ifdef __linux__
+#    include <sys/prctl.h>
+#  endif
    typedef int socket_t;
 #  define CLOSE_SOCKET close
 #  define SOCKET_INVALID (-1)
@@ -282,9 +285,28 @@ static pid_t s_simPid = 0;
 static bool launchSimulator() {
     s_simPid = fork();
     if (s_simPid == 0) {
+        // Kill the simulator automatically if this harness dies for ANY reason
+        // (ctest TIMEOUT, Ctrl-C, crash) — otherwise killSimulator() never runs
+        // and the SDL window is orphaned. Survives the execl below.
+#ifdef __linux__
+        prctl(PR_SET_PDEATHSIG, SIGTERM);
+#endif
+        // Detach the simulator's stdout/stderr to a log file. The parent stays in
+        // the connect() loop and never drains this pipe, so leaving it attached
+        // lets the simulator wedge on a full stdout pipe (the ALSA/LVGL startup
+        // banner alone overflows the 64 KiB kernel buffer) before it ever opens
+        // the remote-control port — making the test time out against a live binary.
+        if (!freopen("gui_sim.log", "w", stdout)) { /* best-effort */ }
+        if (!freopen("gui_sim.log", "a", stderr)) { /* best-effort */ }
         // Try multiple paths — Linux build drops "bin/CrossPad" (no .exe);
         // legacy ".exe" suffix kept for cross-platform parity.
+        // CROSSPAD_SIM_BIN is the absolute path injected by CMake and is the only
+        // entry that works regardless of CTest's working directory; the relative
+        // fallbacks remain for manual runs from the repo root.
         const char* paths[] = {
+#ifdef CROSSPAD_SIM_BIN
+            CROSSPAD_SIM_BIN,
+#endif
             "bin/CrossPad",
             "./CrossPad",
             "bin/CrossPad.exe",
@@ -367,16 +389,19 @@ TEST_CASE("GUI: Screenshot returns valid image data", "[gui]") {
     int width = json_get_int(resp, "width");
     int height = json_get_int(resp, "height");
 
-    // Simulator window is 490x680 (LCD 320x240 + emulator body)
+    // Window = 320x240 LCD + emulator body. Width (490) is the fixed invariant;
+    // body height drifts with layout (660→680→714…), so assert a sane band
+    // instead of an exact pixel count that rots on every cosmetic body tweak.
     REQUIRE(width == 490);
-    REQUIRE(height == 680);
+    REQUIRE(height >= 600);
+    REQUIRE(height <= 900);
 
     std::string format = json_get_string(resp, "format");
-    REQUIRE(format == "bmp");
+    REQUIRE(format == "png");  // RemoteControl now encodes PNG (was BMP)
 
     // base64 data should be non-empty
     std::string data = json_get_string(resp, "data");
-    REQUIRE(data.size() > 1000); // BMP header + pixel data
+    REQUIRE(data.size() > 1000); // PNG header + pixel data
 }
 
 TEST_CASE("GUI: Stats show registered apps", "[gui]") {
