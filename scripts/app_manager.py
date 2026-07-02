@@ -64,25 +64,36 @@ def _load_core(path: Path):
     return mod
 
 
+# Loaded at import time (not just under __main__) so `from app_manager import
+# AppManager` works for external callers — e.g. crosspad-mcp's
+# `crosspad_apps_*` tools invoke this module programmatically via
+# `python3 -c "from app_manager import AppManager; ..."`, not just as a CLI
+# script. Matches the shape platform-idf/tools/app_manager.py already uses.
+_core_path = _download_core()
+core = _load_core(_core_path)
+
+PC_CONFIG = core.PlatformConfig(
+    platform="pc",
+    lib_dir="src/apps",
+    official_org="CrossPad",
+    lib_prefix="crosspad-",
+)
+
+
+class AppManager(core.AppManager):
+    """PC-specific AppManager with default config."""
+
+    def __init__(self, project_dir: str):
+        super().__init__(project_dir, PC_CONFIG)
+
+
 def main():
     # Find project root (parent of scripts/)
     project_dir = Path(__file__).resolve().parent.parent
 
-    # Download and import shared core
-    core_path = _download_core()
-    core = _load_core(core_path)
-
-    # PC platform config
-    config = core.PlatformConfig(
-        platform="pc",
-        lib_dir="src/apps",
-        official_org="CrossPad",
-        lib_prefix="crosspad-",
-    )
-
     # Delegate to shared CLI
     os.chdir(project_dir)
-    core.cli_main(config)
+    core.cli_main(PC_CONFIG)
 
 
 if __name__ == "__main__":
