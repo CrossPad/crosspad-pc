@@ -8,8 +8,8 @@ namespace crosspad_pc {
 
 PwContext& PwContext::instance() { static PwContext ctx; return ctx; }
 
-PwContext::Lock::Lock(PwContext& c) : c_(c) { pw_thread_loop_lock(c_.loop_); }
-PwContext::Lock::~Lock() { pw_thread_loop_unlock(c_.loop_); }
+PwContext::Lock::Lock(PwContext& c) : c_(c) { if (c_.loop_) pw_thread_loop_lock(c_.loop_); }
+PwContext::Lock::~Lock() { if (c_.loop_) pw_thread_loop_unlock(c_.loop_); }
 
 bool PwContext::init()
 {
@@ -30,7 +30,7 @@ bool PwContext::init()
 
     if (!core_) {
         printf("[PwContext] PipeWire daemon unreachable — native virtual audio off\n");
-        shutdown();
+        shutdown();            // tears everything down and resets initialized_
         initialized_ = true;   // remember the failed attempt; don't retry every call
         return false;
     }
@@ -49,6 +49,10 @@ void PwContext::shutdown()
         pw_thread_loop_destroy(loop_);
         loop_ = nullptr;
     }
+    // A clean shutdown makes the context re-initializable. init()'s failure
+    // path re-sets initialized_ = true right after calling shutdown() so a
+    // failed attempt is still remembered (no retry storm).
+    initialized_ = false;
 }
 
 bool PwContext::isConnected() const { return core_ != nullptr; }

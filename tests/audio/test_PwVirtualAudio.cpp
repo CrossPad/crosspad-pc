@@ -12,4 +12,25 @@ TEST_CASE("PwContext connects to the daemon or degrades cleanly", "[pipewire]") 
     if (!pwTestAvailable()) { SUCCEED("no PipeWire daemon"); return; }
     REQUIRE(crosspad_pc::PwContext::instance().isConnected());
 }
+
+TEST_CASE("PwContext is re-initializable after a clean shutdown", "[pipewire]") {
+    if (!pwTestAvailable()) { SUCCEED("no PipeWire daemon"); return; }
+    auto& ctx = crosspad_pc::PwContext::instance();
+
+    ctx.shutdown();
+    REQUIRE_FALSE(ctx.isConnected());
+    ctx.shutdown();  // safe to call twice
+    REQUIRE_FALSE(ctx.isConnected());
+
+    // A clean shutdown must not permanently block reconnection.
+    REQUIRE(ctx.init());
+    REQUIRE(ctx.isConnected());
+    REQUIRE(ctx.core() != nullptr);
+    REQUIRE(ctx.loop() != nullptr);
+
+    // Lock is a no-op (not a crash) on a shut-down context.
+    ctx.shutdown();
+    { crosspad_pc::PwContext::Lock lock(ctx); }
+    REQUIRE(ctx.init());  // leave connected for any later [pipewire] tests
+}
 #endif
