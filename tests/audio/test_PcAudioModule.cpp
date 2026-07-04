@@ -6,7 +6,9 @@
 
 #include "audio/PcAudioModule.hpp"
 #include <crosspad-mixer/AudioMixerEngine.hpp>
+#include <crosspad/audio/AudioInputNode.hpp>
 #include <crosspad/audio/IAudioNode.hpp>
+#include <crosspad/audio/SynthEngineNode.hpp>
 #include <crosspad/platform/PlatformServices.hpp>
 
 #include <vector>
@@ -101,10 +103,12 @@ TEST_CASE("PcAudioModule: mixer override path renders via mixer.render",
     m.s0 = &s0; m.s1 = &s1;
 
     AudioMixerEngine mixer;
-    mixer.setDefaults();   // SYNTH→OUT1 only
+    mixer.setup(kFrames, 48000, 2);
 
     ConstSynth synth(0.5f);
-    crosspad::getPlatformServices().setSynthEngine(&synth);
+    crosspad::SynthEngineNode synthNode(&synth);
+    mixer.addChannel(&synthNode, "SYNTH");
+    mixer.setRouteEnabled(0, 0, true);   // SYNTH → OUT1 only
     clearTestAudioInputs();
 
     m.setMixerEngine(&mixer);
@@ -123,7 +127,6 @@ TEST_CASE("PcAudioModule: mixer override path renders via mixer.render",
     // OUT2: silent — only SYNTH→OUT1 is enabled
     for (int16_t v : s1.captured) REQUIRE(v == 0);
 
-    crosspad::getPlatformServices().setSynthEngine(nullptr);
     m.setMixerEngine(nullptr);
 }
 
@@ -134,9 +137,13 @@ TEST_CASE("PcAudioModule: peak meter tracks bus0 in mixer mode",
     m.s0 = &s0; m.s1 = &s1;
 
     AudioMixerEngine mixer;
-    mixer.setDefaults();
+    mixer.setup(kFrames, 48000, 2);
+
     ConstSynth synth(0.4f);
-    crosspad::getPlatformServices().setSynthEngine(&synth);
+    crosspad::SynthEngineNode synthNode(&synth);
+    mixer.addChannel(&synthNode, "SYNTH");
+    mixer.setRouteEnabled(0, 0, true);
+
     m.setMixerEngine(&mixer);
 
     crosspad::AudioModuleConfig cfg;
@@ -149,6 +156,5 @@ TEST_CASE("PcAudioModule: peak meter tracks bus0 in mixer mode",
     REQUIRE_THAT(l, WithinAbs(0.4f, 1e-3f));
     REQUIRE_THAT(r, WithinAbs(0.4f, 1e-3f));
 
-    crosspad::getPlatformServices().setSynthEngine(nullptr);
     m.setMixerEngine(nullptr);
 }

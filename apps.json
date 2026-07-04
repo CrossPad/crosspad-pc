@@ -23,6 +23,12 @@
       "ref": "main",
       "repo": "https://github.com/CrossPad/crosspad-mixer.git",
       "installed_at": "2026-04-10T14:10:33.752307+00:00"
+    },
+    "appstore": {
+      "version": "9f670b16",
+      "ref": "main",
+      "repo": "https://github.com/CrossPad/crosspad-appstore.git",
+      "installed_at": "2026-07-02T15:08:46.567243+00:00"
     }
   }
 }

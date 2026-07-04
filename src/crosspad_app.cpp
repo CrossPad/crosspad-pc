@@ -122,8 +122,16 @@ static MlPianoSynth fmSynth;
 static crosspad_pc::PcAudioModule s_audioModule;
 static crosspad::SynthEngineNode s_synthNode;
 #ifdef HAS_MIXER
+#include "crosspad/audio/AudioInputNode.hpp"
+#include "pc_stubs/pc_platform.h"
 static AudioMixerEngine s_mixerEngine;
 static std::shared_ptr<MixerPadLogic> s_mixerPadLogic;
+// Adapters registered as mixer channels in IN1, IN2, SYNTH order so
+// MixerInput::IN1=0, IN2=1, SYNTH=2 stay valid against the dynamic API.
+// The indexed getter form picks up hot-swapped virtual inputs every cycle.
+static crosspad::AudioInputNode s_in1Node{&pc_platform_get_audio_input, 0, "Input 1"};
+static crosspad::AudioInputNode s_in2Node{&pc_platform_get_audio_input, 1, "Input 2"};
+static crosspad::SynthEngineNode s_mixerSynthNode;
 #endif
 #ifdef USE_VIRTUAL_AUDIO
 static std::unique_ptr<crosspad_pc::IVirtualSinkManager> s_virtualSinkManager;
@@ -747,9 +755,33 @@ void crosspad_app_init()
     crosspad::getPlatformServices().setSynthEngine(&fmSynth);
 
 #ifdef HAS_MIXER
-    // Load mixer state BEFORE audio module starts, so the audio thread's first
-    // render() call sees the saved route matrix instead of all-disabled defaults.
+    // Mixer engine setup: 2 outputs (OUT1, OUT2) at the active SR/frameCount.
+    {
+        auto* settings = crosspad::CrosspadSettings::getInstance();
+        const uint32_t mixerSr     = pcAudio.isOpen() ? pcAudio.getSampleRate()
+                                     : (settings ? settings->audioEngine.sampleRate : 48000);
+        const uint32_t mixerFrames = settings ? settings->audioEngine.frameCount : 256;
+        s_mixerEngine.setup(mixerFrames < 128 ? 128 : mixerFrames, mixerSr, 2);
+    }
+    s_mixerEngine.setDefaults();
+
+    // Register predefined PC channels in IN1=0, IN2=1, SYNTH=2 order.
+    s_mixerSynthNode.setEngine(&fmSynth);
+    s_mixerEngine.addChannel(&s_in1Node, "Input 1");
+    s_mixerEngine.addChannel(&s_in2Node, "Input 2");
+    s_mixerEngine.addChannel(&s_mixerSynthNode, "Synth");
+    // Default routing: SYNTH → OUT1 (matches legacy behavior).
+    s_mixerEngine.setRouteEnabled(MixerInput::SYNTH, MixerOutput::OUT1, true);
+
+    // Load mixer state AFTER channel slots exist so saved per-channel routing
+    // applies; loadState only patches existing slots, never creates them.
     s_mixerEngine.loadState(getMixerStatePath());
+
+    // Engine-level state-changed sink — MixerApp.cpp (cross-platform) calls
+    // notifyStateChanged() after every GUI mutation; this hook flushes to disk.
+    s_mixerEngine.setStateChangedCallback([]() {
+        s_mixerEngine.saveState(getMixerStatePath());
+    });
 
     // Register mixer pad logic globally (always available)
     s_mixerPadLogic = std::make_shared<MixerPadLogic>(s_mixerEngine);

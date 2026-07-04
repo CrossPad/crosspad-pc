@@ -67,7 +67,9 @@ void PcAudioModule::processMixer() {
     const uint32_t frames  = config_.frameCount;
     const uint32_t samples = frames * 2;
 
-    mixer_->render(mixerBus_[0].data(), mixerBus_[1].data(), frames);
+    float* outBuses[NUM_OUTPUTS];
+    for (uint8_t s = 0; s < NUM_OUTPUTS; ++s) outBuses[s] = mixerBus_[s].data();
+    mixer_->render(outBuses, NUM_OUTPUTS, frames);
 
     for (uint8_t s = 0; s < NUM_OUTPUTS; ++s) {
         crosspad::IAudioStream* stream = getOutputStream(s);

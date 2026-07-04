@@ -19,3 +19,7 @@ void setTestAudioInput(int index, crosspad::IAudioInput* input);
 void clearTestAudioInputs();
 
 } // namespace crosspad_test
+
+// Test-only stub of the PC platform getter; AudioInputNode resolves IAudioInput
+// through this every render so hot-swapped mocks take effect immediately.
+extern "C++" crosspad::IAudioInput* pc_platform_get_audio_input(int index);
