@@ -6,7 +6,10 @@
 #include "audio/pipewire/PwVirtualSinkCapture.hpp"
 #include "audio/pipewire/PwVirtualSinkManager.hpp"
 #include "audio/pipewire/PwDefaultSinkGuard.hpp"
+#include "audio/pipewire/PwVirtualSource.hpp"
+#include <cstdint>
 #include <cstdlib>
+#include <vector>
 
 static bool pwTestAvailable() {
     return crosspad_pc::PwContext::instance().init();
@@ -60,6 +63,26 @@ TEST_CASE("PwVirtualSinkManager fills IVirtualSinkManager contract", "[pipewire]
     mgr.teardown();          // idempotent
     mgr.teardown();
     REQUIRE(mgr.input(0) == nullptr);
+}
+
+TEST_CASE("PwVirtualSource exposes an OS microphone and accepts pushed samples", "[pipewire]") {
+    if (!pwTestAvailable()) { SUCCEED("no PipeWire daemon"); return; }
+    crosspad_pc::PwVirtualSource src;
+    REQUIRE(src.start("crosspad_test_out", "CrossPad TEST out", 48000));
+    REQUIRE(src.isOpen());
+
+    // Small int16 ramp, 256 stereo frames.
+    constexpr uint32_t kFrames = 256;
+    std::vector<int16_t> ramp(static_cast<size_t>(kFrames) * 2);
+    for (uint32_t i = 0; i < kFrames; ++i) {
+        ramp[i * 2 + 0] = static_cast<int16_t>(i);
+        ramp[i * 2 + 1] = static_cast<int16_t>(-static_cast<int>(i));
+    }
+    uint32_t accepted = src.pushSamples(ramp.data(), crosspad::AudioFormat::Int16, kFrames);
+    REQUIRE(accepted == kFrames);
+
+    src.stop();
+    REQUIRE_FALSE(src.isOpen());
 }
 
 TEST_CASE("pwExtractJsonName parses metadata values", "[pipewire][unit]") {

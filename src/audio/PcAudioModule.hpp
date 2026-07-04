@@ -82,6 +82,13 @@ public:
     /// Pass nullptr to fall back to the node chain.
     void setMixerEngine(AudioMixerEngine* mixer) { mixer_ = mixer; }
 
+    /// Optional post-master tap of OUT1: every processMixer cycle the int16
+    /// conversion of bus 0 is also pushed here (e.g. a PipeWire virtual
+    /// source mirroring CrossPad's output as a "microphone"). Pass nullptr
+    /// to detach. Plain interface pointer — no PipeWire/backend headers
+    /// leak into this module; wiring happens at the app-init call site.
+    void setAuxStream(crosspad::IAudioStream* aux) { aux_ = aux; }
+
     /// Start the audio processing thread
     void start();
 
@@ -93,6 +100,7 @@ public:
 private:
     PcRtAudioOutputStream outputs_[NUM_OUTPUTS];
     AudioMixerEngine* mixer_ = nullptr;
+    crosspad::IAudioStream* aux_ = nullptr;
 
     std::atomic<bool> running_{false};
     std::unique_ptr<std::thread> thread_;

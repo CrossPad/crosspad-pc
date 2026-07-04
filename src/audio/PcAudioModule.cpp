@@ -72,11 +72,15 @@ void PcAudioModule::processMixer() {
     mixer_->render(outBuses, NUM_OUTPUTS, frames);
 
     for (uint8_t s = 0; s < NUM_OUTPUTS; ++s) {
-        crosspad::IAudioStream* stream = getOutputStream(s);
-        if (!stream || !stream->isOpen()) continue;
+        // Convert unconditionally — even with no physical stream open, the
+        // int16 buffer must stay current so the aux tap (below) sees fresh
+        // data every cycle rather than stale/zeroed samples.
         crosspad::floatToInt16(mixerBus_[s].data(),
                                pushScratchInt16_[s].data(),
                                samples);
+
+        crosspad::IAudioStream* stream = getOutputStream(s);
+        if (!stream || !stream->isOpen()) continue;
         uint32_t pushed = stream->pushSamples(pushScratchInt16_[s].data(),
                                             crosspad::AudioFormat::Int16, frames);
         if (pushed < frames) {
@@ -88,6 +92,12 @@ void PcAudioModule::processMixer() {
             }
         }
     }
+
+    // B-bus tap: mirror OUT1 into the aux stream (PipeWire virtual source),
+    // regardless of whether any physical output stream is open.
+    if (aux_ && aux_->isOpen())
+        aux_->pushSamples(pushScratchInt16_[0].data(),
+                          crosspad::AudioFormat::Int16, frames);
 
     // Peak meter on OUT1 (matches existing VU meter wiring)
     const float* bus0 = mixerBus_[0].data();

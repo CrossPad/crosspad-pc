@@ -130,6 +130,74 @@ TEST_CASE("PcAudioModule: mixer override path renders via mixer.render",
     m.setMixerEngine(nullptr);
 }
 
+TEST_CASE("PcAudioModule: aux stream mirrors OUT1 in mixer mode",
+          "[audio][pc-module][mixer][aux]") {
+    TestablePcAudioModule m;
+    CapturingInt16Stream s0, s1;
+    m.s0 = &s0; m.s1 = &s1;
+
+    CapturingInt16Stream aux;
+    m.setAuxStream(&aux);
+
+    AudioMixerEngine mixer;
+    mixer.setup(kFrames, 48000, 2);
+
+    ConstSynth synth(0.3f);
+    crosspad::SynthEngineNode synthNode(&synth);
+    mixer.addChannel(&synthNode, "SYNTH");
+    mixer.setRouteEnabled(0, 0, true);   // SYNTH → OUT1 only
+
+    m.setMixerEngine(&mixer);
+
+    crosspad::AudioModuleConfig cfg;
+    cfg.frameCount = kFrames;
+    REQUIRE(m.setup(cfg));
+
+    m.process();
+
+    REQUIRE(aux.pushes == 1);
+    REQUIRE(aux.captured.size() == kFrames * 2);
+    REQUIRE(aux.captured == s0.captured);
+
+    m.setMixerEngine(nullptr);
+    m.setAuxStream(nullptr);
+}
+
+TEST_CASE("PcAudioModule: aux stream still receives OUT1 when physical stream is closed",
+          "[audio][pc-module][mixer][aux]") {
+    TestablePcAudioModule m;
+    CapturingInt16Stream s0, s1;
+    s0.open = false;   // no physical device open on OUT1
+    m.s0 = &s0; m.s1 = &s1;
+
+    CapturingInt16Stream aux;
+    m.setAuxStream(&aux);
+
+    AudioMixerEngine mixer;
+    mixer.setup(kFrames, 48000, 2);
+
+    ConstSynth synth(0.3f);
+    crosspad::SynthEngineNode synthNode(&synth);
+    mixer.addChannel(&synthNode, "SYNTH");
+    mixer.setRouteEnabled(0, 0, true);   // SYNTH → OUT1 only
+
+    m.setMixerEngine(&mixer);
+
+    crosspad::AudioModuleConfig cfg;
+    cfg.frameCount = kFrames;
+    REQUIRE(m.setup(cfg));
+
+    m.process();
+
+    REQUIRE(s0.pushes == 0);   // physical stream closed, never pushed
+    REQUIRE(aux.pushes == 1);  // aux still tapped
+    const int16_t expected = static_cast<int16_t>(0.3f * 32767.0f);
+    for (int16_t v : aux.captured) REQUIRE(std::abs(static_cast<int>(v - expected)) <= 1);
+
+    m.setMixerEngine(nullptr);
+    m.setAuxStream(nullptr);
+}
+
 TEST_CASE("PcAudioModule: peak meter tracks bus0 in mixer mode",
           "[audio][pc-module][mixer]") {
     TestablePcAudioModule m;
