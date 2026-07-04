@@ -18,8 +18,10 @@ void MlPianoSynth::init()
     printf("[MlPianoSynth] Initializing FM synth (sr=%u, ch=%u)\n", sampleRate_, midiChannel_);
     FmSynth_Init(static_cast<float>(sampleRate_));
 
-    // Pre-allocate temp buffer to avoid first-call allocation stall
-    monoBuf_.resize(512);
+    // AudioEngineSettings allows frameCount up to 512; PcAudioModule floors at 128.
+    // Pre-size for 2048 so process() never allocates on the audio thread even if
+    // limits grow.
+    monoBuf_.assign(2048, 0.0f);
 
     initialized_ = true;
 }
@@ -128,21 +130,22 @@ void MlPianoSynth::process(int16_t* stereoOut, uint32_t frames)
         return;
     }
 
-    // Ensure temp buffer is large enough (pre-allocated in init())
+    // Guard against audio-thread allocation: monoBuf_ is pre-sized in init().
+    // If a larger request ever arrives, emit silence instead of resizing here.
     if (monoBuf_.size() < frames) {
-        monoBuf_.resize(frames);
+        std::memset(stereoOut, 0, frames * 2 * sizeof(*stereoOut));
+        return;
     }
 
-    // Use try_lock to avoid blocking the mixer thread when MIDI callbacks
-    // are holding the mutex (e.g. noteOn/noteOff). If we can't lock,
-    // output the previous buffer's tail (silence) — one missed chunk
-    // is inaudible, a mutex stall causes stuttering.
+    // try_lock: never block the audio thread on MIDI-callback param changes.
     if (mutex_.try_lock()) {
         FmSynth_Process(nullptr, monoBuf_.data(), static_cast<int>(frames));
         mutex_.unlock();
+    } else {
+        // Couldn't render this cycle — output true silence, not the stale
+        // previous buffer (repeating a chunk is an audible tonal artifact).
+        std::fill(monoBuf_.begin(), monoBuf_.begin() + frames, 0.0f);
     }
-    // If try_lock fails, monoBuf_ still has stale data — we'll output
-    // its last state which is better than blocking.
 
     // Convert float mono -> int16 stereo + track peak
     int16_t maxAbs = 0;
@@ -171,13 +174,21 @@ void MlPianoSynth::process(float* stereoOut, uint32_t frames)
         return;
     }
 
+    // Guard against audio-thread allocation: monoBuf_ is pre-sized in init().
+    // If a larger request ever arrives, emit silence instead of resizing here.
     if (monoBuf_.size() < frames) {
-        monoBuf_.resize(frames);
+        std::memset(stereoOut, 0, frames * 2 * sizeof(*stereoOut));
+        return;
     }
 
+    // try_lock: never block the audio thread on MIDI-callback param changes.
     if (mutex_.try_lock()) {
         FmSynth_Process(nullptr, monoBuf_.data(), static_cast<int>(frames));
         mutex_.unlock();
+    } else {
+        // Couldn't render this cycle — output true silence, not the stale
+        // previous buffer (repeating a chunk is an audible tonal artifact).
+        std::fill(monoBuf_.begin(), monoBuf_.begin() + frames, 0.0f);
     }
 
     // Mono → interleaved stereo float, with FmSynth-style 0.5 gain attenuation
