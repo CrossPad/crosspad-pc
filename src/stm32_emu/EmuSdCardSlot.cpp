@@ -202,6 +202,42 @@ std::string EmuSdCardSlot::openFolderDialog()
 
     return result;
 }
+#elif defined(__linux__)
+/* ── Linux folder picker: zenity → kdialog fallback ─────────────────────
+ * Blocking popen, same modality as the Win32 IFileDialog path. Both tools
+ * are spawned with stderr silenced (GTK/Qt warnings) and their trailing
+ * newline stripped. Empty result = cancelled or neither tool installed. */
+static std::string runPickerCommand(const char* cmd)
+{
+    FILE* pipe = popen(cmd, "r");
+    if (!pipe) return "";
+    char buf[1024];
+    std::string out;
+    while (fgets(buf, sizeof buf, pipe)) out += buf;
+    int status = pclose(pipe);
+    while (!out.empty() && (out.back() == '\n' || out.back() == '\r'))
+        out.pop_back();
+    // Non-zero exit = cancel (zenity: 1) or tool missing (127).
+    if (status != 0) return "";
+    return out;
+}
+
+std::string EmuSdCardSlot::openFolderDialog()
+{
+    std::string dir = runPickerCommand(
+        "zenity --file-selection --directory "
+        "--title='Select SD Card Working Directory' 2>/dev/null");
+    if (!dir.empty()) return dir;
+
+    dir = runPickerCommand(
+        "kdialog --getexistingdirectory \"$HOME\" "
+        "--title 'Select SD Card Working Directory' 2>/dev/null");
+    if (!dir.empty()) return dir;
+
+    printf("[SDCard] Folder picker: install 'zenity' or 'kdialog' to browse, "
+           "or set sdcard_path in device_preferences.json\n");
+    return "";
+}
 #else
 std::string EmuSdCardSlot::openFolderDialog()
 {
