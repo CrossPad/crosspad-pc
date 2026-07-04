@@ -72,6 +72,7 @@ if(CROSSPAD_PIPEWIRE_OK)
         ${PROJECT_SOURCE_DIR}/src/audio/pipewire/PwContext.cpp
         ${PROJECT_SOURCE_DIR}/src/audio/pipewire/PwVirtualSinkCapture.cpp
         ${PROJECT_SOURCE_DIR}/src/audio/pipewire/PwVirtualSinkManager.cpp
+        ${PROJECT_SOURCE_DIR}/src/audio/pipewire/PwDefaultSinkGuard.cpp
     )
 endif()
 

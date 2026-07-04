@@ -5,6 +5,8 @@
 #include "audio/pipewire/PwContext.hpp"
 #include "audio/pipewire/PwVirtualSinkCapture.hpp"
 #include "audio/pipewire/PwVirtualSinkManager.hpp"
+#include "audio/pipewire/PwDefaultSinkGuard.hpp"
+#include <cstdlib>
 
 static bool pwTestAvailable() {
     return crosspad_pc::PwContext::instance().init();
@@ -58,5 +60,37 @@ TEST_CASE("PwVirtualSinkManager fills IVirtualSinkManager contract", "[pipewire]
     mgr.teardown();          // idempotent
     mgr.teardown();
     REQUIRE(mgr.input(0) == nullptr);
+}
+
+TEST_CASE("pwExtractJsonName parses metadata values", "[pipewire][unit]") {
+    using crosspad_pc::pwExtractJsonName;
+    CHECK(pwExtractJsonName("{\"name\":\"alsa_output.pci.analog-stereo\"}")
+          == "alsa_output.pci.analog-stereo");
+    CHECK(pwExtractJsonName("{ \"name\" : \"x\" }") == "x");
+    CHECK(pwExtractJsonName("garbage") == "");
+    CHECK(pwExtractJsonName(nullptr) == "");
+}
+
+TEST_CASE("PwDefaultSinkGuard reads current default without mutating", "[pipewire]") {
+    if (!pwTestAvailable()) { SUCCEED("no PipeWire daemon"); return; }
+    crosspad_pc::PwDefaultSinkGuard guard;
+    std::string cur = guard.queryCurrentDefault();
+    SUCCEED("current default: " + (cur.empty() ? "<none>" : cur));
+}
+
+TEST_CASE("PwDefaultSinkGuard takeover+restore roundtrip", "[pipewire][.mutate]") {
+    // Hidden test (leading '.') — only run explicitly; mutates user session.
+    if (!pwTestAvailable() || !getenv("CROSSPAD_PW_TEST_MUTATE")) {
+        SUCCEED("skipped (set CROSSPAD_PW_TEST_MUTATE=1)"); return;
+    }
+    crosspad_pc::PwVirtualSinkCapture cap;
+    REQUIRE(cap.start("crosspad_test_default", "CrossPad TEST default", 48000));
+    crosspad_pc::PwDefaultSinkGuard guard;
+    std::string before = guard.queryCurrentDefault();
+    REQUIRE(guard.takeover("crosspad_test_default"));
+    REQUIRE(guard.previousSink() == before);
+    guard.restore();
+    REQUIRE(guard.queryCurrentDefault() == before);
+    cap.stop();
 }
 #endif
