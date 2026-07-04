@@ -8,6 +8,11 @@
 
 #include "IVirtualSinkManager.hpp"
 
+#if defined(__linux__) && defined(USE_PIPEWIRE)
+#include "../pipewire/PwVirtualSinkManager.hpp"
+#include <cstdio>
+#endif
+
 namespace crosspad_pc {
 
 #ifdef __linux__
@@ -30,8 +35,15 @@ public:
 } // namespace
 
 std::unique_ptr<IVirtualSinkManager> makeVirtualSinkManager() {
-#ifdef __linux__
-    return makeLinuxPipewireSinks();
+#if defined(__linux__)
+#if defined(USE_PIPEWIRE)
+    {
+        auto native = std::make_unique<PwVirtualSinkManager>();
+        if (native->isAvailable()) return native;
+        printf("[VirtSink] native PipeWire unavailable, falling back to pactl\n");
+    }
+#endif
+    return makeLinuxPipewireSinks();   // legacy pactl null-sink path
 #else
     return std::make_unique<NullSinkManager>();
 #endif

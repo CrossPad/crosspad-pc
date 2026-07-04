@@ -297,6 +297,8 @@ if(USE_AUDIO)
         if(CROSSPAD_PIPEWIRE_OK)
             list(APPEND MAIN_SOURCES
                 src/audio/pipewire/PwContext.cpp
+                src/audio/pipewire/PwVirtualSinkCapture.cpp
+                src/audio/pipewire/PwVirtualSinkManager.cpp
             )
             list(APPEND MAIN_LIBS ${CROSSPAD_PW_LIBS})
             add_compile_definitions(USE_PIPEWIRE=1)

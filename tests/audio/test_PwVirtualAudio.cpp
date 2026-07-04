@@ -3,6 +3,8 @@
 #if defined(__linux__) && defined(USE_PIPEWIRE)
 #include <catch2/catch_test_macros.hpp>
 #include "audio/pipewire/PwContext.hpp"
+#include "audio/pipewire/PwVirtualSinkCapture.hpp"
+#include "audio/pipewire/PwVirtualSinkManager.hpp"
 
 static bool pwTestAvailable() {
     return crosspad_pc::PwContext::instance().init();
@@ -32,5 +34,29 @@ TEST_CASE("PwContext is re-initializable after a clean shutdown", "[pipewire]") 
     ctx.shutdown();
     { crosspad_pc::PwContext::Lock lock(ctx); }
     REQUIRE(ctx.init());  // leave connected for any later [pipewire] tests
+}
+
+TEST_CASE("PwVirtualSinkCapture exposes an OS sink and reads silence when idle", "[pipewire]") {
+    if (!pwTestAvailable()) { SUCCEED("no PipeWire daemon"); return; }
+    crosspad_pc::PwVirtualSinkCapture cap;
+    REQUIRE(cap.start("crosspad_test_vin", "CrossPad TEST sink", 48000));
+    REQUIRE(cap.isOpen());
+    int16_t buf[256 * 2];
+    // No app is linked to the test sink — read must not block and returns 0..n.
+    uint32_t got = cap.read(buf, 256);
+    REQUIRE(got <= 256);
+    cap.stop();
+    REQUIRE_FALSE(cap.isOpen());
+}
+
+TEST_CASE("PwVirtualSinkManager fills IVirtualSinkManager contract", "[pipewire]") {
+    if (!pwTestAvailable()) { SUCCEED("no PipeWire daemon"); return; }
+    crosspad_pc::PwVirtualSinkManager mgr;
+    REQUIRE(mgr.setup(2));
+    REQUIRE(mgr.list().size() == 2);
+    REQUIRE(mgr.input(0) != nullptr);
+    mgr.teardown();          // idempotent
+    mgr.teardown();
+    REQUIRE(mgr.input(0) == nullptr);
 }
 #endif

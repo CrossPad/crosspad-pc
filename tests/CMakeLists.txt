@@ -68,7 +68,11 @@ set(AUDIO_TEST_FILES
 # ── Native PipeWire backend tests (only when CMake detected usable headers) ──
 if(CROSSPAD_PIPEWIRE_OK)
     list(APPEND AUDIO_TEST_FILES audio/test_PwVirtualAudio.cpp)
-    list(APPEND AUDIO_TEST_SOURCES ${PROJECT_SOURCE_DIR}/src/audio/pipewire/PwContext.cpp)
+    list(APPEND AUDIO_TEST_SOURCES
+        ${PROJECT_SOURCE_DIR}/src/audio/pipewire/PwContext.cpp
+        ${PROJECT_SOURCE_DIR}/src/audio/pipewire/PwVirtualSinkCapture.cpp
+        ${PROJECT_SOURCE_DIR}/src/audio/pipewire/PwVirtualSinkManager.cpp
+    )
 endif()
 
 add_executable(crosspad_tests

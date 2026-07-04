@@ -18,6 +18,10 @@
 #include <string>
 #include <vector>
 
+namespace crosspad {
+class IAudioInput;
+} // namespace crosspad
+
 namespace crosspad_pc {
 
 class IVirtualSinkManager {
@@ -39,6 +43,11 @@ public:
 
     /// Sinks that are currently live. Empty if setup() wasn't called or failed.
     virtual std::vector<VirtualSink> list() const = 0;
+
+    /// Native backends expose the sink directly as an IAudioInput (no monitor
+    /// device round-trip). Returns nullptr for pactl/RtAudio-based backends —
+    /// callers must then fall back to captureDeviceName matching.
+    virtual crosspad::IAudioInput* input(uint32_t /*index*/) { return nullptr; }
 
     /// True if the platform implementation can work on this system.
     virtual bool isAvailable() const = 0;
