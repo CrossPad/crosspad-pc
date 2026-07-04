@@ -43,6 +43,7 @@ Run: `bin/main.exe`
 | `USE_FREERTOS` | OFF | FreeRTOS multitasking (recommended ON for full app init) |
 | `USE_MIDI` | ON | MIDI I/O via RtMidi (FetchContent) |
 | `USE_AUDIO` | ON | Audio output via RtAudio + FM synth (FetchContent) |
+| `USE_PIPEWIRE` | ON (Linux) | Native PipeWire virtual sinks/source; falls back to `pactl` at runtime when the daemon or dev headers are unavailable |
 | `LV_USE_DRAW_SDL` | OFF | SDL GPU-accelerated drawing |
 | `LV_USE_LIBPNG` | OFF | PNG decoding |
 | `LV_USE_LIBJPEG_TURBO` | OFF | JPEG decoding |
@@ -83,6 +84,7 @@ src/
   midi/PcMidi.cpp               — RtMidi wrapper, IMidiOutput impl, auto-connect
   audio/
     PcAudio.cpp                 — RtAudio/WASAPI output, AudioRingBuffer, peak metering
+    pipewire/                   — native Linux PipeWire backend (primary virtual-audio path, see docs/virtual-audio.md)
   synth/MlPianoSynth.cpp        — ISynthEngine impl wrapping ML_SynthTools FM engine
   apps/ml_piano/                — ML Piano app (pad grid, preset selector, param controls)
   remote/

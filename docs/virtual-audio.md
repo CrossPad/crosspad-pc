@@ -1,101 +1,160 @@
 # Virtual Audio Sinks — CrossPad as a System Mixer
 
 CrossPad-PC can act like **VoiceMeeter Banana** on Windows or **Loopback** on
-macOS: it exposes two virtual "speakers" that other applications and DAWs can
-route their audio into. CrossPad then mixes those streams with its built-in
-synth and routes everything to the physical outputs.
+macOS: it exposes virtual audio endpoints that other applications and DAWs can
+route into and out of. CrossPad mixes those streams with its built-in synth
+and routes the result to the physical outputs.
 
-> Status: **Linux works out of the box.** Windows and macOS detection are
-> planned for a follow-up release — see [Roadmap](#roadmap).
+> Status: **Linux works out of the box** via a native PipeWire backend.
+> Windows and macOS are planned — see [Fallback matrix](#fallback-matrix).
 
 ## What You Get
 
-When CrossPad-PC starts, it creates two OS-visible outputs:
-
-- **CrossPad virtual IN#1** — fed into the mixer as IN1
-- **CrossPad virtual IN#2** — fed into the mixer as IN2
-
-Any application (Spotify, Discord, Firefox, Reaper, Ardour…) that can pick an
-audio output will see these as regular "speakers". The audio you send to them
-becomes the input of the CrossPad mixer.
-
 ```
-  Spotify ──▶ CrossPad virtual IN#1 ──▶ Mixer IN1 ─┐
-                                                    ├─▶ Mixer ──▶ OUT1 ──▶ physical speakers
-  Reaper  ──▶ CrossPad virtual IN#2 ──▶ Mixer IN2 ─┤
+  Spotify ──▶ crosspad_vin1 (Sink) ──▶ Mixer IN1 ─┐
+                                                    ├─▶ Mixer ──▶ OUT1 ──▶ physical speakers ──▶ crosspad_out (Source) ──▶ OBS/DAW mic input
+  Reaper  ──▶ crosspad_vin2 (Sink) ──▶ Mixer IN2 ─┤
                                                     └─▶ OUT2 ──▶ headphones
   Synth / MIDI pads ───────────────────▶ Mixer Synth
 ```
 
+- **`crosspad_vin1` / `crosspad_vin2`** — `Audio/Sink` pw_streams ("CrossPad
+  IN#1"/"IN#2"). Any app that can pick an audio output sees these as regular
+  speakers; audio sent to them becomes Mixer IN1/IN2.
+- **`crosspad_out`** — an `Audio/Source/Virtual` pw_stream ("CrossPad Out").
+  Fed by an aux tap on the mixer's OUT1 bus (post-master int16 mirror), it
+  makes CrossPad show up as a microphone in OBS/DAWs — no loopback device
+  needed.
+
+All three are S16/48k/stereo; the PipeWire adapter handles format/rate
+conversion for clients that use something else. Monitor ports on the vin
+streams come for free (PipeWire adds them automatically for any `Audio/Sink`
+node), which is what lets external tools like `qpwgraph` tap the same signal
+today (see [docs/audio-plugins.md](audio-plugins.md)).
+
 End-to-end latency target: **~15 ms** with default settings.
 
-## Linux (PulseAudio / PipeWire)
+## Architecture (Linux, native PipeWire)
 
-**Nothing to install.** CrossPad shells out to `pactl` to create two
-`module-null-sink`s at launch and unloads them at exit.
+`src/audio/pipewire/` hosts the backend:
 
-### Quick verification
+- **`PwContext`** — process-wide singleton owning the one `pw_thread_loop` +
+  `pw_core` connection. `init()` is idempotent and remembers a failed attempt
+  rather than retrying every call site; `shutdown()` is safe to call twice.
+- **`PwVirtualSinkCapture`** — one `Audio/Sink` stream per virtual input
+  (`IAudioInput` impl). `onProcess`/`read` touch only the ring buffer and
+  atomics — no allocation, locking, or logging on the RT thread.
+- **`PwVirtualSinkManager`** — `IVirtualSinkManager` impl wrapping two
+  `PwVirtualSinkCapture` instances (`crosspad_vin1`/`crosspad_vin2`).
+- **`PwVirtualSource`** — the `Audio/Source/Virtual` stream backing
+  `crosspad_out`; `pushSamples()` is called from the audio thread via the
+  mixer's aux-stream tap.
+- **`PwDefaultSinkGuard`** — reads/writes WirePlumber's `default` metadata
+  object to make `crosspad_vin1` the system default sink while CrossPad is
+  running, and to restore the previous default afterwards.
+
+### Default-sink takeover, restore, and crash recovery
+
+On startup, if the `pw_takeover_default` preference is true (default **on**)
+and the native backend is active:
+
+1. `PwDefaultSinkGuard::takeover("crosspad_vin1")` reads the current
+   `default.configured.audio.sink` value, saves it, and sets the key to
+   `crosspad_vin1` — WirePlumber applies the change.
+2. The saved value is persisted immediately to `device_preferences.json` as
+   `pw_prev_default_sink`, *before* any teardown path can run.
+3. On clean shutdown, `restore()` writes the saved sink back (or clears the
+   key if none was saved); `pw_prev_default_sink` is cleared and re-saved —
+   a normal exit leaves no trace.
+4. **Crash recovery:** if CrossPad is killed (`SIGKILL`) before step 3 runs,
+   `pw_prev_default_sink` stays non-empty on disk. The *next* launch feeds
+   that value into `setPreviousSink()` before `takeover()` runs, so the sink
+   from before CrossPad ever touched the system — not its own leftover
+   default — is what eventually gets restored.
+
+Toggling `pw_takeover_default` off keeps the vin sinks created and
+capturable, but CrossPad never touches the system default. There's no
+settings-screen UI for this yet (lives in `crosspad-gui`, out of scope here)
+— hand-edit the bool in the device-preferences JSON at
+`pc_platform_get_profile_dir()` + `/device_preferences.json` (see
+`getDevicePrefsPath()` in `src/crosspad_app.cpp`).
+
+### Shutdown order
+
+`crosspad_app_shutdown()` runs PipeWire teardown before the generic
+virtual-sink teardown, and tears down `PwContext` last: (1) guard `restore()`
+and clear `pw_prev_default_sink`, (2) detach aux stream and call
+`PwVirtualSource::stop()`, (3) `IVirtualSinkManager::teardown()` (stops both
+captures, or unloads the pactl null-sinks on the fallback path),
+(4) `PwContext::instance().shutdown()` — last, since every proxy/stream above
+lives on its `pw_thread_loop`.
+
+### Latency & realtime
+
+Each pw_stream requests `node.latency = 256/48000` (~5.3 ms per graph hop)
+and sets `PW_STREAM_FLAG_RT_PROCESS`; PipeWire's `module-rt` promotes the
+graph thread to a realtime scheduling class when the session is configured
+for it (standard on desktop distros with `pipewire.conf`'s default RT rules).
+
+## Fallback matrix
+
+| Platform | Backend | Notes |
+|---|---|---|
+| Linux, PipeWire daemon reachable | **Native `pw_stream`** (this doc) | Primary path — direct `Audio/Sink`/`Audio/Source` nodes, no PulseAudio round-trip. |
+| Linux, daemon unreachable at startup | `pactl` null-sinks + `libpulse-simple` monitor capture | Legacy path (`LinuxPipewireSinks.cpp`), selected automatically by `VirtualSinkFactory` when `PwVirtualSinkManager::isAvailable()` is false. |
+| Windows | None yet | Planned: WASAPI loopback capture, VB-CABLE interop. No virtual audio *endpoint* is possible without a signed kernel driver — CrossPad will not ship one; users install VB-CABLE and CrossPad will auto-detect it. |
+| macOS | None yet | Planned: BlackHole auto-detection (same reasoning as Windows — no in-process virtual device without a signed driver/extension). |
+
+## Build Requirements
+
+`USE_PIPEWIRE` (default **ON**) gates the backend, on top of Linux +
+`USE_AUDIO` + `USE_VIRTUAL_AUDIO`. CMake resolves headers/libs in order:
+
+1. `pkg-config libpipewire-0.3` — normal path when `libpipewire-0.3-dev` is
+   installed (`apt install libpipewire-0.3-dev` on Debian/Ubuntu).
+2. No-root fallback: headers extracted to `~/.cache/crosspad/pw-dev/usr`
+   (e.g. via `apt-get download` + `dpkg -x`, without installing), linked
+   against the system's already-present `libpipewire-0.3.so.0`.
+3. Neither found → `USE_PIPEWIRE` silently degrades to
+   `CROSSPAD_PIPEWIRE_OK=FALSE` at configure time; the binary falls back to
+   the `pactl` path at runtime (see fallback matrix above).
+
+`RTAUDIO_API_PULSE` is still enabled on Linux so the legacy pactl fallback's
+monitor sources remain discoverable by name.
+
+## Testing
+
+Native-backend tests live in `tests/audio/test_PwVirtualAudio.cpp`, tagged
+`[pipewire]`. They call `PwContext::instance().init()` first and skip
+gracefully (`SUCCEED(...)`) when no daemon is reachable (CI, containers) —
+no daemon means no failure.
 
 ```bash
-# 1. Launch CrossPad
-./bin/CrossPad
-
-# 2. In another terminal, confirm the sinks are live
-pactl list sinks short | grep crosspad_vin
-#   → 42  crosspad_vin1  ...
-#   → 43  crosspad_vin2  ...
-
-# 3. Send some audio to a virtual sink — CrossPad should capture it
-mpv --audio-device=pulse/crosspad_vin1 some-music.mp3
+# Run only the PipeWire suite (skips cleanly without a daemon)
+build/bin/crosspad_tests "[pipewire]"
 ```
 
-Alternatively, open `pavucontrol` → "Playback Devices": a running player will
-appear and you can drop its output to **CrossPad virtual IN#1** or **#2** on
-the fly.
-
-### Requirements
-
-- A running PulseAudio **or** PipeWire session (standard on all modern
-  distros — Ubuntu 22.04+, Fedora 35+, Arch, etc.)
-- `pactl` on `$PATH` — provided by `pulseaudio-utils` on Debian/Ubuntu or
-  by `pipewire-pulse` when using PipeWire.
-
-### Clean shutdown
-
-CrossPad unloads its sinks on normal exit, window close, SIGINT, and SIGTERM.
-After `kill -9`, the orphaned sinks are cleaned up on the next launch.
-
-### Disabling the feature
+One test, `PwDefaultSinkGuard takeover+restore roundtrip`, is tagged
+`[pipewire][.mutate]` — the leading `.` hides it from default runs because it
+mutates the *real* session default sink. It only executes when
+`CROSSPAD_PW_TEST_MUTATE=1` is set in the environment:
 
 ```bash
-cmake -B build -DUSE_VIRTUAL_AUDIO=OFF && cmake --build build
+CROSSPAD_PW_TEST_MUTATE=1 build/bin/crosspad_tests "[.mutate]"
 ```
-
-With the feature off, IN1/IN2 revert to picking real microphones from the
-saved device preferences.
-
-## Windows / macOS — upcoming
-
-CrossPad will auto-detect the following third-party virtual cables and map
-them to IN#1/IN#2 (no driver ships with CrossPad):
-
-- **Windows:** [VB-CABLE A + B](https://vb-audio.com/Cable/)
-- **macOS:** [BlackHole 2ch](https://existential.audio/blackhole/)
-
-Until then, you can manually pick one of those devices as IN1/IN2 in the
-CrossPad audio settings once installed.
 
 ## Troubleshooting (Linux)
 
 | Symptom | Likely cause | Fix |
 |---|---|---|
-| `pactl / PulseAudio not available — skipping` in logs | No audio daemon in the user session | `systemctl --user start pipewire pipewire-pulse` or install `pulseaudio` |
-| Sinks appear but CrossPad doesn't capture | RtAudio built without PulseAudio backend | Rebuild with `-DUSE_VIRTUAL_AUDIO=ON` on a host that has `libpulse-dev` installed |
-| Sinks don't get removed after crash | Hard kill (`SIGKILL`) | Next CrossPad launch auto-cleans any `crosspad_vin*` modules |
+| `native PipeWire unavailable, falling back to pactl` in logs | No daemon reachable at startup, or built without PipeWire dev headers | `systemctl --user status pipewire`; rebuild with `libpipewire-0.3-dev` installed |
+| `crosspad_vin*` sinks missing from `pavucontrol`/`qpwgraph` | Backend fell back to legacy pactl path, or `USE_VIRTUAL_AUDIO=OFF` | Check startup log for which backend was selected |
+| System default sink didn't get restored | Killed with `SIGKILL` before shutdown ran | Next launch restores it automatically via `pw_prev_default_sink` crash recovery |
 | Choppy audio | PipeWire quantum too low for your hardware | `pw-metadata -n settings 0 clock.force-quantum 512` |
 
 ## Roadmap
 
-- Phase 2 — Windows VB-CABLE auto-detection + install prompt
-- Phase 3 — macOS BlackHole auto-detection + install prompt
-- Phase 4 — System tray with per-channel mute / volume (background operation)
+- Windows WASAPI loopback capture + VB-CABLE auto-detection
+- macOS BlackHole auto-detection
+- Settings-screen UI toggle for `pw_takeover_default` (currently prefs-file only)
+- System tray with per-channel mute/volume (background operation)
