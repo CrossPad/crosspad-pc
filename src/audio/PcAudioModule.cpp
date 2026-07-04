@@ -77,8 +77,16 @@ void PcAudioModule::processMixer() {
         crosspad::floatToInt16(mixerBus_[s].data(),
                                pushScratchInt16_[s].data(),
                                samples);
-        stream->pushSamples(pushScratchInt16_[s].data(),
-                            crosspad::AudioFormat::Int16, frames);
+        uint32_t pushed = stream->pushSamples(pushScratchInt16_[s].data(),
+                                            crosspad::AudioFormat::Int16, frames);
+        if (pushed < frames) {
+            // Ring overflow — we are producing faster than RtAudio drains. Log at
+            // most once a second so sustained overrun is visible but not spammy.
+            if (++overflowCount_ % overflowLogEvery_ == 1) {
+                printf("[PcAudioModule] OUT%u overflow: dropped %u frames (total events %u)\n",
+                       unsigned(s + 1), frames - pushed, overflowCount_);
+            }
+        }
     }
 
     // Peak meter on OUT1 (matches existing VU meter wiring)

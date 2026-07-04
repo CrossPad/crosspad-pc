@@ -101,6 +101,10 @@ private:
     std::vector<float>   mixerBus_[NUM_OUTPUTS];
     std::vector<int16_t> pushScratchInt16_[NUM_OUTPUTS];
 
+    // Ring overflow tracking and rate-limited logging
+    uint32_t overflowCount_ = 0;
+    uint32_t overflowLogEvery_ = 400;  // ~1 second at 128 frames/48kHz
+
     void audioThreadFunc();
     void processMixer();
 };

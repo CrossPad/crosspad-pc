@@ -676,7 +676,7 @@ void crosspad_app_init()
 
     // ── Audio IN1/IN2: auto-connect saved devices ──
     // Use output sample rate so mixer doesn't need sample rate conversion
-    uint32_t outSampleRate = pcAudio.isOpen() ? pcAudio.getSampleRate() : 44100;
+    uint32_t outSampleRate = pcAudio.isOpen() ? pcAudio.getSampleRate() : 48000;
     pc_platform_set_audio_input(0, &pcAudioIn1);
     pc_platform_set_audio_input(1, &pcAudioIn2);
 
