@@ -59,8 +59,11 @@ On startup, if the `pw_takeover_default` preference is true (default **on**)
 and the native backend is active:
 
 1. `PwDefaultSinkGuard::takeover("crosspad_vin1")` reads the current
-   `default.configured.audio.sink` value, saves it, and sets the key to
-   `crosspad_vin1` — WirePlumber applies the change.
+   *effective* `default.audio.sink` value, saves it, and sets
+   `default.configured.audio.sink` to `crosspad_vin1` — WirePlumber applies
+   the change. (Reading the effective default, rather than the configured
+   key, is intentional: it reflects the sink actually in use even when no
+   `default.configured.audio.sink` was ever explicitly set.)
 2. The saved value is persisted immediately to `device_preferences.json` as
    `pw_prev_default_sink`, *before* any teardown path can run.
 3. On clean shutdown, `restore()` writes the saved sink back (or clears the
@@ -70,7 +73,12 @@ and the native backend is active:
    `pw_prev_default_sink` stays non-empty on disk. The *next* launch feeds
    that value into `setPreviousSink()` before `takeover()` runs, so the sink
    from before CrossPad ever touched the system — not its own leftover
-   default — is what eventually gets restored.
+   default — is what eventually gets restored. If takeover is *not* running
+   on the next launch (pref off, or the native backend is unavailable) but a
+   marker is still present, `restoreStale()` performs a one-shot restore of
+   the stale configured sink and clears the marker (kept for retry if the
+   daemon is unreachable) — so the user's default is never stranded on
+   `crosspad_vin1`.
 
 Toggling `pw_takeover_default` off keeps the vin sinks created and
 capturable, but CrossPad never touches the system default. There's no

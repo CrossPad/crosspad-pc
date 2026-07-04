@@ -55,6 +55,17 @@ public:
     /// without a prior successful takeover(), and safe to call twice.
     void restore();
 
+    /// Crash recovery WITHOUT takeover: a previous run died leaving the
+    /// configured default sink pointed at a CrossPad virtual sink, but this
+    /// run is not taking over (pref off / native backend unavailable). Binds
+    /// the "default" metadata object fresh (independent of any takeover
+    /// state), sets default.configured.audio.sink back to `previousSinkName`
+    /// (or clears the key when empty), releases the proxy, and returns true on
+    /// success. Returns false when the metadata object can't be found/bound
+    /// (e.g. WirePlumber absent or daemon unreachable) so the caller can keep
+    /// the recovery marker and retry next launch.
+    bool restoreStale(const std::string& previousSinkName);
+
     bool active() const { return active_; }
     const std::string& previousSink() const { return previous_; }
 

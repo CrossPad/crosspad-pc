@@ -253,6 +253,34 @@ void PwDefaultSinkGuard::restore()
     active_ = false;
 }
 
+bool PwDefaultSinkGuard::restoreStale(const std::string& previousSinkName)
+{
+    auto& ctx = PwContext::instance();
+    if (!ctx.init()) return false;
+
+    PwContext::Lock lock(ctx);
+
+    // Bind the "default" metadata object fresh — this is a one-shot restore
+    // that does NOT participate in takeover()/restore() state (meta_ stays
+    // untouched).
+    std::string value;
+    struct pw_metadata* meta = discoverAndBindDefaultMetadata(ctx.core(), ctx.loop(), value);
+    if (!meta) return false;
+
+    if (!previousSinkName.empty()) {
+        std::string json = "{\"name\":\"" + previousSinkName + "\"}";
+        pw_metadata_set_property(meta, 0, "default.configured.audio.sink",
+                                  "Spa:String:JSON", json.c_str());
+    } else {
+        pw_metadata_set_property(meta, 0, "default.configured.audio.sink",
+                                  nullptr, nullptr);
+    }
+    syncRoundtrip(ctx.core(), ctx.loop());
+
+    pw_proxy_destroy(reinterpret_cast<struct pw_proxy*>(meta));
+    return true;
+}
+
 PwDefaultSinkGuard::~PwDefaultSinkGuard()
 {
     restore();

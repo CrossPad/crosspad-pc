@@ -94,10 +94,13 @@ void PcAudioModule::processMixer() {
     }
 
     // B-bus tap: mirror OUT1 into the aux stream (PipeWire virtual source),
-    // regardless of whether any physical output stream is open.
-    if (aux_ && aux_->isOpen())
-        aux_->pushSamples(pushScratchInt16_[0].data(),
-                          crosspad::AudioFormat::Int16, frames);
+    // regardless of whether any physical output stream is open. Load the
+    // pointer once per cycle — setAuxStream() may swap it from another thread
+    // (post-start wiring / shutdown detach).
+    crosspad::IAudioStream* aux = aux_.load(std::memory_order_acquire);
+    if (aux && aux->isOpen())
+        aux->pushSamples(pushScratchInt16_[0].data(),
+                         crosspad::AudioFormat::Int16, frames);
 
     // Peak meter on OUT1 (matches existing VU meter wiring)
     const float* bus0 = mixerBus_[0].data();

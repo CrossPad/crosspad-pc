@@ -87,7 +87,7 @@ public:
     /// source mirroring CrossPad's output as a "microphone"). Pass nullptr
     /// to detach. Plain interface pointer — no PipeWire/backend headers
     /// leak into this module; wiring happens at the app-init call site.
-    void setAuxStream(crosspad::IAudioStream* aux) { aux_ = aux; }
+    void setAuxStream(crosspad::IAudioStream* aux) { aux_.store(aux, std::memory_order_release); }
 
     /// Start the audio processing thread
     void start();
@@ -100,7 +100,7 @@ public:
 private:
     PcRtAudioOutputStream outputs_[NUM_OUTPUTS];
     AudioMixerEngine* mixer_ = nullptr;
-    crosspad::IAudioStream* aux_ = nullptr;
+    std::atomic<crosspad::IAudioStream*> aux_{nullptr};
 
     std::atomic<bool> running_{false};
     std::unique_ptr<std::thread> thread_;
@@ -111,7 +111,7 @@ private:
 
     // Ring overflow tracking and rate-limited logging
     uint32_t overflowCount_ = 0;
-    uint32_t overflowLogEvery_ = 400;  // ~1 second at 128 frames/48kHz
+    uint32_t overflowLogEvery_ = 400;  // ≈1-2 s depending on frameCount (128-256) at 48kHz
 
     void audioThreadFunc();
     void processMixer();

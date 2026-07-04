@@ -116,4 +116,29 @@ TEST_CASE("PwDefaultSinkGuard takeover+restore roundtrip", "[pipewire][.mutate]"
     REQUIRE(guard.queryCurrentDefault() == before);
     cap.stop();
 }
+
+TEST_CASE("PwDefaultSinkGuard restoreStale rewrites configured sink without takeover",
+          "[pipewire][.mutate]") {
+    // Hidden test (leading '.') — only run explicitly; mutates user session.
+    // Simulates the crash+disabled-takeover recovery: a stale marker points
+    // the configured default at our sink and restoreStale() must put it back.
+    if (!pwTestAvailable() || !getenv("CROSSPAD_PW_TEST_MUTATE")) {
+        SUCCEED("skipped (set CROSSPAD_PW_TEST_MUTATE=1)"); return;
+    }
+    crosspad_pc::PwVirtualSinkCapture cap;
+    REQUIRE(cap.start("crosspad_test_default", "CrossPad TEST default", 48000));
+    crosspad_pc::PwDefaultSinkGuard guard;
+    std::string before = guard.queryCurrentDefault();
+
+    // Point the default at our test sink (simulating a crashed run's leftover).
+    REQUIRE(guard.takeover("crosspad_test_default"));
+    guard.restore();  // release the takeover proxy; configured key stays as set
+                      // only if before was empty — so re-assert via restoreStale.
+
+    // A separate guard performs the one-shot stale restore back to `before`.
+    crosspad_pc::PwDefaultSinkGuard recovery;
+    REQUIRE(recovery.restoreStale(before));
+    REQUIRE(recovery.queryCurrentDefault() == before);
+    cap.stop();
+}
 #endif

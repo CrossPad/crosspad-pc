@@ -788,8 +788,10 @@ void crosspad_app_init()
     // Make CrossPad IN#1 the system default sink so audio from other apps
     // flows into the mixer without manual routing. Only when the native PW
     // backend is active (input(0) != nullptr) and the pref allows it.
-    if (s_devicePrefs.pwTakeoverDefault && s_virtualSinkManager &&
-        s_virtualSinkManager->input(0) != nullptr) {
+    const bool pwTakeoverWillRun = s_devicePrefs.pwTakeoverDefault &&
+                                   s_virtualSinkManager &&
+                                   s_virtualSinkManager->input(0) != nullptr;
+    if (pwTakeoverWillRun) {
         // Crash recovery: a leftover pwPrevDefaultSink means the previous run
         // died before restore — that value, not the current default (which is
         // still our own sink), is what we must eventually restore.
@@ -800,6 +802,19 @@ void crosspad_app_init()
             saveDevicePrefs();
             printf("[Audio] system default sink -> CrossPad IN#1 (was: %s)\n",
                    s_devicePrefs.pwPrevDefaultSink.c_str());
+        }
+    } else if (!s_devicePrefs.pwPrevDefaultSink.empty()) {
+        // Takeover is NOT running this launch (pref off, or native PW backend
+        // unavailable) but a previous run left a crash-recovery marker — the
+        // configured default sink is still pointed at our virtual sink. Do a
+        // one-shot restore of that stale marker so we don't strand the user's
+        // default on crosspad_vin1. Only clear the marker on success; if the
+        // daemon is unreachable, keep it and retry next launch.
+        if (s_pwGuard.restoreStale(s_devicePrefs.pwPrevDefaultSink)) {
+            printf("[Audio] restored stale default sink -> %s (no takeover)\n",
+                   s_devicePrefs.pwPrevDefaultSink.c_str());
+            s_devicePrefs.pwPrevDefaultSink.clear();
+            saveDevicePrefs();
         }
     }
 #endif
