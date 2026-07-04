@@ -128,6 +128,36 @@ if(USE_AUDIO)
     message(STATUS "Audio support enabled (RtAudio)")
 endif()
 
+# Native PipeWire backend for virtual audio (Linux). Falls back to the pactl
+# null-sink path at runtime when unavailable.
+option(USE_PIPEWIRE "Native PipeWire virtual sinks/source (Linux)" ON)
+set(CROSSPAD_PIPEWIRE_OK FALSE)
+if(USE_PIPEWIRE AND CMAKE_SYSTEM_NAME STREQUAL "Linux" AND USE_AUDIO AND USE_VIRTUAL_AUDIO)
+    find_package(PkgConfig QUIET)
+    if(PkgConfig_FOUND)
+        pkg_check_modules(PIPEWIRE libpipewire-0.3)
+    endif()
+    if(PIPEWIRE_FOUND)
+        set(CROSSPAD_PW_INCLUDE_DIRS ${PIPEWIRE_INCLUDE_DIRS})
+        set(CROSSPAD_PW_LIBS ${PIPEWIRE_LINK_LIBRARIES})
+        set(CROSSPAD_PIPEWIRE_OK TRUE)
+    else()
+        # Dev headers extracted without root (apt-get download + dpkg -x).
+        set(_PW_LOCAL "$ENV{HOME}/.cache/crosspad/pw-dev/usr")
+        set(_PW_SO "/usr/lib/x86_64-linux-gnu/libpipewire-0.3.so.0")
+        if(EXISTS "${_PW_LOCAL}/include/pipewire-0.3/pipewire/pipewire.h" AND EXISTS "${_PW_SO}")
+            set(CROSSPAD_PW_INCLUDE_DIRS
+                "${_PW_LOCAL}/include/pipewire-0.3"
+                "${_PW_LOCAL}/include/spa-0.2")
+            set(CROSSPAD_PW_LIBS "${_PW_SO}")
+            set(CROSSPAD_PIPEWIRE_OK TRUE)
+            message(STATUS "PipeWire: using local header prefix ${_PW_LOCAL}")
+        else()
+            message(STATUS "PipeWire dev headers not found — native virtual audio disabled (install libpipewire-0.3-dev)")
+        endif()
+    endif()
+endif()
+
 # BLE MIDI support via SimpleBLE
 if(USE_BLE)
     FetchContent_Declare(
@@ -262,6 +292,16 @@ if(USE_AUDIO)
             # PULSE backend, but link explicitly so the build doesn't depend
             # on that detail.
             list(APPEND MAIN_LIBS pulse pulse-simple)
+        endif()
+
+        if(CROSSPAD_PIPEWIRE_OK)
+            list(APPEND MAIN_SOURCES
+                src/audio/pipewire/PwContext.cpp
+            )
+            list(APPEND MAIN_LIBS ${CROSSPAD_PW_LIBS})
+            add_compile_definitions(USE_PIPEWIRE=1)
+            # Headers are C99-style; include dirs needed by any TU that includes ours
+            include_directories(${CROSSPAD_PW_INCLUDE_DIRS})
         endif()
     endif()
 

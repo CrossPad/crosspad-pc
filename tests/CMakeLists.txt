@@ -65,6 +65,12 @@ set(AUDIO_TEST_FILES
     audio/test_MixerGoldens.cpp
 )
 
+# ── Native PipeWire backend tests (only when CMake detected usable headers) ──
+if(CROSSPAD_PIPEWIRE_OK)
+    list(APPEND AUDIO_TEST_FILES audio/test_PwVirtualAudio.cpp)
+    list(APPEND AUDIO_TEST_SOURCES ${PROJECT_SOURCE_DIR}/src/audio/pipewire/PwContext.cpp)
+endif()
+
 add_executable(crosspad_tests
     ${TEST_SOURCES}
     ${AUDIO_TEST_FILES}
@@ -101,6 +107,13 @@ target_link_libraries(crosspad_tests PRIVATE
 # Tests never instantiate PcAudioOutput, but headers + types must compile.
 if(USE_AUDIO AND TARGET rtaudio)
     target_link_libraries(crosspad_tests PRIVATE rtaudio)
+endif()
+
+# Native PipeWire backend (test_PwVirtualAudio.cpp + PwContext.cpp).
+# CROSSPAD_PW_INCLUDE_DIRS is already applied directory-wide via the
+# top-level include_directories() call in the USE_VIRTUAL_AUDIO block.
+if(CROSSPAD_PIPEWIRE_OK)
+    target_link_libraries(crosspad_tests PRIVATE ${CROSSPAD_PW_LIBS})
 endif()
 
 # FreeRTOS heap + port sources (pvPortMalloc, vPortFree, port layer)
