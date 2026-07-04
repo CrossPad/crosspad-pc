@@ -215,8 +215,11 @@ int PcAudioOutput::rtAudioCallback(void* outputBuffer, void* /*inputBuffer*/,
 
 int PcAudioOutput::handleCallback(int16_t* outputBuffer, unsigned int nFrames,
                                    RtAudioStreamStatus status) {
+    diagCallbacks_.fetch_add(1, std::memory_order_relaxed);
     if (status & RTAUDIO_OUTPUT_UNDERFLOW) {
-        printf("[Audio] Output underflow!\n");
+        // ALSA/device-level xrun reported by RtAudio. Counter only — no
+        // printf on the RT callback thread; the module thread reports.
+        diagAlsaUnderflows_.fetch_add(1, std::memory_order_relaxed);
     }
 
     // Pull from ring buffer into output
@@ -225,6 +228,7 @@ int PcAudioOutput::handleCallback(int16_t* outputBuffer, unsigned int nFrames,
 
     // Zero-fill any remaining (underrun — silence)
     if (read < sampleCount) {
+        diagRingShortfalls_.fetch_add(1, std::memory_order_relaxed);
         std::memset(outputBuffer + read, 0, (sampleCount - read) * sizeof(int16_t));
     }
 

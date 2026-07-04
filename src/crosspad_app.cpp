@@ -70,6 +70,7 @@
 #include "audio/pipewire/PwContext.hpp"
 #include "audio/pipewire/PwDefaultSinkGuard.hpp"
 #include "audio/pipewire/PwVirtualSource.hpp"
+#include "audio/pipewire/PwVirtualSinkCapture.hpp"
 #endif
 #include <csignal>
 #endif
@@ -1436,6 +1437,44 @@ void crosspad_app_init()
             in1->getInputLevel(rawL, rawR);
             s_jpIn2.update(rawL, rawR);
             jp.setLevel(EmuJackPanel::AUDIO_IN2, s_jpIn2.left(), s_jpIn2.right());
+        }
+
+        // Audio-health watchdog: every ~5 s check the drop counters and log
+        // ONLY when something got worse since the last check. Silent when
+        // healthy; a growing count = audible crackle source identified
+        // (ring starvation, ALSA xrun or virtual-sink ring overflow).
+        static uint32_t s_diagTick = 0;
+        if (++s_diagTick % 300 == 0) {
+            static uint32_t lastShort1 = 0, lastShort2 = 0;
+            static uint32_t lastXrun1 = 0, lastXrun2 = 0;
+            static uint32_t lastVinOver = 0;
+            uint32_t short1 = pcAudio.diagRingShortfalls_.load();
+            uint32_t short2 = pcAudio2.diagRingShortfalls_.load();
+            uint32_t xrun1  = pcAudio.diagAlsaUnderflows_.load();
+            uint32_t xrun2  = pcAudio2.diagAlsaUnderflows_.load();
+            uint32_t vinOver = 0;
+#if defined(USE_PIPEWIRE)
+            if (s_virtualSinkManager) {
+                for (int i = 0; i < 2; ++i) {
+                    auto* cap = dynamic_cast<crosspad_pc::PwVirtualSinkCapture*>(
+                        s_virtualSinkManager->input(i));
+                    if (cap) vinOver += cap->diagRingOverflows_.load();
+                }
+            }
+#endif
+            if (short1 != lastShort1 || short2 != lastShort2 ||
+                xrun1 != lastXrun1 || xrun2 != lastXrun2 || vinOver != lastVinOver) {
+                uint32_t cyc = s_audioModule.diagCycles_.load();
+                printf("[AudioHealth] OUT1 ringShort=%u(+%u) xrun=%u | OUT2 ringShort=%u(+%u) xrun=%u"
+                       " | vinRingOver=%u | loop avg=%lluus max=%uus\n",
+                       short1, short1 - lastShort1, xrun1,
+                       short2, short2 - lastShort2, xrun2, vinOver,
+                       cyc ? (unsigned long long)(s_audioModule.diagPeriodUsSum_.load() / cyc) : 0ULL,
+                       s_audioModule.diagPeriodUsMax_.load());
+                lastShort1 = short1; lastShort2 = short2;
+                lastXrun1 = xrun1;   lastXrun2 = xrun2;
+                lastVinOver = vinOver;
+            }
         }
     }, 16, nullptr);
 #endif

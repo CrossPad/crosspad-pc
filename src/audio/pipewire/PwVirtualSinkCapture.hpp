@@ -75,6 +75,11 @@ private:
 
     std::atomic<int16_t> peakL_{0};
     std::atomic<int16_t> peakR_{0};
+
+public:
+    // Diagnostic counters (RT thread increments; non-RT readers report).
+    std::atomic<uint32_t> diagRingOverflows_{0};  // onProcess couldn't write all samples
+    std::atomic<uint32_t> diagProcessCalls_{0};
 };
 
 } // namespace crosspad_pc

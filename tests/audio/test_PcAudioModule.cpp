@@ -10,6 +10,8 @@
 #include <crosspad/audio/IAudioNode.hpp>
 #include <crosspad/audio/SynthEngineNode.hpp>
 #include <crosspad/platform/PlatformServices.hpp>
+#include <thread>
+#include <chrono>
 
 #include <vector>
 
@@ -225,4 +227,42 @@ TEST_CASE("PcAudioModule: peak meter tracks bus0 in mixer mode",
     REQUIRE_THAT(r, WithinAbs(0.4f, 1e-3f));
 
     m.setMixerEngine(nullptr);
+}
+
+TEST_CASE("PcAudioModule: paced audio thread sustains nominal production rate",
+          "[audio][pc-module][pacing]") {
+    // Regression for the crackle bug: relative sleep_for pacing loses the
+    // kernel wakeup overshoot every cycle (~5% deficit at 128/48000 on a
+    // desktop scheduler), starving the RtAudio ring. Absolute-deadline pacing
+    // keeps long-run production exact; 3% tolerance absorbs CI jitter.
+    TestablePcAudioModule m;
+    CapturingInt16Stream s0, s1;
+    m.s0 = &s0; m.s1 = &s1;
+
+    crosspad::AudioModuleConfig cfg;
+    cfg.sampleRate = 48000;
+    cfg.frameCount = 128;
+    REQUIRE(m.setup(cfg));
+
+    m.start();
+    std::this_thread::sleep_for(std::chrono::milliseconds(1000));
+    m.stop();
+
+    const auto frames = static_cast<uint32_t>(s0.captured.size() / 2);
+    INFO("produced " << frames << " frames in ~1s (nominal 48000)");
+    REQUIRE(frames >= 46500);
+    REQUIRE(frames <= 53000);
+
+    // The wall-clock frame count above masks small drifts with start/stop
+    // window latency — the sharp oracle is the measured average loop period.
+    // Relative sleep_for pacing loses the wakeup overshoot every cycle
+    // (measured +55us in the simulator => ~2% deficit => ring starvation =>
+    // crackles); absolute-deadline pacing keeps the average at nominal.
+    const uint32_t cycles = m.diagCycles_.load();
+    REQUIRE(cycles > 100);
+    const uint64_t avgPeriodUs = m.diagPeriodUsSum_.load() / cycles;
+    INFO("avg loop period " << avgPeriodUs << "us over " << cycles
+         << " cycles (nominal 2667us)");
+    REQUIRE(avgPeriodUs <= 2680);   // 0.5% tolerance
+    REQUIRE(avgPeriodUs >= 2600);
 }

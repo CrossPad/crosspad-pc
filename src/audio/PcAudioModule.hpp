@@ -105,6 +105,16 @@ private:
     std::atomic<bool> running_{false};
     std::unique_ptr<std::thread> thread_;
 
+public:
+    // Diagnostic counters for the paced loop (crackle hunt): written on the
+    // module thread, read from the GUI diag reporter.
+    std::atomic<uint32_t> diagCycles_{0};
+    std::atomic<uint64_t> diagPeriodUsSum_{0};   // sum of loop periods (us)
+    std::atomic<uint32_t> diagPeriodUsMax_{0};
+    std::atomic<uint64_t> diagProcessUsSum_{0};  // sum of process() durations (us)
+    std::atomic<uint32_t> diagProcessUsMax_{0};
+
+private:
     // Per-stream float buses for mixer-driven mode (sized in setup).
     std::vector<float>   mixerBus_[NUM_OUTPUTS];
     std::vector<int16_t> pushScratchInt16_[NUM_OUTPUTS];

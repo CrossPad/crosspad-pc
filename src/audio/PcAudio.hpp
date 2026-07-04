@@ -63,6 +63,15 @@ private:
     std::atomic<int16_t> outPeakL_{0};
     std::atomic<int16_t> outPeakR_{0};
 
+public:
+    // Diagnostic counters (readable from any thread; written on the RtAudio
+    // callback thread — counters only, logging happens on non-RT threads).
+    std::atomic<uint32_t> diagRingShortfalls_{0};  // callback found < nFrames in ring
+    std::atomic<uint32_t> diagAlsaUnderflows_{0};  // RTAUDIO_OUTPUT_UNDERFLOW status
+    std::atomic<uint32_t> diagCallbacks_{0};
+
+private:
+
     static int rtAudioCallback(void* outputBuffer, void* inputBuffer,
                                 unsigned int nFrames, double streamTime,
                                 RtAudioStreamStatus status, void* userData);

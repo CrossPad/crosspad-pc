@@ -27,7 +27,9 @@ void PwVirtualSinkCapture::onProcess(void* userdata)
         const auto* samples = reinterpret_cast<const int16_t*>(
             static_cast<uint8_t*>(d.data) + d.chunk->offset);
         const uint32_t nSamples = d.chunk->size / sizeof(int16_t); // interleaved L,R
-        self->ring_.write(samples, nSamples);
+        self->diagProcessCalls_.fetch_add(1, std::memory_order_relaxed);
+        if (self->ring_.write(samples, nSamples) < nSamples)
+            self->diagRingOverflows_.fetch_add(1, std::memory_order_relaxed);
         int16_t pl = 0, pr = 0;
         for (uint32_t i = 0; i + 1 < nSamples; i += 2) {
             int16_t l = samples[i], r = samples[i + 1];

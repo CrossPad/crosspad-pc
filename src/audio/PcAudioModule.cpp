@@ -149,19 +149,64 @@ void PcAudioModule::stop() {
 }
 
 void PcAudioModule::audioThreadFunc() {
-    const auto frameDuration = std::chrono::microseconds(
-        static_cast<uint64_t>(config_.frameCount) * 1000000 / config_.sampleRate);
+    // Absolute-deadline pacing. A relative sleep_for(frameDuration - elapsed)
+    // loses the kernel wakeup overshoot (~50-150us) on EVERY cycle — the
+    // error accumulates into a ~2% production deficit that periodically
+    // starves the RtAudio output rings (audible crackles). Scheduling
+    // against an absolute timeline makes late wakeups self-correcting: the
+    // next deadline stays fixed, so the long-run average period is exactly
+    // frameCount/sampleRate.
+    const auto frameDuration = std::chrono::nanoseconds(
+        static_cast<uint64_t>(config_.frameCount) * 1000000000ULL / config_.sampleRate);
+    // Resync threshold: after a stall (debugger, suspend, CPU starvation)
+    // don't burst-produce to catch up more than this — snap the schedule.
+    const auto kMaxBacklog = std::chrono::milliseconds(100);
+
+    auto next = std::chrono::steady_clock::now();
+
+    auto prevStart = std::chrono::steady_clock::now();
+    bool first = true;
 
     while (running_.load(std::memory_order_relaxed)) {
         auto start = std::chrono::steady_clock::now();
 
+        // Loop health metrics: actual period + process() duration. Cheap
+        // relaxed atomics; consumed by the app-level audio-health watchdog
+        // and the [pacing] regression test.
+        if (!first) {
+            auto periodUs = std::chrono::duration_cast<std::chrono::microseconds>(
+                start - prevStart).count();
+            diagPeriodUsSum_.fetch_add(static_cast<uint64_t>(periodUs),
+                                       std::memory_order_relaxed);
+            uint32_t p = static_cast<uint32_t>(periodUs);
+            if (p > diagPeriodUsMax_.load(std::memory_order_relaxed))
+                diagPeriodUsMax_.store(p, std::memory_order_relaxed);
+            diagCycles_.fetch_add(1, std::memory_order_relaxed);
+        }
+        first = false;
+        prevStart = start;
+
         process();
 
         auto elapsed = std::chrono::steady_clock::now() - start;
-        auto remaining = frameDuration - elapsed;
-        if (remaining.count() > 0) {
-            std::this_thread::sleep_for(remaining);
+        {
+            auto procUs = std::chrono::duration_cast<std::chrono::microseconds>(elapsed).count();
+            diagProcessUsSum_.fetch_add(static_cast<uint64_t>(procUs),
+                                        std::memory_order_relaxed);
+            uint32_t p = static_cast<uint32_t>(procUs);
+            if (p > diagProcessUsMax_.load(std::memory_order_relaxed))
+                diagProcessUsMax_.store(p, std::memory_order_relaxed);
         }
+
+        next += frameDuration;
+        auto now = std::chrono::steady_clock::now();
+        if (next < now - kMaxBacklog) {
+            // Fell too far behind — resync instead of a runaway catch-up burst.
+            next = now;
+        }
+        // A deadline already in the past returns immediately: the loop
+        // catches up by producing the next block right away.
+        std::this_thread::sleep_until(next);
     }
 }
 
