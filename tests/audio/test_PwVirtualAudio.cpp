@@ -142,3 +142,22 @@ TEST_CASE("PwDefaultSinkGuard restoreStale rewrites configured sink without take
     cap.stop();
 }
 #endif
+
+#include "audio/pipewire/PwSinkEnumerator.hpp"
+
+TEST_CASE("pwEnumerateSinks lists sinks with descriptions, never crosspad_*", "[pipewire]") {
+    if (!pwTestAvailable()) { SUCCEED("no PipeWire daemon"); return; }
+
+    // Bring up an own sink to prove the crosspad_* filter works live.
+    crosspad_pc::PwVirtualSinkCapture cap;
+    REQUIRE(cap.start("crosspad_test_enum", "CrossPad TEST enum", 48000));
+
+    auto sinks = crosspad_pc::pwEnumerateSinks();
+    for (const auto& s : sinks) {
+        INFO("sink: " << s.name << " (" << s.description << ")");
+        CHECK_FALSE(s.name.empty());
+        CHECK_FALSE(s.description.empty());
+        CHECK(s.name.rfind("crosspad_", 0) != 0);
+    }
+    cap.stop();
+}

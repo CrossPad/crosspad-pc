@@ -301,6 +301,7 @@ if(USE_AUDIO)
                 src/audio/pipewire/PwVirtualSinkManager.cpp
                 src/audio/pipewire/PwDefaultSinkGuard.cpp
                 src/audio/pipewire/PwVirtualSource.cpp
+                src/audio/pipewire/PwSinkEnumerator.cpp
             )
             list(APPEND MAIN_LIBS ${CROSSPAD_PW_LIBS})
             add_compile_definitions(USE_PIPEWIRE=1)

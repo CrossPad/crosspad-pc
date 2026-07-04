@@ -71,6 +71,7 @@
 #include "audio/pipewire/PwDefaultSinkGuard.hpp"
 #include "audio/pipewire/PwVirtualSource.hpp"
 #include "audio/pipewire/PwVirtualSinkCapture.hpp"
+#include "audio/pipewire/PwSinkEnumerator.hpp"
 #endif
 #include <csignal>
 #endif
@@ -302,6 +303,89 @@ static std::vector<AudioDeviceEntry> enumerateAudioInputDevices() {
         }
     }
     return result;
+}
+
+/// Devices that route into the SYSTEM DEFAULT sink. With default-sink
+/// takeover active the default IS crosspad_vin1, so opening OUT on one of
+/// these feeds CrossPad's own output back into its own input — feedback loop.
+static bool isLoopbackRiskDevice(const std::string& name) {
+    return name.find("Default ALSA Device") != std::string::npos ||
+           name.find("PulseAudio Sound Server") != std::string::npos;
+}
+
+static bool loopGuardActive() {
+#if defined(USE_PIPEWIRE)
+    return s_devicePrefs.pwTakeoverDefault;
+#else
+    return false;
+#endif
+}
+
+/// One selectable entry of the OUT1/OUT2 dropdowns.
+/// rtAudioId != 0 → a real RtAudio device; otherwise paSinkName names a
+/// PulseAudio/PipeWire sink reached via move-sink-input.
+struct OutUiEntry {
+    std::string  label;
+    unsigned int rtAudioId = 0;
+    std::string  paSinkName;
+};
+
+/// Single source of truth for what the OUT dropdowns offer (minus "(None)").
+/// Applies the feedback-loop guard and the PA-sink overlap dedupe so the
+/// populate site and the selection callback can never disagree on indices.
+static std::vector<OutUiEntry> buildOutDeviceUiEntries() {
+    std::vector<OutUiEntry> entries;
+    auto outDevices = enumerateAudioOutputDevices();
+    const bool guard = loopGuardActive();
+    for (auto& d : outDevices) {
+        if (guard && isLoopbackRiskDevice(d.name)) continue;
+        entries.push_back({d.name, d.rtAudioId, {}});
+    }
+#if defined(USE_VIRTUAL_AUDIO) && defined(__linux__)
+    // Add only PulseAudio sinks that RtAudio's ALSA backend missed — typically
+    // the motherboard analog jack and the active HDMI display. Token-overlap
+    // dedupe on long, hardware-identifying tokens only; generic words would
+    // falsely flag e.g. the Pro Audio sink as a duplicate.
+    static const std::vector<std::string> kStopWords = {
+        "Audio", "HD-Audio", "Generic", "Output", "Stereo", "Default",
+        "Pro", "Sound", "Server", "Pulse", "PulseAudio", "ALSA",
+        "Device", "Analog", "Digital", "Family"
+    };
+    auto isStopWord = [](const std::string& w) {
+        for (auto& sw : kStopWords) if (w == sw) return true;
+        return false;
+    };
+    auto overlapsRtAudio = [&](const std::string& paDesc) {
+        std::istringstream tok(paDesc);
+        std::string w;
+        while (tok >> w) {
+            if (w.size() < 6 || isStopWord(w)) continue;
+            for (auto& d : outDevices) {
+                if (d.name.find(w) != std::string::npos) return true;
+            }
+        }
+        return false;
+    };
+    // Sink list: prefer the native PipeWire registry (node.description is
+    // always present — no locale-fragile pactl parsing, no raw
+    // "alsa_output.pci-..." labels when a description lookup misses).
+    // Fall back to the pactl parser when the daemon is unreachable.
+    struct SinkOption { std::string name, description; };
+    std::vector<SinkOption> sinks;
+#if defined(USE_PIPEWIRE)
+    for (auto& s : crosspad_pc::pwEnumerateSinks())
+        sinks.push_back({s.name, s.description});
+#endif
+    if (sinks.empty()) {
+        for (auto& s : crosspad_pc::enumeratePulseSinks())
+            sinks.push_back({s.name, s.description});
+    }
+    for (auto& s : sinks) {
+        if (!overlapsRtAudio(s.description))
+            entries.push_back({s.description, 0, s.name});
+    }
+#endif
+    return entries;
 }
 
 /// Find device ID by name in a list. Returns 0 (default) if not found.
@@ -686,6 +770,18 @@ void crosspad_app_init()
         }
 #endif
         unsigned int devId = findDeviceByName(outDevices, savedName);
+        if (loopGuardActive()) {
+            // Saved pick itself is a loopback risk → treat as not found.
+            if (devId != 0 && isLoopbackRiskDevice(savedName)) devId = 0;
+            // No (usable) saved device: RtAudio's default would be the
+            // "Default ALSA Device" → our own virtual sink. Pick the first
+            // real hardware device instead of the default.
+            if (devId == 0) {
+                for (auto& d : outDevices) {
+                    if (!isLoopbackRiskDevice(d.name)) { devId = d.rtAudioId; break; }
+                }
+            }
+        }
         output.begin(devId);
         if (output.isOpen()) {
             savedName = output.getCurrentDeviceName();
@@ -979,46 +1075,12 @@ void crosspad_app_init()
 
         // Populate device lists for all audio jacks
         {
-            auto outDevices = enumerateAudioOutputDevices();
+            // Shared builder — same list the selection callback resolves
+            // against, incl. feedback-loop guard and PA-sink dedupe.
+            auto outEntries = buildOutDeviceUiEntries();
             std::vector<std::string> outNames;
             outNames.push_back("(None)");
-            for (auto& d : outDevices) outNames.push_back(d.name);
-
-#if defined(USE_VIRTUAL_AUDIO) && defined(__linux__)
-            // Add only PulseAudio sinks that RtAudio's ALSA backend missed —
-            // typically the motherboard analog jack and the active HDMI
-            // display, which PipeWire holds as defaults and ALSA exclusive
-            // can't see. Anything that overlaps an RtAudio entry (Thronmax,
-            // already-listed HDMI ports) is filtered to avoid duplicates.
-            auto paSinks = crosspad_pc::enumeratePulseSinks();
-            // Token-overlap dedupe — but only on long, hardware-identifying
-            // tokens. Generic words like "Audio", "HD", "Pro" appear in every
-            // device name and would falsely flag the Pro Audio sink as a dup
-            // of "PulseAudio Sound Server" or "HD-Audio Generic (HDMI N)".
-            static const std::vector<std::string> kStopWords = {
-                "Audio", "HD-Audio", "Generic", "Output", "Stereo", "Default",
-                "Pro", "Sound", "Server", "Pulse", "PulseAudio", "ALSA",
-                "Device", "Analog", "Digital", "Family"
-            };
-            auto isStopWord = [](const std::string& w) {
-                for (auto& sw : kStopWords) if (w == sw) return true;
-                return false;
-            };
-            auto overlapsRtAudio = [&](const std::string& paDesc) {
-                std::istringstream tok(paDesc);
-                std::string w;
-                while (tok >> w) {
-                    if (w.size() < 6 || isStopWord(w)) continue;
-                    for (auto& d : outDevices) {
-                        if (d.name.find(w) != std::string::npos) return true;
-                    }
-                }
-                return false;
-            };
-            for (auto& s : paSinks) {
-                if (!overlapsRtAudio(s.description)) outNames.push_back(s.description);
-            }
-#endif
+            for (auto& e : outEntries) outNames.push_back(e.label);
 
             jp.setDeviceList(EmuJackPanel::AUDIO_OUT1, outNames,
                              findDropdownIndex(outNames, pcAudio.getCurrentDeviceName()));
@@ -1172,10 +1234,16 @@ void crosspad_app_init()
                         s_devicePrefs.audioOut2Pa.clear();
                     }
                 } else {
-                    auto outDevices = enumerateAudioOutputDevices();
-                    unsigned int realIdx = deviceIndex - 1;
-                    if (realIdx < outDevices.size()) {
-                        output.switchDevice(outDevices[realIdx].rtAudioId);
+                    // Resolve against the SAME list the dropdown was built
+                    // from (incl. loop guard + PA dedupe) — never positional
+                    // into the raw enumeration.
+                    auto outEntries = buildOutDeviceUiEntries();
+                    size_t realIdx = static_cast<size_t>(deviceIndex) - 1;
+                    if (realIdx >= outEntries.size()) break;
+                    const auto& sel = outEntries[realIdx];
+
+                    if (sel.rtAudioId != 0) {
+                        output.switchDevice(sel.rtAudioId);
                         jp.setConnected(jid, output.isOpen());
                         jp.setDeviceName(jid, output.getCurrentDeviceName());
                         if (jackId == EmuJackPanel::AUDIO_OUT1) {
@@ -1188,58 +1256,26 @@ void crosspad_app_init()
                     }
 #if defined(USE_VIRTUAL_AUDIO) && defined(__linux__)
                     else {
-                        // Index past RtAudio block — must be one of the
-                        // PA-only sinks we appended. Recompute the same
-                        // overlap filter so indices line up.
-                        auto paSinks = crosspad_pc::enumeratePulseSinks();
-                        static const std::vector<std::string> kStopWords = {
-                            "Audio","HD-Audio","Generic","Output","Stereo","Default",
-                            "Pro","Sound","Server","Pulse","PulseAudio","ALSA",
-                            "Device","Analog","Digital","Family"
-                        };
-                        auto isStopWord = [](const std::string& w) {
-                            for (auto& sw : kStopWords) if (w == sw) return true;
-                            return false;
-                        };
-                        auto overlapsRtAudio = [&](const std::string& paDesc) {
-                            std::istringstream tok(paDesc);
-                            std::string w;
-                            while (tok >> w) {
-                                if (w.size() < 6 || isStopWord(w)) continue;
-                                for (auto& d : outDevices) {
-                                    if (d.name.find(w) != std::string::npos) return true;
+                        // PA-only sink — route the RtAudio stream through the
+                        // PulseAudio server device, then move the sink-input
+                        // onto the selected sink.
+                        if (!output.isOpen()) {
+                            for (auto& d : enumerateAudioOutputDevices()) {
+                                if (d.name.find("PulseAudio") != std::string::npos) {
+                                    output.switchDevice(d.rtAudioId);
+                                    break;
                                 }
                             }
-                            return false;
-                        };
-                        std::vector<crosspad_pc::PulseSinkInfo> filtered;
-                        for (auto& s : paSinks) {
-                            if (!overlapsRtAudio(s.description)) filtered.push_back(s);
                         }
-                        size_t paIdx = realIdx - outDevices.size();
-                        if (paIdx < filtered.size()) {
-                            const auto& sel = filtered[paIdx];
-                            // Ensure RtAudio stream is talking to PA so move
-                            // makes sense — fall back to PulseAudio Sound
-                            // Server if not already open on a PA pseudo-dev.
-                            if (!output.isOpen()) {
-                                for (auto& d : outDevices) {
-                                    if (d.name.find("PulseAudio") != std::string::npos) {
-                                        output.switchDevice(d.rtAudioId);
-                                        break;
-                                    }
-                                }
-                            }
-                            if (crosspad_pc::movePulseOutputToSink(slot, sel.name)) {
-                                jp.setConnected(jid, true);
-                                jp.setDeviceName(jid, sel.description);
-                                if (slot == 0) {
-                                    s_devicePrefs.audioOut1   = sel.description;
-                                    s_devicePrefs.audioOut1Pa = sel.name;
-                                } else {
-                                    s_devicePrefs.audioOut2   = sel.description;
-                                    s_devicePrefs.audioOut2Pa = sel.name;
-                                }
+                        if (crosspad_pc::movePulseOutputToSink(slot, sel.paSinkName)) {
+                            jp.setConnected(jid, true);
+                            jp.setDeviceName(jid, sel.label);
+                            if (slot == 0) {
+                                s_devicePrefs.audioOut1   = sel.label;
+                                s_devicePrefs.audioOut1Pa = sel.paSinkName;
+                            } else {
+                                s_devicePrefs.audioOut2   = sel.label;
+                                s_devicePrefs.audioOut2Pa = sel.paSinkName;
                             }
                         }
                     }
