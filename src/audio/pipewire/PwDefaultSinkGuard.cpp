@@ -206,10 +206,19 @@ bool PwDefaultSinkGuard::takeover(const std::string& sinkNodeName)
     lastAudioSinkValue_ = value;
 
     spa_zero(metaListener_);
-    struct pw_metadata_events events{};
-    events.version = PW_VERSION_METADATA_EVENTS;
-    events.property = &PwDefaultSinkGuard::onMetaProperty;
-    pw_metadata_add_listener(meta_, &metaListener_, &events, this);
+    // The events vtable must outlive the hook: spa_hook stores a POINTER to it
+    // (it does not copy), and metaListener_ is a member that lives until
+    // restore(). A stack-local vtable here would be reclaimed when takeover()
+    // returns, so the next property callback on the PipeWire loop thread would
+    // jump through a dangling pointer (SIGSEGV). The callback is constant, so a
+    // function-local static is the correct, allocation-free backing store.
+    static const struct pw_metadata_events kMetaEvents = [] {
+        struct pw_metadata_events e{};
+        e.version  = PW_VERSION_METADATA_EVENTS;
+        e.property = &PwDefaultSinkGuard::onMetaProperty;
+        return e;
+    }();
+    pw_metadata_add_listener(meta_, &metaListener_, &kMetaEvents, this);
 
     std::string json = "{\"name\":\"" + sinkNodeName + "\"}";
     pw_metadata_set_property(meta_, 0, "default.configured.audio.sink",

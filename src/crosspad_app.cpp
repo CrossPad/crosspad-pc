@@ -66,6 +66,11 @@
 #ifdef __linux__
 #include "audio/virtual/PulseMonitorCapture.hpp"
 #endif
+#ifdef USE_PIPEWIRE
+#include "audio/pipewire/PwContext.hpp"
+#include "audio/pipewire/PwDefaultSinkGuard.hpp"
+#include "audio/pipewire/PwVirtualSource.hpp"
+#endif
 #include <csignal>
 #endif
 #include "crosspad-gui/components/vu_meter.h"
@@ -144,6 +149,13 @@ static std::atomic<bool> s_shutdownRan{false};
 static crosspad_pc::PulseMonitorCapture s_pulseCap1;
 static crosspad_pc::PulseMonitorCapture s_pulseCap2;
 #endif
+#ifdef USE_PIPEWIRE
+// Native PipeWire session orchestration: default-sink takeover guard and the
+// OUT1-tap virtual source ("CrossPad Out"). Only meaningful when the native
+// PW backend is active (s_virtualSinkManager->input(i) != nullptr).
+static crosspad_pc::PwDefaultSinkGuard s_pwGuard;
+static crosspad_pc::PwVirtualSource s_pwSource;
+#endif
 #endif
 #endif
 
@@ -171,6 +183,11 @@ struct DevicePreferences {
     uint32_t    uartBaud = 115200;
     std::string bleDevice;    // Last connected BLE MIDI device address
     uint8_t     bleMode = 0;  // 0=Host, 1=Server
+    // Native PipeWire: make CrossPad IN#1 the system default sink while active.
+    bool        pwTakeoverDefault = true;
+    // Sink name to restore on shutdown. Non-empty at startup means the previous
+    // run died before restoring — used for crash recovery, not the live default.
+    std::string pwPrevDefaultSink;
 };
 
 static DevicePreferences s_devicePrefs;
@@ -213,6 +230,8 @@ static void loadDevicePrefs() {
     if (doc["uart_baud"].is<uint32_t>())     s_devicePrefs.uartBaud   = doc["uart_baud"].as<uint32_t>();
     if (doc["ble_device"].is<const char*>()) s_devicePrefs.bleDevice  = doc["ble_device"].as<const char*>();
     if (doc["ble_mode"].is<uint8_t>())       s_devicePrefs.bleMode    = doc["ble_mode"].as<uint8_t>();
+    if (doc["pw_takeover_default"].is<bool>()) s_devicePrefs.pwTakeoverDefault = doc["pw_takeover_default"].as<bool>();
+    if (doc["pw_prev_default_sink"].is<const char*>()) s_devicePrefs.pwPrevDefaultSink = doc["pw_prev_default_sink"].as<const char*>();
 
     printf("[DevPrefs] Loaded: out1='%s' out2='%s' in1='%s' in2='%s' midiOut='%s' midiIn='%s' sd='%s' uart='%s@%u'\n",
            s_devicePrefs.audioOut1.c_str(), s_devicePrefs.audioOut2.c_str(),
@@ -238,6 +257,8 @@ static void saveDevicePrefs() {
     doc["uart_baud"]   = s_devicePrefs.uartBaud;
     doc["ble_device"]  = s_devicePrefs.bleDevice;
     doc["ble_mode"]    = s_devicePrefs.bleMode;
+    doc["pw_takeover_default"]  = s_devicePrefs.pwTakeoverDefault;
+    doc["pw_prev_default_sink"] = s_devicePrefs.pwPrevDefaultSink;
 
     std::ofstream f(path);
     if (!f.is_open()) {
@@ -701,15 +722,29 @@ void crosspad_app_init()
         bool in1Virtual = false, in2Virtual = false;
         if (s_virtualSinkManager) {
             auto sinks = s_virtualSinkManager->list();
-            if (sinks.size() >= 1 &&
-                s_pulseCap1.start(sinks[0].captureDeviceName, outSampleRate)) {
+            // Native PW backend exposes each sink directly as an IAudioInput —
+            // no libpulse monitor round-trip. input() returns nullptr for the
+            // pactl/RtAudio fallback backend, in which case we use the Pulse
+            // capturer path below. (input() is on the base interface.)
+            crosspad::IAudioInput* nativeIn1 = s_virtualSinkManager->input(0);
+            crosspad::IAudioInput* nativeIn2 = s_virtualSinkManager->input(1);
+            if (nativeIn1) {
+                printf("[Audio] IN1 connected to native virtual sink (crosspad_vin1)\n");
+                pc_platform_set_audio_input(0, nativeIn1);
+                in1Virtual = true;
+            } else if (sinks.size() >= 1 &&
+                       s_pulseCap1.start(sinks[0].captureDeviceName, outSampleRate)) {
                 printf("[Audio] IN1 connected to virtual sink: %s\n",
                        sinks[0].displayName.c_str());
                 pc_platform_set_audio_input(0, &s_pulseCap1);
                 in1Virtual = true;
             }
-            if (sinks.size() >= 2 &&
-                s_pulseCap2.start(sinks[1].captureDeviceName, outSampleRate)) {
+            if (nativeIn2) {
+                printf("[Audio] IN2 connected to native virtual sink (crosspad_vin2)\n");
+                pc_platform_set_audio_input(1, nativeIn2);
+                in2Virtual = true;
+            } else if (sinks.size() >= 2 &&
+                       s_pulseCap2.start(sinks[1].captureDeviceName, outSampleRate)) {
                 printf("[Audio] IN2 connected to virtual sink: %s\n",
                        sinks[1].displayName.c_str());
                 pc_platform_set_audio_input(1, &s_pulseCap2);
@@ -748,6 +783,26 @@ void crosspad_app_init()
             }
         }
     }
+
+#ifdef USE_PIPEWIRE
+    // Make CrossPad IN#1 the system default sink so audio from other apps
+    // flows into the mixer without manual routing. Only when the native PW
+    // backend is active (input(0) != nullptr) and the pref allows it.
+    if (s_devicePrefs.pwTakeoverDefault && s_virtualSinkManager &&
+        s_virtualSinkManager->input(0) != nullptr) {
+        // Crash recovery: a leftover pwPrevDefaultSink means the previous run
+        // died before restore — that value, not the current default (which is
+        // still our own sink), is what we must eventually restore.
+        if (!s_devicePrefs.pwPrevDefaultSink.empty())
+            s_pwGuard.setPreviousSink(s_devicePrefs.pwPrevDefaultSink);
+        if (s_pwGuard.takeover("crosspad_vin1")) {
+            s_devicePrefs.pwPrevDefaultSink = s_pwGuard.previousSink();
+            saveDevicePrefs();
+            printf("[Audio] system default sink -> CrossPad IN#1 (was: %s)\n",
+                   s_devicePrefs.pwPrevDefaultSink.c_str());
+        }
+    }
+#endif
 
     // Initialize FM synth engine at the audio device's actual sample rate
     fmSynth.setSampleRate(pcAudio.getSampleRate());
@@ -827,6 +882,20 @@ void crosspad_app_init()
 #endif
         crosspad::getPlatformServices().setAudioModule(&s_audioModule);
         s_audioModule.start();
+
+#ifdef USE_PIPEWIRE
+        // Expose OUT1 as a virtual source ("CrossPad Out") that OBS/DAWs can
+        // capture directly. Attach as the module's aux stream (OUT1 tap) only
+        // after the source connects; setAuxStream stores a non-owning pointer
+        // read by the audio thread.
+        if (s_pwSource.start("crosspad_out", "CrossPad Out", cfg.sampleRate)) {
+            s_audioModule.setAuxStream(&s_pwSource);
+            printf("[Audio] OUT1 tap -> virtual source 'CrossPad Out' @ %u Hz\n",
+                   cfg.sampleRate);
+        } else {
+            printf("[Audio] virtual source 'CrossPad Out' unavailable\n");
+        }
+#endif
     }
 
     // Save preferences now that we know actual connected device names
@@ -1450,6 +1519,18 @@ void crosspad_app_shutdown()
     bool expected = false;
     if (!s_shutdownRan.compare_exchange_strong(expected, true)) return;
 
+#ifdef USE_PIPEWIRE
+    // Restore the user's original default sink and clear the crash-recovery
+    // marker BEFORE tearing down our nodes — so a clean exit leaves no stale
+    // pwPrevDefaultSink behind. Detach the aux stream (non-owning pointer read
+    // by the audio thread) BEFORE stopping/destroying the source.
+    s_pwGuard.restore();
+    s_devicePrefs.pwPrevDefaultSink.clear();
+    saveDevicePrefs();
+    s_audioModule.setAuxStream(nullptr);
+    s_pwSource.stop();
+#endif
+
     // Order matters: unload the PulseAudio null-sink modules FIRST so they
     // don't leak into the user's system. In theory this should also sever
     // in-flight pa_simple_read() calls in our capture threads, but on PipeWire's
@@ -1467,5 +1548,10 @@ void crosspad_app_shutdown()
 #endif
     pcAudioIn1.end();
     pcAudioIn2.end();
+#ifdef USE_PIPEWIRE
+    // Tear down the shared pw_thread_loop LAST — after every proxy/stream that
+    // lives on it (guard, source, native sink captures) is already stopped.
+    crosspad_pc::PwContext::instance().shutdown();
+#endif
 #endif
 }
