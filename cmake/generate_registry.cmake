@@ -42,6 +42,18 @@ function(generate_app_registry OUTPUT_FILE SCAN_DIRS)
                 list(APPEND APP_NAMES "${APP_NAME}")
             endforeach()
 
+            # Pattern 1b: REGISTER_APP_PL(Name, ...) — the pad-logic variant.
+            # Matched separately so the capture-group index of the plain form
+            # above stays put. Without this an app that declares pad logic
+            # compiles and links but never registers, so it simply never
+            # appears in the launcher.
+            string(REGEX MATCHALL "REGISTER_APP_PL\\(([^,]+)," MATCHES_PL "${FILE_CONTENT}")
+            foreach(MATCH ${MATCHES_PL})
+                string(REGEX REPLACE "REGISTER_APP_PL\\(([^,]+)," "\\1" APP_NAME "${MATCH}")
+                string(STRIP "${APP_NAME}" APP_NAME)
+                list(APPEND APP_NAMES "${APP_NAME}")
+            endforeach()
+
             # Pattern 2: void _register_Name_app() function definition
             string(REGEX MATCHALL "void _register_([A-Za-z0-9_]+)_app\\(" MATCHES2 "${FILE_CONTENT}")
             foreach(MATCH ${MATCHES2})
