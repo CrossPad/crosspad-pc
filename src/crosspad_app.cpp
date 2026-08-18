@@ -447,15 +447,6 @@ static int findMidiPortByName(const std::string& name, bool isOutput) {
 
 static void LoadMainScreen(lv_obj_t* parent);
 
-/// PC app factory — creates App instances for the orchestrator
-static crosspad_gui::ILvglApp* pc_app_factory(
-    lv_obj_t* container, const char* name, const char* icon,
-    lv_obj_t* (*createLVGL)(lv_obj_t*, App*),
-    void (*destroyLVGL)(lv_obj_t*))
-{
-    return new App(container, name, icon, createLVGL, destroyLVGL);
-}
-
 /// Resolve short icon names (e.g. "info.png") to full asset paths.
 /// Icons that already contain a path separator are left unchanged.
 static std::vector<std::string> s_resolvedIcons;
@@ -474,7 +465,7 @@ static const char* pc_icon_resolver(size_t /*index*/, const char* icon) {
 
 static void InitializeOrchestrator() {
     crosspad_gui::OrchestratorConfig config;
-    config.app_factory = pc_app_factory;
+    config.app_factory = crosspad_gui::defaultAppFactory<App>;
     config.icon_resolver = pc_icon_resolver;
     crosspad_gui::AppOrchestrator::getInstance().init(config);
 }

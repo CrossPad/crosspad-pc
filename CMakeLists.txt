@@ -367,6 +367,26 @@ endif()
 message(STATUS "CrossPad version: ${CP_VERSION}")
 configure_file(cmake/version.h.in "${CMAKE_BINARY_DIR}/generated/crosspad_pc_version.h" @ONLY)
 
+# Submodule revisions for Settings -> Info, mirroring platform-idf. Best effort:
+# a source tree without git (release tarball) simply reports "unknown".
+function(crosspad_git_rev out_var dir)
+    set(rev "unknown")
+    execute_process(
+        COMMAND git rev-parse --short HEAD
+        WORKING_DIRECTORY "${dir}"
+        OUTPUT_VARIABLE rev_out
+        OUTPUT_STRIP_TRAILING_WHITESPACE
+        ERROR_QUIET
+        RESULT_VARIABLE rev_res)
+    if(rev_res EQUAL 0 AND rev_out)
+        set(rev "${rev_out}")
+    endif()
+    set(${out_var} "${rev}" PARENT_SCOPE)
+endfunction()
+
+crosspad_git_rev(CROSSPAD_CORE_REV "${PROJECT_SOURCE_DIR}/lib/crosspad-core")
+crosspad_git_rev(CROSSPAD_GUI_REV  "${PROJECT_SOURCE_DIR}/lib/crosspad-gui")
+
 
 # Auto-generate app registry initialization
 include(cmake/generate_registry.cmake)
@@ -442,6 +462,9 @@ target_compile_definitions(CrossPad PRIVATE
     CP_LCD_VER_RES=240
     PLATFORM_PC=1
     CROSSPAD_REGISTER_APP_NAMED_FUNCTIONS=1
+    CROSSPAD_CORE_REV="${CROSSPAD_CORE_REV}"
+    CROSSPAD_GUI_REV="${CROSSPAD_GUI_REV}"
+    CROSSPAD_PC_VERSION="${CP_VERSION}"
 )
 target_include_directories(CrossPad PRIVATE
     ${PROJECT_SOURCE_DIR}/src
