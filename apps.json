@@ -20,7 +20,7 @@
       "installed_at": "2026-04-08T18:45:16.225115+00:00"
     },
     "mixer": {
-      "version": "d6aadd25",
+      "version": "7e904805",
       "ref": "main",
       "repo": "https://github.com/CrossPad/crosspad-mixer.git",
       "installed_at": "2026-04-10T14:10:33.752307+00:00",
@@ -33,7 +33,7 @@
       "installed_at": "2026-07-02T15:08:46.567243+00:00"
     },
     "fishtank": {
-      "version": "3d0a438a",
+      "version": "718fc513",
       "ref": "main",
       "repo": "https://github.com/matixan/crosspad-fishtank.git",
       "installed_at": "2026-08-18T12:42:14.883674+00:00"

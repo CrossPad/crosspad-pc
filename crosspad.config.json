@@ -4,22 +4,28 @@
   "features": {},
   "apps": {
     "piano": {
-      "track": "registry"
+      "track": "pinned",
+      "commit": "7337675102f3b45aebe710566b72d64480131adf"
     },
     "instructions": {
-      "track": "registry"
+      "track": "pinned",
+      "commit": "3b6e4985c19e48fcd0d69a552f027b8a9cb9b462"
     },
     "serial-monitor": {
-      "track": "registry"
+      "track": "pinned",
+      "commit": "a946e264a0da770bf675b88ac83109eced70df33"
     },
     "mixer": {
-      "track": "registry"
+      "track": "pinned",
+      "commit": "7e9048057427e9a9d653f229f92cc787b413a970"
     },
     "appstore": {
-      "track": "registry"
+      "track": "pinned",
+      "commit": "9f670b16caaa98b2bbea3859caed2782794cb47a"
     },
     "fishtank": {
-      "track": "registry"
+      "track": "pinned",
+      "commit": "718fc513c34a3d77d9cff593971a87832b1dd779"
     }
   }
 }
