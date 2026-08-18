@@ -465,6 +465,19 @@ if(LVGL_PRO_PROJECT_DIR)
   endif()
 endif()
 
+# Build-time inventory of installed apps and shared submodules (commit + pin).
+# Same generator the firmware uses, so `--versions` here and APP_VERSIONS on a
+# board answer in the same format.
+include(${CMAKE_CURRENT_LIST_DIR}/lib/crosspad-core/cmake/crosspad_app_versions.cmake)
+file(GLOB _crosspad_app_dirs "${CMAKE_CURRENT_LIST_DIR}/src/apps/crosspad-*")
+crosspad_generate_app_versions(
+    OUTPUT   "${CMAKE_BINARY_DIR}/app_versions.cpp"
+    SHARED   "${CMAKE_CURRENT_LIST_DIR}/lib/crosspad-core"
+             "${CMAKE_CURRENT_LIST_DIR}/lib/crosspad-gui"
+    APPS     ${_crosspad_app_dirs}
+    MANIFEST "${CMAKE_CURRENT_LIST_DIR}/apps.json")
+list(APPEND MAIN_SOURCES "${CMAKE_BINARY_DIR}/app_versions.cpp")
+
 add_executable(CrossPad ${MAIN_SOURCES})
 target_compile_definitions(CrossPad PRIVATE
     LV_CONF_INCLUDE_SIMPLE

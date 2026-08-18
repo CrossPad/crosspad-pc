@@ -9,6 +9,8 @@
 #include <cstdint>
 #include <cstdio>
 #include <chrono>
+#include "crosspad/app/AppVersions.hpp"
+
 #include <cstdarg>
 #include <string>
 #include <vector>
@@ -478,7 +480,7 @@ public:
 
 private:
     struct InfoRow { const char* label; char value[64]; };
-    static constexpr int kMaxInfoRows = 10;
+    static constexpr int kMaxInfoRows = 24;
     static inline InfoRow s_infoRows[kMaxInfoRows] = {};
     static inline int s_infoCount = 0;
     static inline bool s_infoBuilt = false;
@@ -504,6 +506,17 @@ private:
         addRow("crosspad-gui", "%s", CROSSPAD_GUI_REV);
         addRow("LVGL", "%d.%d.%d", LVGL_VERSION_MAJOR, LVGL_VERSION_MINOR,
                LVGL_VERSION_PATCH);
+        // Installed apps with the commit and pin they were built from — same
+        // table the --versions flag prints and the firmware reports over CDC.
+        for (std::size_t i = 0; i < crosspad::appVersionCount(); ++i) {
+            const crosspad::AppVersion* v = crosspad::appVersionGet(i);
+            if (!v || !v->appId || !v->appId[0]) continue;  // core/gui above
+            addRow(v->component, "%s%s%s%s", v->commit,
+                   v->ref && v->ref[0] ? " @" : "",
+                   v->ref && v->ref[0] ? v->ref : "",
+                   v->dirty ? " *" : "");
+        }
+
         const std::string& sd = pc_platform_get_sdcard_path();
         addRow("SD slot", "%s", sd.empty() ? "not mounted" : sd.c_str());
     }

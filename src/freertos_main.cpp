@@ -21,7 +21,10 @@
 #include "crosspad_app.hpp"
 #include "remote/RemoteControl.hpp"
 
+#include "crosspad/app/AppVersions.hpp"
+
 #include <cstdio>
+#include <cstring>
 
 /* ── FreeRTOS hooks (required by kernel config) ───────────────────────── */
 
@@ -73,8 +76,24 @@ static void lvgl_task(void* pvParameters)
 
 int main(int argc, char** argv)
 {
-    (void)argc;
-    (void)argv;
+    // Report what this build was made of and exit — the simulator's equivalent
+    // of the firmware's APP_VERSIONS over CDC, so the app manager can ask both
+    // the same question.
+    for (int i = 1; i < argc; ++i) {
+        if (std::strcmp(argv[i], "--versions") != 0) continue;
+        for (std::size_t v = 0; v < crosspad::appVersionCount(); ++v) {
+            const crosspad::AppVersion* av = crosspad::appVersionGet(v);
+            if (!av) continue;
+            printf("APPVER: %s id=%s commit=%s ref=%s dirty=%d\n",
+                   av->component,
+                   av->appId && av->appId[0] ? av->appId : "-",
+                   av->commit,
+                   av->ref && av->ref[0] ? av->ref : "-",
+                   av->dirty ? 1 : 0);
+        }
+        printf("APPVER: end count=%zu\n", crosspad::appVersionCount());
+        return 0;
+    }
 
     if (xTaskCreate(lvgl_task, "LVGL", 8192, NULL, 1, NULL) != pdPASS) {
         printf("Error creating LVGL task\n");
