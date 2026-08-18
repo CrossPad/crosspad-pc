@@ -1,0 +1,22 @@
+{
+  "version": 1,
+  "platform": "pc",
+  "features": {},
+  "apps": {
+    "piano": {
+      "track": "registry"
+    },
+    "instructions": {
+      "track": "registry"
+    },
+    "serial-monitor": {
+      "track": "registry"
+    },
+    "mixer": {
+      "track": "registry"
+    },
+    "appstore": {
+      "track": "registry"
+    }
+  }
+}

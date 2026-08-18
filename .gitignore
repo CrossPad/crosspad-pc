@@ -29,3 +29,7 @@ _build_*.bat
 screenshots/
 app-registry.json
 apps.json
+
+# App manager working data (backups, generated build flags)
+.crosspad/
+crosspad.local.json
