@@ -17,6 +17,9 @@
     },
     "appstore": {
       "track": "registry"
+    },
+    "fishtank": {
+      "track": "registry"
     }
   }
 }

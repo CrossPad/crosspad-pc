@@ -28,3 +28,6 @@
 [submodule "src/apps/crosspad-mixer"]
 	path = src/apps/crosspad-mixer
 	url = https://github.com/CrossPad/crosspad-mixer.git
+[submodule "src/apps/crosspad-fishtank"]
+	path = src/apps/crosspad-fishtank
+	url = https://github.com/matixan/crosspad-fishtank.git
