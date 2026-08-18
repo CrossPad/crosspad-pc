@@ -452,7 +452,9 @@ void lv_DestroySettings(lv_obj_t * obj) {
 
 void _register_Settings_app() {
     static char icon_path[256];
-    snprintf(icon_path, sizeof(icon_path), "%sgear.png",
+    // The shared asset set ships settings.png; "gear.png" never existed, which
+    // is why the Settings tile came up blank.
+    snprintf(icon_path, sizeof(icon_path), "%ssettings.png",
              crosspad_gui::getGuiPlatform().assetPathPrefix());
     static const crosspad::AppEntry entry = {
         "Settings", icon_path,

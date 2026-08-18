@@ -365,6 +365,28 @@ foreach(_app_dir ${_app_submodule_dirs})
     message(STATUS "App submodule: ${_app_name} (${_app_sources})")
 endforeach()
 
+# ── Runtime assets (bin/assets) ─────────────────────────────────────────
+# The image loader prefers <exe dir>/assets, so stage the shared gui assets
+# together with every app's own assets there. Without this an app that ships
+# its own icon renders a blank launcher tile: only crosspad-gui/assets was ever
+# on the search path, and an installed app's icon lives in its own repo.
+set(_crosspad_asset_stage "${CMAKE_SOURCE_DIR}/bin/assets")
+file(MAKE_DIRECTORY "${_crosspad_asset_stage}")
+file(GLOB _crosspad_gui_assets "${CMAKE_SOURCE_DIR}/lib/crosspad-gui/assets/*.png")
+file(GLOB _crosspad_app_asset_dirs
+     "${CMAKE_SOURCE_DIR}/src/apps/*/assets")
+set(_crosspad_app_assets "")
+foreach(_dir ${_crosspad_app_asset_dirs})
+    file(GLOB _found "${_dir}/*.png")
+    list(APPEND _crosspad_app_assets ${_found})
+endforeach()
+foreach(_asset ${_crosspad_gui_assets} ${_crosspad_app_assets})
+    file(COPY "${_asset}" DESTINATION "${_crosspad_asset_stage}")
+endforeach()
+list(LENGTH _crosspad_app_assets _app_asset_count)
+message(STATUS "Assets: staged shared + ${_app_asset_count} app asset(s) "
+               "into bin/assets")
+
 # Updater module (version check, download, self-update)
 list(APPEND MAIN_SOURCES src/updater/PcUpdater.cpp)
 
