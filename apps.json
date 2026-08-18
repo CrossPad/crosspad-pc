@@ -7,10 +7,11 @@
       "installed_at": "2026-04-08T13:23:52.201526+00:00"
     },
     "instructions": {
-      "version": "938aea76",
+      "version": "3b6e4985",
       "ref": "main",
       "repo": "https://github.com/CrossPad/crosspad-instructions.git",
-      "installed_at": "2026-04-08T13:23:53.166029+00:00"
+      "installed_at": "2026-04-08T13:23:53.166029+00:00",
+      "updated_at": "2026-08-18T04:54:07.320608+00:00"
     },
     "serial-monitor": {
       "version": "a946e264",
@@ -19,10 +20,11 @@
       "installed_at": "2026-04-08T18:45:16.225115+00:00"
     },
     "mixer": {
-      "version": "33af3c07",
+      "version": "d6aadd25",
       "ref": "main",
       "repo": "https://github.com/CrossPad/crosspad-mixer.git",
-      "installed_at": "2026-04-10T14:10:33.752307+00:00"
+      "installed_at": "2026-04-10T14:10:33.752307+00:00",
+      "updated_at": "2026-08-18T04:54:07.483872+00:00"
     },
     "appstore": {
       "version": "9f670b16",
