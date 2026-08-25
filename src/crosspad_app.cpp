@@ -478,6 +478,7 @@ static void LoadMainScreen(lv_obj_t* parent) {
     auto& orch = crosspad_gui::AppOrchestrator::getInstance();
 
     crosspad_gui::MainScreenConfig config;
+    config.encoder        = crosspad_gui::getGuiPlatform().getNavigationEncoder();
     config.on_select      = crosspad_gui::AppOrchestrator::onAppSelected;
     config.on_close       = crosspad_gui::AppOrchestrator::onPopupClose;
     config.button_size    = APP_BUTTON_SIZE;

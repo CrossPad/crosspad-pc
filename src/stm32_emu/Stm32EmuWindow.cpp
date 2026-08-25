@@ -380,7 +380,14 @@ void Stm32EmuWindow::handleEncoderWheel(int dy)
 {
     encoder_.handleWheelDelta(dy);
 
-    // Scroll the active app's scrollable content
+    /* LVGL's SDL mousewheel indev is the encoder, and it already saw this event
+     * — moving focus inside whatever group crosspad-gui handed it. Scrolling on
+     * top of that would move two things at once, so the old scroll fallback now
+     * only runs for screens that never built a group. */
+    lv_indev_t* nav = crosspad_gui::getGuiPlatform().getNavigationEncoder();
+    lv_group_t* navGroup = nav ? lv_indev_get_group(nav) : nullptr;
+    if (navGroup && lv_group_get_obj_count(navGroup) > 0) return;
+
     lv_obj_t* target = findScrollable(lcdContainer_);
     if (target) {
         lv_obj_scroll_by(target, 0, dy * 20, LV_ANIM_ON);

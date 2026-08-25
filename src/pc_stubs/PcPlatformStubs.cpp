@@ -69,6 +69,7 @@
 
 // crosspad-gui interfaces
 #include "crosspad-gui/platform/IGuiPlatform.h"
+#include "hal/hal.h"
 #include "crosspad-gui/platform/IFileSystem.h"
 
 #include "crosspad/event/FreeRtosEventBus.hpp"
@@ -286,6 +287,10 @@ public:
 
     const char* assetPathPrefix() override {
         return assetPrefix_.c_str();
+    }
+
+    lv_indev_t* getNavigationEncoder() override {
+        return sdl_hal_get_encoder();
     }
 
     void delayMs(uint32_t ms) override {
