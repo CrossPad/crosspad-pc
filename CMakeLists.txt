@@ -290,6 +290,17 @@ if(USE_AUDIO)
     list(APPEND MAIN_SOURCES src/audio/PcAudio.cpp src/audio/PcAudioInput.cpp src/audio/PcAudioModule.cpp)
     list(APPEND MAIN_LIBS rtaudio)
 
+    # Streaming sample engine — the desktop stand-in for the board's sample
+    # player. Listed explicitly rather than globbed so a stray file in the
+    # directory cannot join the build by accident.
+    list(APPEND MAIN_SOURCES
+        src/audio/sampler/WavReader.cpp
+        src/audio/sampler/SampleStreamEngine.cpp
+        src/audio/sampler/SampleStreamPlayer.cpp
+        src/audio/sampler/PcSampleNode.cpp
+        src/audio/sampler/PcSamplerPort.cpp
+    )
+
     if(USE_VIRTUAL_AUDIO)
         list(APPEND MAIN_SOURCES
             src/audio/virtual/VirtualSinkFactory.cpp
@@ -356,8 +367,11 @@ foreach(_app_dir ${_app_submodule_dirs})
         continue()
     endif()
 
-    # All app sources live in src/ — single MixerApp.cpp is portable.
-    file(GLOB _app_sources "${_app_dir}/src/*.cpp")
+    # Recursive: most apps are a single file in src/, but a larger one (the
+    # sampler) splits into src/ui, src/logic, src/waveform, src/port. A
+    # non-recursive glob picked up its two top-level files and left every
+    # symbol they referenced undefined at link time.
+    file(GLOB_RECURSE _app_sources "${_app_dir}/src/*.cpp")
     if(_app_sources)
         list(APPEND MAIN_SOURCES ${_app_sources})
     endif()

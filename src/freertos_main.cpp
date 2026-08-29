@@ -10,6 +10,7 @@
 #else
   #include <unistd.h>
 #endif
+#include "crosspad_deps.hpp"
 #include <SDL.h>
 #include "lvgl/lvgl.h"
 

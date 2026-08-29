@@ -81,4 +81,8 @@ std::vector<PulseSinkInfo> enumeratePulseSinks(bool includeUnavailable = false);
 /// Returns false on non-Linux or if the move command failed.
 bool movePulseOutputToSink(int slot, const std::string& targetSinkName);
 
+/// Same, but give up after `timeoutMs` instead of the default grace period.
+bool movePulseOutputToSinkWithin(int slot, const std::string& targetSinkName,
+                                 int timeoutMs);
+
 } // namespace crosspad_pc

@@ -61,6 +61,7 @@
 #include "audio/PcAudio.hpp"
 #include "audio/PcAudioInput.hpp"
 #include "audio/PcAudioModule.hpp"
+#include "audio/sampler/PcSamplerPort.hpp"
 #ifdef USE_VIRTUAL_AUDIO
 #include "audio/virtual/IVirtualSinkManager.hpp"
 #ifdef __linux__
@@ -128,6 +129,12 @@ static PcAudioInput  pcAudioIn2;   // IN2
 static MlPianoSynth fmSynth;
 static crosspad_pc::PcAudioModule s_audioModule;
 static crosspad::SynthEngineNode s_synthNode;
+// Owned by the sampler port; null when the engine failed to start.
+static crosspad::IAudioNode* s_samplerNode = nullptr;
+
+/// Sink each output wants to be pinned to, applied once audio is flowing.
+/// Empty means "wherever the sound server puts it".
+static std::string s_pendingPin[2];
 #ifdef HAS_MIXER
 #include "crosspad/audio/AudioInputNode.hpp"
 #include "pc_stubs/pc_platform.h"
@@ -467,6 +474,11 @@ static void InitializeOrchestrator() {
     crosspad_gui::OrchestratorConfig config;
     config.app_factory = crosspad_gui::defaultAppFactory<App>;
     config.icon_resolver = pc_icon_resolver;
+#ifdef USE_AUDIO
+    // An app that needs a kit and has none gets the kit selector first — the
+    // same gate the device puts in front of the sampler.
+    config.pre_launch = crosspad_pc::sampler_port_pre_launch;
+#endif
     crosspad_gui::AppOrchestrator::getInstance().init(config);
 }
 
@@ -534,6 +546,9 @@ void crosspad_app_init()
         std::error_code ec;
         if (fs::exists(s_devicePrefs.sdcardPath, ec)) {
             pc_platform_set_sdcard_path(s_devicePrefs.sdcardPath);
+#ifdef USE_AUDIO
+            crosspad_pc::sampler_port_set_sdcard(s_devicePrefs.sdcardPath);
+#endif
             stm32Emu.getSdCardSlot().setMounted(true, s_devicePrefs.sdcardPath);
             printf("[SDCard] Auto-mounted from saved prefs: %s\n", s_devicePrefs.sdcardPath.c_str());
         } else {
@@ -546,11 +561,19 @@ void crosspad_app_init()
     /* Wire SD card slot mount/unmount callbacks */
     stm32Emu.getSdCardSlot().setOnMount([](const std::string& path) {
         pc_platform_set_sdcard_path(path);
+#ifdef USE_AUDIO
+        // Kits and samples live on the card; rescanning here is what makes a
+        // card mounted mid-session show up in the kit selector.
+        crosspad_pc::sampler_port_set_sdcard(path);
+#endif
         s_devicePrefs.sdcardPath = path;
         saveDevicePrefs();
     });
     stm32Emu.getSdCardSlot().setOnUnmount([]() {
         pc_platform_set_sdcard_path("");
+#ifdef USE_AUDIO
+        crosspad_pc::sampler_port_set_sdcard("");
+#endif
         s_devicePrefs.sdcardPath.clear();
         saveDevicePrefs();
     });
@@ -743,21 +766,24 @@ void crosspad_app_init()
         auto outDevices = enumerateAudioOutputDevices();
 #if defined(USE_VIRTUAL_AUDIO) && defined(__linux__)
         if (!savedPa.empty()) {
-            unsigned int paServerId = 0;
-            for (auto& d : outDevices) {
-                if (d.name.find("PulseAudio") != std::string::npos) {
-                    paServerId = d.rtAudioId;
-                    break;
-                }
-            }
-            output.begin(paServerId);
-            if (output.isOpen() &&
-                crosspad_pc::movePulseOutputToSink(slot, savedPa)) {
-                // Keep savedName (human description) untouched — it's what the
-                // dropdown displays. Don't overwrite with RtAudio device name.
+            // Pinning moves the stream this open creates, so the device has to
+            // be one that appears in the sound server's graph: RtAudio's
+            // default goes through pipewire-alsa and does, while opening a
+            // hardware device directly does not, and on a PipeWire host the
+            // ALSA "pulse" plugin can open without ever creating a node.
+            //
+            // The move itself cannot happen here. The node only materialises
+            // once audio is actually written, and nothing writes until the
+            // audio module starts, which is much later in init — attempting it
+            // at open time simply never finds the stream. The pin is recorded
+            // and applied after start(); see s_pendingPin below.
+            output.begin(0);
+            if (output.isOpen()) {
+                s_pendingPin[slot] = savedPa;
                 return;
             }
-            // Move failed (sink vanished?) — fall through to plain restore.
+            printf("[Audio] OUT%d: default device would not open, cannot pin to '%s'\n",
+                   slot + 1, savedPa.c_str());
             savedPa.clear();
         }
 #endif
@@ -932,6 +958,16 @@ void crosspad_app_init()
     // Default routing: SYNTH → OUT1 (matches legacy behavior).
     s_mixerEngine.setRouteEnabled(MixerInput::SYNTH, MixerOutput::OUT1, true);
 
+    // The sampler joins as a fourth channel, after the three whose indices
+    // MixerInput::IN1/IN2/SYNTH pin down. Registered before loadState() so a
+    // saved routing for it is applied rather than dropped — loadState only
+    // patches slots that already exist.
+    s_samplerNode = crosspad_pc::sampler_port_init();
+    if (s_samplerNode) {
+        s_mixerEngine.addChannel(s_samplerNode, "Sampler");
+        s_mixerEngine.setRouteEnabled(static_cast<MixerInput>(3), MixerOutput::OUT1, true);
+    }
+
     // Load mixer state AFTER channel slots exist so saved per-channel routing
     // applies; loadState only patches existing slots, never creates them.
     s_mixerEngine.loadState(getMixerStatePath());
@@ -983,9 +1019,30 @@ void crosspad_app_init()
 #else
         s_synthNode.setEngine(&fmSynth);
         s_audioModule.addNode(&s_synthNode);
+        // Without the mixer component the sampler is a plain generator on the
+        // node chain; it is brought up here because there is no addChannel().
+        s_samplerNode = crosspad_pc::sampler_port_init();
+        if (s_samplerNode) s_audioModule.addNode(s_samplerNode);
 #endif
         crosspad::getPlatformServices().setAudioModule(&s_audioModule);
         s_audioModule.start();
+
+#if defined(USE_VIRTUAL_AUDIO) && defined(__linux__)
+        // Now that the module is writing, the output streams exist in the
+        // sound server and can be pinned. This matters most when the
+        // virtual-sink takeover is on: the default sink is then CrossPad's own
+        // input, so an unpinned output would feed straight back into it.
+        for (uint8_t s = 0; s < 2; ++s) {
+            if (s_pendingPin[s].empty()) continue;
+            if (crosspad_pc::movePulseOutputToSinkWithin(s, s_pendingPin[s], 4000)) {
+                printf("[Audio] OUT%u pinned to sink '%s'\n",
+                       unsigned(s + 1), s_pendingPin[s].c_str());
+            } else {
+                printf("[Audio] OUT%u could not be pinned to '%s' — it will follow "
+                       "the default sink\n", unsigned(s + 1), s_pendingPin[s].c_str());
+            }
+        }
+#endif
 
 #ifdef USE_PIPEWIRE
         // Expose OUT1 as a virtual source ("CrossPad Out") that OBS/DAWs can

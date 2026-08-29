@@ -37,6 +37,12 @@
       "ref": "main",
       "repo": "https://github.com/matixan/crosspad-fishtank.git",
       "installed_at": "2026-08-18T12:42:14.883674+00:00"
+    },
+    "sampler": {
+      "version": "dbcf5990",
+      "ref": "main",
+      "repo": "https://github.com/CrossPad/crosspad-sampler.git",
+      "installed_at": "2026-08-29T19:21:32.384114+00:00"
     }
   }
 }

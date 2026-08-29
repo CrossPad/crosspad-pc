@@ -33,3 +33,4 @@ apps.json
 # App manager working data (backups, generated build flags)
 .crosspad/
 crosspad.local.json
+hil_logs/*

@@ -869,7 +869,14 @@
 #define LV_USE_THEME_DEFAULT 1
 #if LV_USE_THEME_DEFAULT
     /** 0: Light mode; 1: Dark mode */
-    #define LV_THEME_DEFAULT_DARK 0
+    /* Dark, to match the device: ESP-IDF builds with
+     * CONFIG_LV_THEME_DEFAULT_DARK=y. Any widget that does not set its own
+     * text colour takes it from the theme, and the app styles are built for a
+     * dark background — styleAppContainer sets a background colour and no text
+     * colour at all. In light mode the same code therefore renders near-black
+     * labels on a near-black container: the pad editor's left column was
+     * unreadable here and fine on hardware, from this one line. */
+    #define LV_THEME_DEFAULT_DARK 1
 
     /** 1: Enable grow on press */
     #define LV_THEME_DEFAULT_GROW 1

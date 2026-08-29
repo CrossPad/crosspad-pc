@@ -31,6 +31,9 @@
 #include "crosspad/settings/CrosspadSettings.hpp"
 #include "crosspad/platform/PlatformCapabilities.hpp"
 #include "crosspad/app/AppRegistry.hpp"
+#include "crosspad/kit/IKitManager.hpp"
+#include "crosspad/platform/PlatformServices.hpp"
+#include "crosspad/kit/KitInfo.hpp"
 #include "crosspad/audio/IAudioModule.hpp"
 #include "crosspad/synth/ISynthEngine.hpp"
 #include "apps/citest/CITestApi.hpp"
@@ -714,6 +717,64 @@ static std::string handle_audio_level(const std::string& json) {
            "\"right\":" + rs + "}";
 }
 
+/* ── Kit handlers ────────────────────────────────────────────────────── */
+//
+// The device answers KIT_LIST / KIT_LOAD / KIT_STATUS over CDC and the
+// simulator answered nothing, so every test that needed a kit had to click its
+// way through the browser — which is neither deterministic nor what the
+// hardware tests do.
+
+static void (*s_kitLoader)(int) = nullptr;
+static bool (*s_kitBusy)()      = nullptr;
+
+static std::string handle_kit_list() {
+    auto* mgr = crosspad::getKitManager();
+    if (!mgr) {
+        return "{" + json_bool("ok", false) + "," +
+               json_string("error", "no kit manager") + "}";
+    }
+    std::string out = "{" + json_bool("ok", true) + "," +
+                      json_int("count", mgr->getKitCount()) + "," +
+                      json_int("current", mgr->getCurrentKitId()) + ",\"kits\":[";
+    for (int i = 0; i < mgr->getKitCount(); ++i) {
+        auto* k = mgr->getKit(i);
+        if (i) out += ",";
+        out += "{" + json_int("id", i) + "," +
+               json_string("name", k ? k->name : std::string()) + "," +
+               json_bool("parsed", k && k->parsed) + "}";
+    }
+    return out + "]}";
+}
+
+static std::string handle_kit_status() {
+    auto* mgr = crosspad::getKitManager();
+    auto* cur = mgr ? mgr->getCurrentKit() : nullptr;
+    return std::string("{") + json_bool("ok", true) + "," +
+           json_int("count", mgr ? mgr->getKitCount() : 0) + "," +
+           json_int("current", mgr ? mgr->getCurrentKitId() : -1) + "," +
+           json_string("name", cur ? cur->name : std::string()) + "," +
+           json_bool("parsed", cur && cur->parsed) + "," +
+           json_bool("loading", s_kitBusy ? s_kitBusy() : false) + "}";
+}
+
+static std::string handle_kit_load(const std::string& json) {
+    if (!s_kitLoader) {
+        return "{" + json_bool("ok", false) + "," +
+               json_string("error", "no sampler installed") + "}";
+    }
+    auto* mgr = crosspad::getKitManager();
+    const int id = json_get_int(json, "kit", -1);
+    if (!mgr || id < 0 || id >= mgr->getKitCount()) {
+        return "{" + json_bool("ok", false) + "," +
+               json_string("error", "kit index out of range") + "}";
+    }
+    s_kitLoader(id);
+    // "OK" here means the load *started*. It is not an acknowledgement that the
+    // kit is playable — ask kit_status for that, exactly as on the device.
+    return "{" + json_bool("ok", true) + "," + json_int("kit", id) + "," +
+           json_bool("started", true) + "}";
+}
+
 static std::string dispatch_command(const std::string& json) {
     std::string cmd = json_get_string(json, "cmd");
 
@@ -761,6 +822,15 @@ static std::string dispatch_command(const std::string& json) {
     }
     if (cmd == "audio_level") {
         return handle_audio_level(json);
+    }
+    if (cmd == "kit_list") {
+        return handle_kit_list();
+    }
+    if (cmd == "kit_load") {
+        return handle_kit_load(json);
+    }
+    if (cmd == "kit_status") {
+        return handle_kit_status();
     }
     if (cmd == "citest_run") {
         return handle_citest_run(json);
@@ -924,6 +994,11 @@ void stop() {
         s_serverThread.join();
     }
     printf("[Remote] Control server stopped\n");
+}
+
+void set_kit_loader(void (*loader)(int), bool (*busy)()) {
+    s_kitLoader = loader;
+    s_kitBusy   = busy;
 }
 
 void process_pending() {

@@ -13,6 +13,9 @@
 
 #ifdef __linux__
 
+#include <chrono>
+#include <thread>
+
 #include "IVirtualSinkManager.hpp"
 
 #include <cerrno>
@@ -62,6 +65,15 @@ PactlResult runPactl(const char* const argv[]) {
         if (devnull >= 0) { dup2(devnull, STDERR_FILENO); close(devnull); }
         close(pipefd[0]);
         close(pipefd[1]);
+        // Everything below parses pactl's human-readable output, which is
+        // translated. In Polish a sink-input block opens with
+        // "4685. odpływ wejścia" — no '#', and the id first — so the header
+        // matcher never fired and CrossPad's own output stream could never be
+        // found, let alone pinned. Ask for the untranslated output instead of
+        // trying to recognise every language.
+        setenv("LC_ALL", "C", 1);
+        setenv("LANG", "C", 1);
+        unsetenv("LANGUAGE");
         execvp("pactl", const_cast<char* const*>(argv));
         _exit(127);
     }
@@ -393,9 +405,30 @@ std::vector<PulseSinkInfo> enumeratePulseSinks(bool includeUnavailable) {
     return result;
 }
 
+static bool tryMovePulseOutputToSink(int slot, const std::string& targetSinkName);
+
 bool movePulseOutputToSink(int slot, const std::string& targetSinkName) {
     if (slot < 0 || slot > 1 || targetSinkName.empty()) return false;
+    return movePulseOutputToSinkWithin(slot, targetSinkName, 1500);
+}
 
+bool movePulseOutputToSinkWithin(int slot, const std::string& targetSinkName,
+                                 int timeoutMs) {
+    if (slot < 0 || slot > 1 || targetSinkName.empty()) return false;
+
+    // The stream is created asynchronously: RtAudio's open returns before the
+    // sound server has a node for it, so a single look can find nothing and
+    // report a failure that never happened. Poll until it shows up.
+    const auto deadline = std::chrono::steady_clock::now() +
+                          std::chrono::milliseconds(timeoutMs < 0 ? 0 : timeoutMs);
+    for (;;) {
+        if (tryMovePulseOutputToSink(slot, targetSinkName)) return true;
+        if (std::chrono::steady_clock::now() >= deadline) return false;
+        std::this_thread::sleep_for(std::chrono::milliseconds(50));
+    }
+}
+
+static bool tryMovePulseOutputToSink(int slot, const std::string& targetSinkName) {
     // Find CrossPad sink-inputs in creation order. PulseAudio assigns IDs
     // monotonically per session, so the first ID belongs to OUT1, the second
     // to OUT2.
@@ -439,9 +472,7 @@ bool movePulseOutputToSink(int slot, const std::string& targetSinkName) {
     }
 
     if (static_cast<size_t>(slot) >= crosspadInputIds.size()) {
-        printf("[VirtSink] No CrossPad sink-input for slot %d (found %zu)\n",
-               slot, crosspadInputIds.size());
-        return false;
+        return false;   // not there yet; the caller polls
     }
 
     const std::string& sid = crosspadInputIds[slot];

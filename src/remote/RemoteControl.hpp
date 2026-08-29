@@ -20,6 +20,9 @@
  *   encoder_press            — press encoder button
  *   encoder_release          — release encoder button
  *   key {keycode}           — inject SDL keypress
+ *   kit_list                — kits the kit manager found
+ *   kit_load {kit}          — load one by index, the way KIT_LOAD does on the device
+ *   kit_status              — current kit, whether a load is in flight
  *   ping                    — health check
  */
 
@@ -38,5 +41,13 @@ void stop();
 /// Must be called periodically from the LVGL task to process queued commands.
 /// Safe to call from lv_timer callback.
 void process_pending();
+
+/// Register what `kit_load` should call. The kit *manager* is a core service,
+/// but starting a load is the sampler's business — it owns the worker and the
+/// audio-engine reload — so the platform hands the entry point in rather than
+/// this file including an app that may not be installed.
+/// @param loader  runs on the LVGL thread; takes a kit index.
+/// @param busy    true while a load is in flight.
+void set_kit_loader(void (*loader)(int), bool (*busy)());
 
 } // namespace remote

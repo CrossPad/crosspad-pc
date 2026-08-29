@@ -52,6 +52,7 @@ std::unique_ptr<IVirtualSinkManager> makeVirtualSinkManager() {
 #ifndef __linux__
 std::vector<PulseSinkInfo> enumeratePulseSinks(bool /*includeUnavailable*/) { return {}; }
 bool movePulseOutputToSink(int /*slot*/, const std::string& /*name*/) { return false; }
+bool movePulseOutputToSinkWithin(int /*slot*/, const std::string& /*name*/, int /*ms*/) { return false; }
 #endif
 
 } // namespace crosspad_pc
