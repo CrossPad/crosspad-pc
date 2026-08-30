@@ -60,9 +60,8 @@ class Sim:
 
         LVGL's encoder indev polls at ~30 ms; a press and release pushed in the
         same tick are never observed as a press, so the click never happens and
-        the UI looks frozen. The same is true of the `click` command, which
-        pushes SDL down+up itself — which is why rows in the kit list cannot be
-        selected with it.
+        the UI looks frozen. (The `click` command used to have the same flaw;
+        it now holds the button for `hold_ms`, 120 by default.)
         """
         self.cmd(cmd="encoder_press")
         time.sleep(0.12)

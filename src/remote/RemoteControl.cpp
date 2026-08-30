@@ -23,8 +23,13 @@
 #define STBI_WRITE_NO_STDIO
 #include "stb_image_write.h"
 
-// LVGL SDL driver internals — window/renderer access
+// LVGL SDL driver internals — window/renderer access; object class names for
+// the click hit report
 #include "lvgl/src/drivers/sdl/lv_sdl_window.h"
+#include "lvgl/src/core/lv_obj_class_private.h"
+
+// Where the LCD sits inside the window — one copy, shared with the layout
+#include "stm32_emu/Stm32EmuWindow.hpp"
 
 // crosspad-core
 #include "crosspad/pad/PadManager.hpp"
@@ -94,6 +99,12 @@ static std::string json_bool(const std::string& key, bool val) {
 
 static std::string json_int(const std::string& key, int val) {
     return "\"" + key + "\":" + std::to_string(val);
+}
+
+static std::string json_float(const std::string& key, float val) {
+    char buf[32];
+    snprintf(buf, sizeof(buf), "%g", (double)val);
+    return "\"" + key + "\":" + buf;
 }
 
 /// Extract a string value for a key from a JSON-like string (very simple parser)
@@ -191,21 +202,27 @@ static std::string handle_screenshot(const std::string& json = "") {
     SDL_Rect* captureRect = nullptr;
     SDL_Rect lcdRect;
 
-    if (lcdOnly) {
-        // LCD position within the window (must match Stm32EmuWindow layout)
-        static constexpr int LCD_W = 320;
-        static constexpr int LCD_H = 240;
-        static constexpr int WIN_W = 490;
-        static constexpr int LCD_X = (WIN_W - LCD_W) / 2; // 85
-        static constexpr int LCD_Y = 40;
+    // The capture is in window pixels; the layout is in LVGL units. They differ
+    // by the SDL zoom (HiDPI), so the panel rectangle is scaled, and the reply
+    // says where the panel is in the returned image so a caller can convert a
+    // pixel it sees into an LCD coordinate without knowing the layout.
+    const float zoom = lv_sdl_window_get_zoom(s_disp);
+    lcdRect = { (int)(Stm32EmuWindow::LCD_X * zoom), (int)(Stm32EmuWindow::LCD_Y * zoom),
+                (int)(Stm32EmuWindow::LCD_W * zoom), (int)(Stm32EmuWindow::LCD_H * zoom) };
 
-        lcdRect = { LCD_X, LCD_Y, LCD_W, LCD_H };
+    if (lcdOnly) {
         captureRect = &lcdRect;
-        w = LCD_W;
-        h = LCD_H;
+        w = lcdRect.w;
+        h = lcdRect.h;
     } else {
         SDL_GetWindowSize(window, &w, &h);
     }
+
+    const std::string geometry =
+        "\"lcd_origin\":[" + std::to_string(lcdOnly ? 0 : lcdRect.x) + "," +
+                            std::to_string(lcdOnly ? 0 : lcdRect.y) + "]," +
+        "\"lcd_size\":[" + std::to_string(lcdRect.w) + "," + std::to_string(lcdRect.h) + "]," +
+        json_float("scale", zoom);
 
     // ARGB8888: on little-endian memory layout is [B, G, R, A] per pixel.
     std::vector<uint8_t> pixels(w * h * 4);
@@ -230,7 +247,8 @@ static std::string handle_screenshot(const std::string& json = "") {
                    json_int("height", h) + "," +
                    json_string("format", "png") + "," +
                    json_string("file", filePath) + "," +
-                   json_int("size", (int)png.size()) + "}";
+                   json_int("size", (int)png.size()) + "," +
+                   geometry + "}";
         } else {
             return "{" + json_bool("ok", false) + "," +
                    json_string("error", "cannot write file: " + filePath) + "}";
@@ -245,7 +263,17 @@ static std::string handle_screenshot(const std::string& json = "") {
            json_int("height", h) + "," +
            json_string("format", "png") + "," +
            json_string("encoding", "base64") + "," +
+           geometry + "," +
            json_string("data", b64) + "}";
+}
+
+/// Deferred half of a click: the button-up pushed once hold_ms have passed.
+/// The mouse indev is polled every ~30 ms and only samples the button state,
+/// so a down and an up pushed back to back are never seen as a press at all.
+static void click_release_cb(lv_timer_t* t) {
+    auto* ev = static_cast<SDL_Event*>(lv_timer_get_user_data(t));
+    SDL_PushEvent(ev);
+    delete ev;
 }
 
 static std::string handle_click(const std::string& json) {
@@ -255,17 +283,63 @@ static std::string handle_click(const std::string& json) {
         return "{" + json_bool("ok", false) + "," + json_string("error", "missing x/y") + "}";
     }
 
-    // Get window ID
+    // Which space the caller measured in. "lcd" is what screenshots of the
+    // panel, ENC_GROUP labels and the UI code use; "window" is the raw SDL
+    // window (the old behaviour, and the default on the wire so older
+    // clients keep clicking where they always did).
+    std::string space = json_get_string(json, "space");
+    if (space.empty()) space = "window";
+    if (space != "lcd" && space != "window") {
+        return "{" + json_bool("ok", false) + "," +
+               json_string("error", "space must be lcd or window") + "}";
+    }
+
+    int holdMs = json_get_int(json, "hold_ms", 120);
+    if (holdMs < 0) holdMs = 0;
+    if (holdMs > 5000) holdMs = 5000;
+
+    // LVGL coordinates are the layout's; SDL event coordinates are those times
+    // the window zoom, which is what lv_sdl_mouse divides by.
+    const float zoom = lv_sdl_window_get_zoom(s_disp);
+    int lx, ly;
+    if (space == "lcd") {
+        lx = x + Stm32EmuWindow::LCD_X;
+        ly = y + Stm32EmuWindow::LCD_Y;
+    } else {
+        lx = (int)(x / zoom);
+        ly = (int)(y / zoom);
+    }
+    const int wx = (int)(lx * zoom);
+    const int wy = (int)(ly * zoom);
+    const int lcdX = lx - Stm32EmuWindow::LCD_X;
+    const int lcdY = ly - Stm32EmuWindow::LCD_Y;
+    const bool inLcd = lcdX >= 0 && lcdX < Stm32EmuWindow::LCD_W &&
+                       lcdY >= 0 && lcdY < Stm32EmuWindow::LCD_H;
+
+    // What LVGL will deliver the press to — the same search the indev does —
+    // so a click on empty background is distinguishable from one on a widget.
+    lv_point_t p = { (lv_coord_t)lx, (lv_coord_t)ly };
+    lv_obj_t* hit = lv_indev_search_obj(lv_screen_active(), &p);
+    std::string hitJson = "null";
+    if (hit) {
+        const lv_obj_class_t* cls = lv_obj_get_class(hit);
+        lv_area_t a;
+        lv_obj_get_coords(hit, &a);
+        hitJson = "{" + json_string("class", (cls && cls->name) ? cls->name : "?") + "," +
+                  json_int("x", a.x1 - Stm32EmuWindow::LCD_X) + "," +
+                  json_int("y", a.y1 - Stm32EmuWindow::LCD_Y) + "," +
+                  json_int("w", lv_area_get_width(&a)) + "," +
+                  json_int("h", lv_area_get_height(&a)) + "}";
+    }
+
     SDL_Window* window = lv_sdl_window_get_window(s_disp);
     Uint32 windowId = SDL_GetWindowID(window);
 
-    // Inject mouse move + button down + button up
     SDL_Event ev = {};
-
     ev.type = SDL_MOUSEMOTION;
     ev.motion.windowID = windowId;
-    ev.motion.x = x;
-    ev.motion.y = y;
+    ev.motion.x = wx;
+    ev.motion.y = wy;
     SDL_PushEvent(&ev);
 
     ev = {};
@@ -273,22 +347,36 @@ static std::string handle_click(const std::string& json) {
     ev.button.windowID = windowId;
     ev.button.button = SDL_BUTTON_LEFT;
     ev.button.state = SDL_PRESSED;
-    ev.button.x = x;
-    ev.button.y = y;
+    ev.button.x = wx;
+    ev.button.y = wy;
     ev.button.clicks = 1;
     SDL_PushEvent(&ev);
 
-    ev = {};
-    ev.type = SDL_MOUSEBUTTONUP;
-    ev.button.windowID = windowId;
-    ev.button.button = SDL_BUTTON_LEFT;
-    ev.button.state = SDL_RELEASED;
-    ev.button.x = x;
-    ev.button.y = y;
-    ev.button.clicks = 1;
-    SDL_PushEvent(&ev);
+    auto* up = new SDL_Event{};
+    up->type = SDL_MOUSEBUTTONUP;
+    up->button.windowID = windowId;
+    up->button.button = SDL_BUTTON_LEFT;
+    up->button.state = SDL_RELEASED;
+    up->button.x = wx;
+    up->button.y = wy;
+    up->button.clicks = 1;
+    if (holdMs == 0) {
+        SDL_PushEvent(up);
+        delete up;
+    } else {
+        // We are on the LVGL thread (process_pending), so a timer is safe here.
+        lv_timer_t* t = lv_timer_create(click_release_cb, (uint32_t)holdMs, up);
+        lv_timer_set_repeat_count(t, 1);
+    }
 
-    return "{" + json_bool("ok", true) + "," + json_int("x", x) + "," + json_int("y", y) + "}";
+    return "{" + json_bool("ok", true) + "," +
+           json_int("x", x) + "," + json_int("y", y) + "," +
+           json_string("space", space) + "," +
+           "\"window\":{" + json_int("x", wx) + "," + json_int("y", wy) + "}," +
+           "\"lcd\":{" + json_int("x", lcdX) + "," + json_int("y", lcdY) + "}," +
+           json_bool("in_lcd", inLcd) + "," +
+           json_int("hold_ms", holdMs) + "," +
+           "\"hit\":" + hitJson + "}";
 }
 
 static std::string handle_pad_press(const std::string& json) {

@@ -12,8 +12,14 @@
  * Response: {"ok":true,"data":"base64..."}\n
  *
  * Commands:
- *   screenshot              — capture SDL framebuffer, return base64 BMP
- *   click {x,y}             — inject mouse click at (x,y) in window coords
+ *   screenshot {file?,region?} — PNG of the window (or region "lcd"); the
+ *                             reply carries lcd_origin/lcd_size/scale so a
+ *                             pixel in the image maps to an LCD coordinate
+ *   click {x,y,space?,hold_ms?} — mouse click; space "lcd" (panel coords, as
+ *                             screenshots of the panel) or "window" (default);
+ *                             the button is held hold_ms (default 120) so the
+ *                             30 ms indev poll sees it; reply reports the
+ *                             object LVGL will deliver the press to ("hit")
  *   pad_press {pad,vel}     — press pad (0-15), velocity 0-127
  *   pad_release {pad}       — release pad
  *   encoder_rotate {delta}  — rotate encoder by delta steps
