@@ -28,7 +28,6 @@ set(CORE_TEST_SOURCES
 
     # App system
     ${PROJECT_SOURCE_DIR}/lib/crosspad-core/src/app/AppRegistry.cpp
-    ${PROJECT_SOURCE_DIR}/lib/crosspad-core/src/app/AppManagerBase.cpp
 
     # Settings
     ${PROJECT_SOURCE_DIR}/lib/crosspad-core/src/settings/CrosspadSettings.cpp
