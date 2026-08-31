@@ -367,11 +367,30 @@ foreach(_app_dir ${_app_submodule_dirs})
         continue()
     endif()
 
-    # Recursive: most apps are a single file in src/, but a larger one (the
-    # sampler) splits into src/ui, src/logic, src/waveform, src/port. A
-    # non-recursive glob picked up its two top-level files and left every
-    # symbol they referenced undefined at link time.
-    file(GLOB_RECURSE _app_sources "${_app_dir}/src/*.cpp")
+    # Each app also ships its own ESP-IDF CMakeLists.txt (idf_component_register
+    # with its own SRCS glob) — a second, independent build description for the
+    # same submodule. We don't execute that file here (that would mean either
+    # emulating idf_component_register on PC or shelling out to CMake's IDF
+    # extension, both a bigger refactor than this), but we at least mirror its
+    # glob depth so a component that deliberately scopes its build to a flat
+    # src/ (plain GLOB, no _RECURSE) can't have PC silently pull in an extra
+    # subdirectory IDF was never told to compile. Default is recursive: most
+    # apps are a single file in src/, but a larger one (the sampler) splits
+    # into src/ui, src/logic, src/waveform, src/port, and a non-recursive glob
+    # once picked up only its two top-level files and left every symbol they
+    # referenced undefined at link time.
+    set(_app_glob_recursive TRUE)
+    if(EXISTS "${_app_dir}/CMakeLists.txt")
+        file(READ "${_app_dir}/CMakeLists.txt" _app_cmake_txt)
+        if(NOT _app_cmake_txt MATCHES "GLOB_RECURSE")
+            set(_app_glob_recursive FALSE)
+        endif()
+    endif()
+    if(_app_glob_recursive)
+        file(GLOB_RECURSE _app_sources "${_app_dir}/src/*.cpp")
+    else()
+        file(GLOB _app_sources "${_app_dir}/src/*.cpp")
+    endif()
     if(_app_sources)
         list(APPEND MAIN_SOURCES ${_app_sources})
     endif()
