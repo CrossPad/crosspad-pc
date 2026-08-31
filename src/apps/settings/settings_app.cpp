@@ -2,6 +2,7 @@
 
 #include "settings_app.h"
 #include "crosspad/app/AppRegistrar.hpp"
+#include "crosspad-gui/components/app_icon.h"
 #include "crosspad-gui/components/settings_ui.h"
 #include "crosspad-gui/platform/IGuiPlatform.h"
 #include "crosspad/settings/CrosspadSettings.hpp"
@@ -450,18 +451,10 @@ void lv_DestroySettings(lv_obj_t * obj) {
     crosspad_gui::settings_ui_destroy();
 }
 
-void _register_Settings_app() {
-    static char icon_path[256];
-    // The shared asset set ships settings.png; "gear.png" never existed, which
-    // is why the Settings tile came up blank.
-    snprintf(icon_path, sizeof(icon_path), "%ssettings.png",
-             crosspad_gui::getGuiPlatform().assetPathPrefix());
-    static const crosspad::AppEntry entry = {
-        "Settings", icon_path,
-        lv_CreateSettings, lv_DestroySettings,
-        10
-    };
-    crosspad::AppRegistry::getInstance().registerApp(entry);
-}
+// The shared asset set ships settings.png; "gear.png" never existed, which
+// is why the Settings tile came up blank.
+REGISTER_APP(Settings, nullptr, crosspad_gui::resolveAppIcon("settings.png"),
+             lv_CreateSettings, lv_DestroySettings,
+             nullptr, nullptr, nullptr, 10)
 
 #endif // USE_LVGL

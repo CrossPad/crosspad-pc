@@ -10,10 +10,11 @@
 #include "pc_stubs/pc_platform.h"
 #include "updater/PcUpdater.hpp"
 
-#include <crosspad/app/AppRegistry.hpp>
+#include <crosspad/app/AppRegistrar.hpp>
 #include <crosspad/platform/PlatformCapabilities.hpp>
 #include <crosspad/platform/PlatformServices.hpp>
 #include "crosspad-gui/platform/IGuiPlatform.h"
+#include "crosspad-gui/components/app_icon.h"
 #include "crosspad-gui/components/markdown_view.h"
 
 #include "crosspad_pc_version.h"
@@ -689,18 +690,8 @@ void Update_destroy(lv_obj_t* app_obj)
 
 /* ── App registration ────────────────────────────────────────────────── */
 
-void _register_Update_app()
-{
-    static char icon_path[256];
-    snprintf(icon_path, sizeof(icon_path), "%sCrossPad_Logo_110w.png",
-             crosspad_gui::getGuiPlatform().assetPathPrefix());
-
-    static const crosspad::AppEntry entry = {
-        "Update", icon_path,
-        Update_create, Update_destroy,
-        0
-    };
-    crosspad::AppRegistry::getInstance().registerApp(entry);
-}
+REGISTER_APP(Update, nullptr, crosspad_gui::resolveAppIcon("CrossPad_Logo_110w.png"),
+             Update_create, Update_destroy,
+             nullptr, nullptr, nullptr, 0)
 
 #endif // USE_LVGL

@@ -18,6 +18,7 @@
 #include "synth/MlPianoSynth.hpp"
 
 #include "crosspad/app/AppRegistrar.hpp"
+#include "crosspad-gui/components/app_icon.h"
 #include "crosspad-gui/platform/IGuiPlatform.h"
 #include "crosspad/audio/AudioRingBuffer.hpp"
 #include "crosspad/synth/ISynthEngine.hpp"
@@ -527,14 +528,6 @@ bool stageAt(size_t index, const char*& nameOut, Result& resultOut, const char*&
 
 } // namespace citest
 
-void _register_CITest_app() {
-    static char icon_path[256];
-    snprintf(icon_path, sizeof(icon_path), "%stest.png",
-             crosspad_gui::getGuiPlatform().assetPathPrefix());
-    static const crosspad::AppEntry entry = {
-        "CITest", icon_path,
-        CITest_create, CITest_destroy,
-        0
-    };
-    crosspad::AppRegistry::getInstance().registerApp(entry);
-}
+REGISTER_APP(CITest, nullptr, crosspad_gui::resolveAppIcon("test.png"),
+             CITest_create, CITest_destroy,
+             nullptr, nullptr, nullptr, 0)
