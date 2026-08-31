@@ -459,7 +459,7 @@ void _register_Settings_app() {
     static const crosspad::AppEntry entry = {
         "Settings", icon_path,
         lv_CreateSettings, lv_DestroySettings,
-        nullptr, nullptr, nullptr, nullptr, 10
+        10
     };
     crosspad::AppRegistry::getInstance().registerApp(entry);
 }

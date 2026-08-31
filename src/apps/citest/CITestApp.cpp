@@ -534,7 +534,7 @@ void _register_CITest_app() {
     static const crosspad::AppEntry entry = {
         "CITest", icon_path,
         CITest_create, CITest_destroy,
-        nullptr, nullptr, nullptr, nullptr, 0
+        0
     };
     crosspad::AppRegistry::getInstance().registerApp(entry);
 }

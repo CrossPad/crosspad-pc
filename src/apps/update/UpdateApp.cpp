@@ -698,7 +698,7 @@ void _register_Update_app()
     static const crosspad::AppEntry entry = {
         "Update", icon_path,
         Update_create, Update_destroy,
-        nullptr, nullptr, nullptr, nullptr, 0
+        0
     };
     crosspad::AppRegistry::getInstance().registerApp(entry);
 }
