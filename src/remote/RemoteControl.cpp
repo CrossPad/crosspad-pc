@@ -42,6 +42,8 @@
 #include "crosspad/audio/IAudioModule.hpp"
 #include "crosspad/synth/ISynthEngine.hpp"
 #include "apps/citest/CITestApi.hpp"
+#include "crosspad-gui/components/power_gesture.h"
+#include "crosspad-gui/components/status_bar.h"
 
 // PC platform
 #include "pc_stubs/pc_platform.h"
@@ -377,6 +379,33 @@ static std::string handle_click(const std::string& json) {
            json_bool("in_lcd", inLcd) + "," +
            json_int("hold_ms", holdMs) + "," +
            "\"hit\":" + hitJson + "}";
+}
+
+/* The power button. The firmware resolves both gestures in crosspad-gui, so
+ * these verbs exercise exactly the code the hardware button reaches — the
+ * device-side equivalent is the CDC verb PWR_GESTURE CLICK|HOLD. */
+static std::string handle_power_click() {
+    const crosspad_gui::BackResult r = crosspad_gui::powerBack();
+    return "{" + json_bool("ok", true) + "," +
+           json_string("gesture", "click") + "," +
+           json_string("context", crosspad_gui::backResultName(r)) + "}";
+}
+
+static std::string handle_power_hold() {
+    const bool acted = crosspad_gui::powerToggleQuickSettings();
+    return "{" + json_bool("ok", true) + "," +
+           json_string("gesture", "hold") + "," +
+           json_bool("toggled", acted) + "," +
+           json_bool("drawer_open", crosspad_gui::statusbar_drawer_is_open()) + "}";
+}
+
+/* Press / release halves, for a test that wants the real 0.5 s timing rather
+ * than the resolved action. */
+static std::string handle_power_press(bool down) {
+    if (down) crosspad_gui::powerButtonPress();
+    else      crosspad_gui::powerButtonRelease();
+    return "{" + json_bool("ok", true) + "," +
+           json_string("gesture", down ? "press" : "release") + "}";
 }
 
 static std::string handle_pad_press(const std::string& json) {
@@ -880,6 +909,18 @@ static std::string dispatch_command(const std::string& json) {
     }
     if (cmd == "pad_release") {
         return handle_pad_release(json);
+    }
+    if (cmd == "power_click") {
+        return handle_power_click();
+    }
+    if (cmd == "power_hold") {
+        return handle_power_hold();
+    }
+    if (cmd == "power_press") {
+        return handle_power_press(true);
+    }
+    if (cmd == "power_release") {
+        return handle_power_press(false);
     }
     if (cmd == "encoder_rotate") {
         return handle_encoder_rotate(json);

@@ -43,6 +43,7 @@
 #include "crosspad-gui/components/app_orchestrator.h"
 #include "crosspad-gui/platform/IGuiPlatform.h"
 #include "crosspad-gui/components/volume_overlay.h"
+#include "crosspad-gui/components/power_gesture.h"
 
 #ifdef USE_MIDI
 #include "midi/PcMidi.hpp"
@@ -536,9 +537,12 @@ void crosspad_app_init()
     lv_obj_t* lcdContainer = stm32Emu.init();
     s_lcdContainer = lcdContainer;
 
-    /* Wire keyboard shortcuts: Escape→go home, Space/Ctrl→volume overlay */
+    /* Wire keyboard shortcuts: Escape→go home, Space/Ctrl→power button
+     * (tap = contextual back, hold 0.5 s = quick settings), V→volume overlay */
     stm32Emu.getKeyboardCapture().setEscapeCallback(crosspad_app_go_home);
-    stm32Emu.getKeyboardCapture().setPowerCallback(crosspad_gui::volume_overlay_toggle);
+    stm32Emu.getKeyboardCapture().setPowerCallback(crosspad_gui::powerButtonPress);
+    stm32Emu.getKeyboardCapture().setPowerReleaseCallback(crosspad_gui::powerButtonRelease);
+    stm32Emu.getKeyboardCapture().setVolumeCallback(crosspad_gui::volume_overlay_toggle);
 
     /* Virtual SD card slot — auto-mount from saved preferences */
     if (!s_devicePrefs.sdcardPath.empty()) {

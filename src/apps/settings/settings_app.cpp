@@ -400,7 +400,9 @@ static void cat_build_bluetooth(lv_obj_t* parent, lv_group_t* group) {
 /* ── App create / destroy ────────────────────────────────────────────── */
 
 lv_obj_t * lv_CreateSettings(lv_obj_t * parent, App * a) {
-    (void)a;
+    /* Power-button back: one level up inside Settings, and only when there is
+     * a level to pop — from the category list the framework closes the app. */
+    if (a) a->setOnBack([](lv_obj_t *) { return crosspad_gui::settings_ui_back(); });
 
     // Main container
     lv_obj_t * container = lv_obj_create(parent);
@@ -437,7 +439,6 @@ lv_obj_t * lv_CreateSettings(lv_obj_t * parent, App * a) {
 }
 
 void lv_DestroySettings(lv_obj_t * obj) {
-    (void)obj;
 #ifdef USE_BLE
     if (s_bleRefreshTimer) {
         lv_timer_delete(s_bleRefreshTimer);
@@ -449,6 +450,12 @@ void lv_DestroySettings(lv_obj_t * obj) {
     s_bleMidiOutLabel = nullptr;
 #endif
     crosspad_gui::settings_ui_destroy();
+
+    /* The root is this function's to delete — the framework only calls it.
+     * Without this the settings tree stayed on screen after any close that is
+     * not the Exit button (which rebuilds the main screen and hid the leak):
+     * the app was gone, its widgets were not. */
+    lv_obj_delete_async(obj);
 }
 
 // The shared asset set ships settings.png; "gear.png" never existed, which
