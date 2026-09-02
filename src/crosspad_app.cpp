@@ -816,7 +816,7 @@ void crosspad_app_init()
 
     // ── Audio IN1/IN2: auto-connect saved devices ──
     // Use output sample rate so mixer doesn't need sample rate conversion
-    uint32_t outSampleRate = pcAudio.isOpen() ? pcAudio.getSampleRate() : 48000;
+    uint32_t outSampleRate = pcAudio.isOpen() ? pcAudio.getSampleRate() : 44100;
     pc_platform_set_audio_input(0, &pcAudioIn1);
     pc_platform_set_audio_input(1, &pcAudioIn2);
 
@@ -948,7 +948,7 @@ void crosspad_app_init()
     {
         auto* settings = crosspad::CrosspadSettings::getInstance();
         const uint32_t mixerSr     = pcAudio.isOpen() ? pcAudio.getSampleRate()
-                                     : (settings ? settings->audioEngine.sampleRate : 48000);
+                                     : (settings ? settings->audioEngine.sampleRate : 44100);
         const uint32_t mixerFrames = settings ? settings->audioEngine.frameCount : 256;
         s_mixerEngine.setup(mixerFrames < 128 ? 128 : mixerFrames, mixerSr, 2);
     }
@@ -1000,7 +1000,7 @@ void crosspad_app_init()
         auto* settings = crosspad::CrosspadSettings::getInstance();
         crosspad::AudioModuleConfig cfg;
         cfg.sampleRate   = pcAudio.isOpen() ? pcAudio.getSampleRate()
-                          : (settings ? settings->audioEngine.sampleRate : 48000);
+                          : (settings ? settings->audioEngine.sampleRate : 44100);
         // PC: floor at 128 so the audio thread always generates enough per call
         // to keep RtAudio's async-callback ringbuffer fed. Below that we'd see
         // underrun-driven distortion. Embedded I2S keeps lower values OK because
@@ -1383,7 +1383,7 @@ void crosspad_app_init()
                     size_t vIdx = realIdx - inDevices.size();
                     auto sinks = s_virtualSinkManager->list();
                     if (vIdx < sinks.size()) {
-                        uint32_t rate = pcAudio.isOpen() ? pcAudio.getSampleRate() : 48000;
+                        uint32_t rate = pcAudio.isOpen() ? pcAudio.getSampleRate() : 44100;
                         auto& cap2 = (slot == 0) ? s_pulseCap1 : s_pulseCap2;
                         if (cap2.start(sinks[vIdx].captureDeviceName, rate, 256)) {
                             jp.setConnected(jid, true);
