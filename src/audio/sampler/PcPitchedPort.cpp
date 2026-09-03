@@ -10,6 +10,7 @@
 #include <crosspad/instrument/SampleBank.hpp>
 #include <crosspad/kit/KitInfo.hpp>
 #include <crosspad/kit/KitPathUtils.hpp>
+#include <crosspad/platform/PlatformServices.hpp>
 
 #include <chrono>
 #include <cstdio>
@@ -102,6 +103,7 @@ void install(crosspad::SampleBank* bank, const crosspad::KitInfo* kit) {
 
 crosspad::IAudioNode* pitched_port_init(uint32_t engineRate) {
     if (engineRate) s_engineRate = engineRate;
+    crosspad::getPlatformServices().setPitchedInstrument(&s_instrument);
     return &s_instrument;
 }
 
