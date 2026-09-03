@@ -23,7 +23,7 @@ TEST_CASE("AudioEngineSettings: validity checks", "[settings][audio]") {
 
 TEST_CASE("AudioEngineSettings: defaults", "[settings][audio]") {
     AudioEngineSettings s;
-    REQUIRE(s.sampleRate == 48000);
+    REQUIRE(s.sampleRate == 44100);
     REQUIRE(s.frameCount == 64);
     REQUIRE(AudioEngineSettings::isValidSampleRate(s.sampleRate));
     REQUIRE(AudioEngineSettings::isValidFrameCount(s.frameCount));
@@ -48,12 +48,12 @@ TEST_CASE("CrosspadSettings: audioEngine save/load round-trip", "[settings][audi
     REQUIRE(s->audioEngine.frameCount == 128);
 
     // Restore defaults
-    s->audioEngine.sampleRate = 48000;
+    s->audioEngine.sampleRate = 44100;
     s->audioEngine.frameCount = 64;
     s->saveTo(store);
 }
 
-TEST_CASE("CrosspadSettings: missing audioEngine keys → default 48000/64", "[settings][audio]") {
+TEST_CASE("CrosspadSettings: missing audioEngine keys → default 44100/64", "[settings][audio]") {
     test::MemoryKVStore store;
     store.init();   // empty store
 
@@ -62,7 +62,7 @@ TEST_CASE("CrosspadSettings: missing audioEngine keys → default 48000/64", "[s
     s->audioEngine.frameCount = 99;     // bogus
 
     s->loadFrom(store);
-    REQUIRE(s->audioEngine.sampleRate == 48000);
+    REQUIRE(s->audioEngine.sampleRate == 44100);
     REQUIRE(s->audioEngine.frameCount == 64);
 }
 

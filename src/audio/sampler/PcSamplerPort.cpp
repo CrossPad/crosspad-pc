@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: MIT
 
 #include "PcSamplerPort.hpp"
+#include "PcPitchedPort.hpp"
 #include "PcSampleNode.hpp"
 #include "SampleStreamPlayer.hpp"
 #include "SampleStreamEngine.hpp"
@@ -10,6 +11,7 @@
 
 #include <crosspad/event/EventData.hpp>
 #include <crosspad/event/IEventBus.hpp>
+#include <crosspad/instrument/PitchedInstrument.hpp>
 #include <crosspad/kit/IKitManager.hpp>
 #include <crosspad/kit/KitInfo.hpp>
 #include <crosspad/kit/KitPathUtils.hpp>
@@ -127,6 +129,18 @@ void platform_reloadPad(uint8_t padIdx) {
     if (!kit || padIdx >= KIT_PADS) return;
 
     SampleStreamPlayer_WipeOut(padIdx);
+
+    if (kit->engine == crosspad::KitEngine::Pitched) {
+        // The WipeOut above is all the streaming engine has to do for a pitched
+        // kit. The whole bank is built once, on pad 0; the other fifteen pads
+        // carry no per-engine state (their volume/pan come from the bank swap).
+        if (padIdx == 0) pitched_port_load(*kit);
+        return;
+    }
+
+    // Back on a sampler kit: the pitched bank goes first, so the two engines
+    // never hold their sample memory at once.
+    if (padIdx == 0 && pitched_port_active()) pitched_port_unload();
 
     auto& pad = kit->pads[padIdx];
     int ok = 0;
@@ -273,6 +287,30 @@ void  platform_wf_free(void* ptr) { free(ptr); }
 void onSamplePlaybackEvent(const void* data, crosspad::EventType, void*) {
     auto* d = static_cast<const crosspad::SamplePlaybackData*>(data);
     if (d->source == crosspad::EventSource::SamplePlayback) return;   // engine feedback
+
+    // Pitched kits: the note field carries the pad index (SamplerPadLogic posts
+    // the pad), and the kit's pad_notes map decides what it sounds. The
+    // streaming engine is not involved and need not be ready.
+    auto* kit = crosspad::getKitManager() ? crosspad::getKitManager()->getCurrentKit() : nullptr;
+    if (kit && kit->engine == crosspad::KitEngine::Pitched) {
+        // No bank: the load failed, or a failed load dropped the previous one.
+        // Falling through to the streaming engine is not a fallback —
+        // reloadPad() wiped every slot for this kit and put nothing back, so it
+        // holds whatever an earlier kit left where the wipe did not reach, keyed
+        // by a note map belonging to neither kit. Silence is the honest answer.
+        if (!pitched_port_active()) return;
+        const uint8_t pad = d->note;
+        if (pad >= KIT_PADS) return;
+        auto& inst = pitched_port_instrument();
+        const uint8_t note = kit->instrument.noteForPad(pad);
+        if (d->isOn) {
+            inst.noteOn(note, d->velocity ? d->velocity : 1, pad);
+        } else {
+            inst.noteOff(note);
+        }
+        return;
+    }
+
     if (!SampleStreamPlayer_IsReady()) return;
 
     if (d->isOn) {

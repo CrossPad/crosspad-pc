@@ -299,6 +299,7 @@ if(USE_AUDIO)
         src/audio/sampler/SampleStreamPlayer.cpp
         src/audio/sampler/PcSampleNode.cpp
         src/audio/sampler/PcSamplerPort.cpp
+        src/audio/sampler/PcPitchedPort.cpp
     )
 
     if(USE_VIRTUAL_AUDIO)

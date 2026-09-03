@@ -35,6 +35,19 @@ set(CORE_TEST_SOURCES
 
     # MIDI input routing (for e2e tests)
     ${PROJECT_SOURCE_DIR}/lib/crosspad-core/src/midi/MidiInputHandler.cpp
+
+    # Pitched instrument: DSP seam + engine + kit loader (test_PitchedEngine)
+    ${PROJECT_SOURCE_DIR}/lib/crosspad-core/src/dsp/FftFactory.cpp
+    ${PROJECT_SOURCE_DIR}/lib/crosspad-core/src/dsp/PortableFft.cpp
+    ${PROJECT_SOURCE_DIR}/lib/crosspad-core/src/dsp/PitchDetector.cpp
+    ${PROJECT_SOURCE_DIR}/lib/crosspad-core/src/dsp/FftResampler.cpp
+    ${PROJECT_SOURCE_DIR}/lib/crosspad-core/src/instrument/WavPcm.cpp
+    ${PROJECT_SOURCE_DIR}/lib/crosspad-core/src/instrument/SampleBank.cpp
+    ${PROJECT_SOURCE_DIR}/lib/crosspad-core/src/instrument/PitchedInstrument.cpp
+    ${PROJECT_SOURCE_DIR}/lib/crosspad-core/src/instrument/PitchedKitLoader.cpp
+    # PitchedKitLoader falls back to resolveKitSamplePath() when the env
+    # supplies no resolver.
+    ${PROJECT_SOURCE_DIR}/lib/crosspad-core/src/kit/KitPathUtils.cpp
 )
 
 # ── Audio pipeline sources (Tier 2 & 3 tests) ──
@@ -62,6 +75,7 @@ set(AUDIO_TEST_FILES
     audio/test_AudioMixerEngine.cpp
     audio/test_PcAudioModule.cpp
     audio/test_MixerGoldens.cpp
+    audio/test_PitchedEngine.cpp
 )
 
 # ── Native PipeWire backend tests (only when CMake detected usable headers) ──

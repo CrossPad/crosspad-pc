@@ -8,6 +8,7 @@
  * Only supports PCM int16 stereo. Header-only.
  */
 
+#include <cmath>
 #include <cstdint>
 #include <cstdio>
 #include <cstring>

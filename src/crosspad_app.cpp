@@ -62,6 +62,7 @@
 #include "audio/PcAudio.hpp"
 #include "audio/PcAudioInput.hpp"
 #include "audio/PcAudioModule.hpp"
+#include "audio/sampler/PcPitchedPort.hpp"
 #include "audio/sampler/PcSamplerPort.hpp"
 #ifdef USE_VIRTUAL_AUDIO
 #include "audio/virtual/IVirtualSinkManager.hpp"
@@ -132,6 +133,9 @@ static crosspad_pc::PcAudioModule s_audioModule;
 static crosspad::SynthEngineNode s_synthNode;
 // Owned by the sampler port; null when the engine failed to start.
 static crosspad::IAudioNode* s_samplerNode = nullptr;
+// The second sample engine: one PitchedInstrument, silent until a kit whose
+// kit.json says "engine": "pitched" is loaded.
+static crosspad::IAudioNode* s_pitchedNode = nullptr;
 
 /// Sink each output wants to be pinned to, applied once audio is flowing.
 /// Empty means "wherever the sound server puts it".
@@ -945,10 +949,13 @@ void crosspad_app_init()
 
 #ifdef HAS_MIXER
     // Mixer engine setup: 2 outputs (OUT1, OUT2) at the active SR/frameCount.
+    // mixerSr also feeds the pitched engine below — both have to render at
+    // the same rate the mixer was set up with.
+    uint32_t mixerSr = 44100;
     {
         auto* settings = crosspad::CrosspadSettings::getInstance();
-        const uint32_t mixerSr     = pcAudio.isOpen() ? pcAudio.getSampleRate()
-                                     : (settings ? settings->audioEngine.sampleRate : 44100);
+        mixerSr = pcAudio.isOpen() ? pcAudio.getSampleRate()
+                 : (settings ? settings->audioEngine.sampleRate : 44100);
         const uint32_t mixerFrames = settings ? settings->audioEngine.frameCount : 256;
         s_mixerEngine.setup(mixerFrames < 128 ? 128 : mixerFrames, mixerSr, 2);
     }
@@ -970,6 +977,16 @@ void crosspad_app_init()
     if (s_samplerNode) {
         s_mixerEngine.addChannel(s_samplerNode, "Sampler");
         s_mixerEngine.setRouteEnabled(static_cast<MixerInput>(3), MixerOutput::OUT1, true);
+    }
+
+    // The pitched engine joins as a fifth channel, on the same terms as the
+    // sampler: registered before loadState() so a saved routing for it is
+    // applied rather than dropped — loadState only patches slots that
+    // already exist.
+    s_pitchedNode = crosspad_pc::pitched_port_init(mixerSr);
+    if (s_pitchedNode) {
+        s_mixerEngine.addChannel(s_pitchedNode, "Pitched");
+        s_mixerEngine.setRouteEnabled(static_cast<MixerInput>(4), MixerOutput::OUT1, true);
     }
 
     // Load mixer state AFTER channel slots exist so saved per-channel routing
@@ -1027,6 +1044,8 @@ void crosspad_app_init()
         // node chain; it is brought up here because there is no addChannel().
         s_samplerNode = crosspad_pc::sampler_port_init();
         if (s_samplerNode) s_audioModule.addNode(s_samplerNode);
+        s_pitchedNode = crosspad_pc::pitched_port_init(cfg.sampleRate);
+        if (s_pitchedNode) s_audioModule.addNode(s_pitchedNode);
 #endif
         crosspad::getPlatformServices().setAudioModule(&s_audioModule);
         s_audioModule.start();
