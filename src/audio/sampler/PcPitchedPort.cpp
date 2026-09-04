@@ -24,6 +24,7 @@ namespace {
 
 crosspad::PitchedInstrument s_instrument;
 crosspad::SampleBank*       s_bank = nullptr;
+crosspad::PitchedLoadReport s_report;
 uint32_t                    s_engineRate = 44100;
 
 // Desktop memory is plain malloc — there is no arena to hand back to another
@@ -58,6 +59,10 @@ void gateYield() {
 }
 
 constexpr uint32_t kGateSpins = 50;
+
+/// Mirrors the board's pitchedMaxBankBytes(): its engine arena less the
+/// resampler's scratch reserve, about a minute of mono 16-bit at 44.1 kHz.
+constexpr size_t kMaxBankBytes = 5 * 1024 * 1024;
 
 crosspad::IFft& fft() {
     crosspad::FftMemory mem;
@@ -116,11 +121,16 @@ bool pitched_port_load(const crosspad::KitInfo& kit) {
     env.engineRate  = s_engineRate;
     env.resolvePath = resolvePath;
     env.log         = pitchedLog;
-    env.maxBankBytes = 0;   // desktop heap; the board's arena budget has no analogue
+    // The desktop heap would take any kit, but then a kit the board has to cut
+    // short would load whole here and the truncation path would only ever be
+    // seen on hardware. The board's engine arena is ~5 MB of PSRAM minus the
+    // resampler's transient, so the simulator stops where the board stops.
+    env.maxBankBytes = kMaxBankBytes;
 
+    s_report = crosspad::PitchedLoadReport{};
     crosspad::SampleBank* bank = nullptr;
     char err[128] = {0};
-    if (!crosspad::pitchedBuildBank(kit, env, fft(), bank, err, sizeof(err))) {
+    if (!crosspad::pitchedBuildBank(kit, env, fft(), bank, err, sizeof(err), &s_report)) {
         std::printf("[pitched] kit '%s' failed to load: %s\n", kit.name.c_str(), err);
         // Nothing was swapped in, so the previous kit's bank is still installed
         // — and the caller has already moved on to this kit's pad_notes. A
@@ -148,5 +158,7 @@ void pitched_port_unload() {
 }
 
 bool pitched_port_active() { return s_bank != nullptr; }
+
+const crosspad::PitchedLoadReport& pitched_port_last_report() { return s_report; }
 
 } // namespace crosspad_pc

@@ -237,6 +237,14 @@ void platform_onKitLoadFinished(bool success) {
     std::printf("[sampler] kit ready: '%s' — %d pads, %d layers in the engine%s\n",
                 kit ? kit->name.c_str() : "?", s_padsLoaded, s_layersLoaded,
                 s_layersFailed ? " (some layers refused, see above)" : "");
+    // A pitched zone that did not fit the bank budget still plays; how much of
+    // it was dropped is only visible here.
+    if (pitched_port_active()) {
+        const auto& report = pitched_port_last_report();
+        if (report.truncatedZones > 0 && report.warning[0]) {
+            crosspad_gui::statusbar_show_loader_message("Warning", report.warning, false);
+        }
+    }
     platform_topUpWaveformCache();
 }
 

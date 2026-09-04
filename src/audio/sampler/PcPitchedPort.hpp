@@ -19,6 +19,8 @@
 
 #include <cstdint>
 
+#include <crosspad/instrument/PitchedKitLoader.hpp>
+
 namespace crosspad { class IAudioNode; class PitchedInstrument; struct KitInfo; }
 
 namespace crosspad_pc {
@@ -40,6 +42,11 @@ void pitched_port_unload();
 
 /// True while a bank is installed.
 bool pitched_port_active();
+
+/// What the last pitched_port_load() did beyond succeeding — zone count, and
+/// what the bank budget cut short. Zeroed at the start of every load, so a
+/// caller reading it after a load reads that load.
+const crosspad::PitchedLoadReport& pitched_port_last_report();
 
 /// The engine itself, for the pad dispatch. Valid after pitched_port_init().
 crosspad::PitchedInstrument& pitched_port_instrument();
