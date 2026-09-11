@@ -56,6 +56,10 @@
 #include <crosspad-sampler/waveform/waveform_loader.hpp>
 #define REMOTE_HAS_WAVE 1
 #endif
+#if __has_include("audio/sampler/SampleStreamPlayer.hpp")
+#include "audio/sampler/SampleStreamPlayer.hpp"
+#define REMOTE_HAS_SMPL 1
+#endif
 #include "crosspad-gui/components/power_gesture.h"
 #include "crosspad-gui/components/status_bar.h"
 #include "crosspad-gui/components/app_orchestrator.h"   // AppOrchestrator — app_list
@@ -1032,6 +1036,23 @@ static std::string handle_app_list() {
     return out;
 }
 
+// Sample engine peak + free WAV slots and load — the sim's parallel to the
+// board's SMPL_PEAK (shared streaming SampleStreamPlayer).
+static std::string handle_smpl_peak() {
+#ifdef REMOTE_HAS_SMPL
+    return "{" + json_bool("ok", true) + "," +
+           json_float("peak", SampleStreamPly_GetPeak()) + "," +
+           json_int("free", SampleStreamPlayer_GetFreeWavCnt()) + "," +
+           json_int("active_voices", (int)SampleStreamPly_GetActiveVoices()) + "," +
+           json_int("underrun", (int)SampleStreamPly_GetUnderrunCount()) + "," +
+           json_int("dropped_notes", (int)SampleStreamPly_GetDroppedNoteCount()) + "," +
+           json_float("load_main", SampleStreamPly_GetLoadMain()) + "}";
+#else
+    return "{" + json_bool("ok", false) + "," +
+           json_string("error", "sampler not built") + "}";
+#endif
+}
+
 static std::string handle_kit_list() {
     auto* mgr = crosspad::getKitManager();
     if (!mgr) {
@@ -1172,6 +1193,9 @@ static std::string dispatch_command(const std::string& json) {
     }
     if (cmd == "app_list") {
         return handle_app_list();
+    }
+    if (cmd == "smpl_peak") {
+        return handle_smpl_peak();
     }
     if (cmd == "citest_run") {
         return handle_citest_run(json);

@@ -572,6 +572,24 @@ def sc_apps(sim):
           r.get("running"))
 
 
+def sc_smpl(sim):
+    """The sample engine's peak / free slots / load over smpl_peak.
+
+    Parity with the board's SMPL_PEAK. Peak and load are non-negative, the
+    counters non-negative; idle (no kit) is a valid answer.
+    """
+    print("\n[smpl] smpl_peak parity")
+    r = sim.cmd(cmd="smpl_peak")
+    check(r.get("ok"), "smpl_peak ok", r.get("error"))
+    check(r.get("peak", -1) >= 0, "peak non-negative", r.get("peak"))
+    check(r.get("free", -1) >= 0, "free WAV slots non-negative", r.get("free"))
+    check(all(r.get(k, -1) >= 0 for k in
+              ("active_voices", "underrun", "dropped_notes")),
+          "engine counters non-negative",
+          {k: r.get(k) for k in ("active_voices", "underrun", "dropped_notes")})
+    check(r.get("load_main", -1) >= 0, "load non-negative", r.get("load_main"))
+
+
 if __name__ == "__main__":
     which = sys.argv[1] if len(sys.argv) > 1 else "all"
     sim = Sim()
@@ -601,6 +619,8 @@ if __name__ == "__main__":
         sc_wave(sim)
     if which in ("all", "apps"):
         sc_apps(sim)
+    if which in ("all", "smpl"):
+        sc_smpl(sim)
 
     print("\nRESULT: %s%s" % ("PASS" if not fails else "FAIL",
                               "" if not fails else " — " + "; ".join(fails)))

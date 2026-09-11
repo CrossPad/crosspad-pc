@@ -41,6 +41,8 @@
  *                             (parity with the board's WAVE_STATUS verb)
  *   app_list                — registered apps + the running one
  *                             (parity with the board's APP_LIST verb)
+ *   smpl_peak               — sample engine peak, free WAV slots, load
+ *                             (parity with the board's SMPL_PEAK verb)
  *   ping                    — health check
  */
 
