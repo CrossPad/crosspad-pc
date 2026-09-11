@@ -72,9 +72,6 @@
 #include "audio/sampler/PcSamplerPort.hpp"
 #ifdef USE_VIRTUAL_AUDIO
 #include "audio/virtual/IVirtualSinkManager.hpp"
-#ifdef __linux__
-#include "audio/virtual/PulseMonitorCapture.hpp"
-#endif
 #ifdef USE_PIPEWIRE
 #include "audio/pipewire/PwContext.hpp"
 #include "audio/pipewire/PwDefaultSinkGuard.hpp"
@@ -161,14 +158,9 @@ static crosspad::SynthEngineNode s_mixerSynthNode;
 #ifdef USE_VIRTUAL_AUDIO
 static std::unique_ptr<crosspad_pc::IVirtualSinkManager> s_virtualSinkManager;
 static std::atomic<bool> s_shutdownRan{false};
-#ifdef __linux__
-// Two dedicated libpulse-simple capturers for the virtual sink monitors —
-// keeps CrossPad decoupled from RtAudio's PULSE quirks (it aggregates
-// sinks-per-card and hides per-sink sources). When active these are what
-// gets registered with PlatformServices instead of PcAudioInput.
-static crosspad_pc::PulseMonitorCapture s_pulseCap1;
-static crosspad_pc::PulseMonitorCapture s_pulseCap2;
-#endif
+// The virtual-sink monitor capturers now live in audio_platform (Linux-only
+// PulseMonitorCapture), reached through startVirtualCapture / virtualCaptureOpen
+// so this file carries no Linux capture type.
 #ifdef USE_PIPEWIRE
 // Native PipeWire session orchestration: default-sink takeover guard and the
 // OUT1-tap virtual source ("CrossPad Out"). Only meaningful when the native
@@ -539,12 +531,10 @@ static bool appAudioInSelectIdx(int slot, int uiIndex, std::string& outLabel) {
     std::lock_guard<std::mutex> lk(s_audioSelMutex);
     auto& input = (slot == 0) ? pcAudioIn1 : pcAudioIn2;
     // Tear down whichever capturer was bound to this slot — saves juggling
-    // state when switching between physical mics and virtual sinks.
+    // state when switching between physical mics and virtual sinks. Both the
+    // RtAudio input and the (platform-owned) virtual capturer get stopped.
     input.end();
-#if defined(USE_VIRTUAL_AUDIO) && defined(__linux__)
-    auto& cap = (slot == 0) ? s_pulseCap1 : s_pulseCap2;
-    cap.stop();
-#endif
+    crosspad_pc::audio_platform::stopVirtualCapture(slot);
     if (uiIndex <= 0) {
         outLabel.clear();
         pc_platform_set_audio_input(slot, nullptr);
@@ -563,17 +553,16 @@ static bool appAudioInSelectIdx(int slot, int uiIndex, std::string& outLabel) {
         outLabel = sel.label;   // store the shown label, not the raw device id
         if (slot == 0) s_devicePrefs.audioIn1 = sel.label; else s_devicePrefs.audioIn2 = sel.label;
     }
-#if defined(USE_VIRTUAL_AUDIO) && defined(__linux__)
     else if (sel.isVirtual) {
         uint32_t rate = pcAudio.isOpen() ? pcAudio.getSampleRate() : 44100;
-        if (cap.start(sel.captureDeviceName, rate, 256)) {
+        if (auto* cap = crosspad_pc::audio_platform::startVirtualCapture(
+                slot, sel.captureDeviceName, rate)) {
             connected = true;
             outLabel = sel.label;
-            pc_platform_set_audio_input(slot, &cap);
+            pc_platform_set_audio_input(slot, cap);
             if (slot == 0) s_devicePrefs.audioIn1 = sel.label; else s_devicePrefs.audioIn2 = sel.label;
         }
     }
-#endif
     saveDevicePrefs();
     return connected;
 }
@@ -1016,40 +1005,46 @@ void crosspad_app_init()
 #endif
 
     {
-#if defined(USE_VIRTUAL_AUDIO) && defined(__linux__)
+#if defined(USE_VIRTUAL_AUDIO)
         // Prefer virtual sinks over saved physical inputs — the whole point of
         // the feature is that CrossPad becomes a system-wide mixer by default.
-        // We bind directly via libpulse-simple; see PulseMonitorCapture.
+        // Off-Linux the manager is a no-op (empty list, null input) and the
+        // monitor capturer returns nullptr, so both slots fall through to
+        // RtAudio without a platform #ifdef here.
         bool in1Virtual = false, in2Virtual = false;
         if (s_virtualSinkManager) {
             auto sinks = s_virtualSinkManager->list();
             // Native PW backend exposes each sink directly as an IAudioInput —
             // no libpulse monitor round-trip. input() returns nullptr for the
-            // pactl/RtAudio fallback backend, in which case we use the Pulse
-            // capturer path below. (input() is on the base interface.)
+            // pactl/RtAudio fallback backend, in which case we use the platform
+            // monitor capturer below. (input() is on the base interface.)
             crosspad::IAudioInput* nativeIn1 = s_virtualSinkManager->input(0);
             crosspad::IAudioInput* nativeIn2 = s_virtualSinkManager->input(1);
             if (nativeIn1) {
                 printf("[Audio] IN1 connected to native virtual sink (crosspad_vin1)\n");
                 pc_platform_set_audio_input(0, nativeIn1);
                 in1Virtual = true;
-            } else if (sinks.size() >= 1 &&
-                       s_pulseCap1.start(sinks[0].captureDeviceName, outSampleRate)) {
-                printf("[Audio] IN1 connected to virtual sink: %s\n",
-                       sinks[0].displayName.c_str());
-                pc_platform_set_audio_input(0, &s_pulseCap1);
-                in1Virtual = true;
+            } else if (sinks.size() >= 1) {
+                if (auto* cap = crosspad_pc::audio_platform::startVirtualCapture(
+                        0, sinks[0].captureDeviceName, outSampleRate)) {
+                    printf("[Audio] IN1 connected to virtual sink: %s\n",
+                           sinks[0].displayName.c_str());
+                    pc_platform_set_audio_input(0, cap);
+                    in1Virtual = true;
+                }
             }
             if (nativeIn2) {
                 printf("[Audio] IN2 connected to native virtual sink (crosspad_vin2)\n");
                 pc_platform_set_audio_input(1, nativeIn2);
                 in2Virtual = true;
-            } else if (sinks.size() >= 2 &&
-                       s_pulseCap2.start(sinks[1].captureDeviceName, outSampleRate)) {
-                printf("[Audio] IN2 connected to virtual sink: %s\n",
-                       sinks[1].displayName.c_str());
-                pc_platform_set_audio_input(1, &s_pulseCap2);
-                in2Virtual = true;
+            } else if (sinks.size() >= 2) {
+                if (auto* cap = crosspad_pc::audio_platform::startVirtualCapture(
+                        1, sinks[1].captureDeviceName, outSampleRate)) {
+                    printf("[Audio] IN2 connected to virtual sink: %s\n",
+                           sinks[1].displayName.c_str());
+                    pc_platform_set_audio_input(1, cap);
+                    in2Virtual = true;
+                }
             }
         }
         // Block RtAudio fallback for slots that are already serviced by the
@@ -1307,20 +1302,20 @@ void crosspad_app_init()
         jp.setDeviceName(EmuJackPanel::AUDIO_OUT2, pcAudio2.getCurrentDeviceName());
         jp.setConnected(EmuJackPanel::AUDIO_OUT2, pcAudio2.isOpen());
 
-        // Audio IN1/IN2 — current device. On Linux with active virtual sinks
-        // the input slot is served by PulseMonitorCapture, not PcAudioInput,
-        // so we report the virtual sink's display name instead of the empty
-        // RtAudio device name.
+        // Audio IN1/IN2 — current device. When a virtual sink serves the slot
+        // the input is the platform monitor capturer, not PcAudioInput, so we
+        // report the virtual sink's display name instead of the empty RtAudio
+        // device name. virtualCaptureOpen() is false off-Linux.
         std::string in1Name = pcAudioIn1.getCurrentDeviceName();
         std::string in2Name = pcAudioIn2.getCurrentDeviceName();
         bool in1Connected = pcAudioIn1.isOpen();
         bool in2Connected = pcAudioIn2.isOpen();
-#if defined(USE_VIRTUAL_AUDIO) && defined(__linux__)
-        if (s_pulseCap1.isOpen() && s_virtualSinkManager) {
+#if defined(USE_VIRTUAL_AUDIO)
+        if (crosspad_pc::audio_platform::virtualCaptureOpen(0) && s_virtualSinkManager) {
             auto sinks = s_virtualSinkManager->list();
             if (sinks.size() >= 1) { in1Name = sinks[0].displayName; in1Connected = true; }
         }
-        if (s_pulseCap2.isOpen() && s_virtualSinkManager) {
+        if (crosspad_pc::audio_platform::virtualCaptureOpen(1) && s_virtualSinkManager) {
             auto sinks = s_virtualSinkManager->list();
             if (sinks.size() >= 2) { in2Name = sinks[1].displayName; in2Connected = true; }
         }
@@ -1783,12 +1778,9 @@ void crosspad_app_shutdown()
         s_virtualSinkManager->teardown();
     }
 
-#ifdef __linux__
     // Non-blocking: the process is about to _Exit(0), so abandoning the
-    // capture threads is preferable to hanging in a join().
-    s_pulseCap1.detachForShutdown();
-    s_pulseCap2.detachForShutdown();
-#endif
+    // capture threads is preferable to hanging in a join(). No-op off-Linux.
+    crosspad_pc::audio_platform::detachVirtualCaptureForShutdown();
     pcAudioIn1.end();
     pcAudioIn2.end();
 #ifdef USE_PIPEWIRE

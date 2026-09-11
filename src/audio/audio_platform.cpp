@@ -7,6 +7,9 @@
 #ifdef USE_PIPEWIRE
 #include "pipewire/PwSinkEnumerator.hpp"     // pwEnumerateSinks / pwEnumerateSources
 #endif
+#if defined(USE_VIRTUAL_AUDIO) && defined(__linux__)
+#include "virtual/PulseMonitorCapture.hpp"   // libpulse monitor capture (Linux)
+#endif
 
 #include <sstream>
 
@@ -59,6 +62,43 @@ std::vector<SinkCandidate> outputSinkCandidates() {
 #endif
     return out;
 }
+
+/* ── Virtual-sink monitor capture ─────────────────────────────────────── */
+#if defined(USE_VIRTUAL_AUDIO) && defined(__linux__)
+// Two dedicated libpulse-simple capturers for the virtual sink monitors —
+// decoupled from RtAudio's PULSE quirks (it aggregates sinks-per-card and
+// hides per-sink sources). When active these register with PlatformServices
+// instead of PcAudioInput.
+static PulseMonitorCapture s_cap[2];
+
+crosspad::IAudioInput* startVirtualCapture(int slot, const std::string& captureName,
+                                           uint32_t sampleRate) {
+    if (slot < 0 || slot > 1) return nullptr;
+    if (s_cap[slot].start(captureName, sampleRate)) return &s_cap[slot];
+    return nullptr;
+}
+void stopVirtualCapture(int slot) {
+    if (slot < 0 || slot > 1) return;
+    s_cap[slot].stop();
+}
+crosspad::IAudioInput* virtualCaptureInput(int slot) {
+    if (slot < 0 || slot > 1) return nullptr;
+    return s_cap[slot].isOpen() ? &s_cap[slot] : nullptr;
+}
+bool virtualCaptureOpen(int slot) {
+    return slot >= 0 && slot <= 1 && s_cap[slot].isOpen();
+}
+void detachVirtualCaptureForShutdown() {
+    s_cap[0].detachForShutdown();
+    s_cap[1].detachForShutdown();
+}
+#else
+crosspad::IAudioInput* startVirtualCapture(int, const std::string&, uint32_t) { return nullptr; }
+void stopVirtualCapture(int) {}
+crosspad::IAudioInput* virtualCaptureInput(int) { return nullptr; }
+bool virtualCaptureOpen(int) { return false; }
+void detachVirtualCaptureForShutdown() {}
+#endif
 
 } // namespace audio_platform
 } // namespace crosspad_pc
