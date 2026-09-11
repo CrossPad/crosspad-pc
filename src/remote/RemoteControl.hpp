@@ -37,6 +37,8 @@
  *                             (parity with the board's MIX_LVL CDC verb)
  *   pitched_status          — pitched engine: zones/roots, voices, steals
  *                             (parity with the board's PITCHED_STATUS verb)
+ *   wave_status             — waveform loader counters (requested/loaded/…)
+ *                             (parity with the board's WAVE_STATUS verb)
  *   ping                    — health check
  */
 

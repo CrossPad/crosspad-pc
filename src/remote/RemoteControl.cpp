@@ -52,6 +52,10 @@
 #include <crosspad/instrument/SampleBank.hpp>
 #define REMOTE_HAS_PITCHED 1
 #endif
+#if __has_include(<crosspad-sampler/waveform/waveform_loader.hpp>)
+#include <crosspad-sampler/waveform/waveform_loader.hpp>
+#define REMOTE_HAS_WAVE 1
+#endif
 #include "crosspad-gui/components/power_gesture.h"
 #include "crosspad-gui/components/status_bar.h"
 
@@ -985,6 +989,29 @@ static std::string handle_pitched_status() {
 #endif
 }
 
+// Waveform-cache loader counters — the sim's parallel to the board's
+// WAVE_STATUS (shared crosspad-sampler waveform loader): how many waveform
+// reads were requested, cached, retried, dropped or failed.
+static std::string handle_wave_status() {
+#ifdef REMOTE_HAS_WAVE
+    crosspad_sampler::WaveformLoaderStats st;
+    crosspad_sampler::waveform_loader_get_stats(&st);
+    return "{" + json_bool("ok", true) + "," +
+           json_bool("running", crosspad_sampler::waveform_loader_is_running()) + "," +
+           json_int("requested", (int)st.requested) + "," +
+           json_int("loaded", (int)st.loaded) + "," +
+           json_int("queued", (int)st.queued) + "," +
+           json_int("retried", (int)st.retried) + "," +
+           json_int("dropped", (int)st.dropped) + "," +
+           json_int("failed_info", (int)st.failedInfo) + "," +
+           json_int("failed_read", (int)st.failedRead) + "," +
+           json_int("alloc_fail", (int)st.allocFail) + "}";
+#else
+    return "{" + json_bool("ok", false) + "," +
+           json_string("error", "sampler not built") + "}";
+#endif
+}
+
 static std::string handle_kit_list() {
     auto* mgr = crosspad::getKitManager();
     if (!mgr) {
@@ -1119,6 +1146,9 @@ static std::string dispatch_command(const std::string& json) {
     }
     if (cmd == "pitched_status") {
         return handle_pitched_status();
+    }
+    if (cmd == "wave_status") {
+        return handle_wave_status();
     }
     if (cmd == "citest_run") {
         return handle_citest_run(json);

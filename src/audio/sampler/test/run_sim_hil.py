@@ -538,6 +538,25 @@ def sc_pitched(sim):
           "voice counts present", (r.get("active_voices"), r.get("sounding_voices")))
 
 
+def sc_wave(sim):
+    """The waveform loader's counters over wave_status.
+
+    Parity with the board's WAVE_STATUS. Counters are non-negative and
+    consistent (loaded never exceeds requested); running is a bool. Zero at the
+    launcher (loader not started) is a valid answer.
+    """
+    print("\n[wave] wave_status parity")
+    r = sim.cmd(cmd="wave_status")
+    check(r.get("ok"), "wave_status ok", r.get("error"))
+    check(isinstance(r.get("running"), bool), "running is a bool", r.get("running"))
+    keys = ("requested", "loaded", "queued", "retried", "dropped",
+            "failed_info", "failed_read", "alloc_fail")
+    check(all(r.get(k, -1) >= 0 for k in keys), "all counters non-negative",
+          {k: r.get(k) for k in keys})
+    check(r.get("loaded", 0) <= r.get("requested", 0),
+          "loaded never exceeds requested", (r.get("loaded"), r.get("requested")))
+
+
 if __name__ == "__main__":
     which = sys.argv[1] if len(sys.argv) > 1 else "all"
     sim = Sim()
@@ -563,6 +582,8 @@ if __name__ == "__main__":
         sc_mixer(sim)
     if which in ("all", "pitched"):
         sc_pitched(sim)
+    if which in ("all", "wave"):
+        sc_wave(sim)
 
     print("\nRESULT: %s%s" % ("PASS" if not fails else "FAIL",
                               "" if not fails else " — " + "; ".join(fails)))
