@@ -67,6 +67,7 @@
 #include "audio/PcAudio.hpp"
 #include "audio/PcAudioInput.hpp"
 #include "audio/PcAudioModule.hpp"
+#include "audio/audio_platform.hpp"
 #include "audio/sampler/PcPitchedPort.hpp"
 #include "audio/sampler/PcSamplerPort.hpp"
 #ifdef USE_VIRTUAL_AUDIO
@@ -331,11 +332,9 @@ static bool isLoopbackRiskDevice(const std::string& name) {
 }
 
 static bool loopGuardActive() {
-#if defined(USE_PIPEWIRE)
-    return s_devicePrefs.pwTakeoverDefault;
-#else
-    return false;
-#endif
+    // The feedback guard only matters where the build can take over the system
+    // default sink (PipeWire); the platform layer answers that without a #ifdef.
+    return crosspad_pc::audio_platform::supportsPwTakeover() && s_devicePrefs.pwTakeoverDefault;
 }
 
 /// One selectable entry of the OUT1/OUT2 dropdowns.
@@ -358,11 +357,12 @@ static std::vector<OutUiEntry> buildOutDeviceUiEntries() {
         if (guard && isLoopbackRiskDevice(d.name)) continue;
         entries.push_back({d.name, d.rtAudioId, {}});
     }
-#if defined(USE_VIRTUAL_AUDIO) && defined(__linux__)
-    // Add only PulseAudio sinks that RtAudio's ALSA backend missed — typically
-    // the motherboard analog jack and the active HDMI display. Token-overlap
-    // dedupe on long, hardware-identifying tokens only; generic words would
-    // falsely flag e.g. the Pro Audio sink as a duplicate.
+    // Add sound-server sinks RtAudio's backend missed — typically the
+    // motherboard analog jack and the active HDMI display. The platform layer
+    // supplies the candidate list (empty off-Linux / when virtual audio is
+    // off); the overlap dedupe below is portable string work. Token-overlap on
+    // long, hardware-identifying tokens only; generic words would falsely flag
+    // e.g. the Pro Audio sink as a duplicate.
     static const std::vector<std::string> kStopWords = {
         "Audio", "HD-Audio", "Generic", "Output", "Stereo", "Default",
         "Pro", "Sound", "Server", "Pulse", "PulseAudio", "ALSA",
@@ -383,25 +383,10 @@ static std::vector<OutUiEntry> buildOutDeviceUiEntries() {
         }
         return false;
     };
-    // Sink list: prefer the native PipeWire registry (node.description is
-    // always present — no locale-fragile pactl parsing, no raw
-    // "alsa_output.pci-..." labels when a description lookup misses).
-    // Fall back to the pactl parser when the daemon is unreachable.
-    struct SinkOption { std::string name, description; };
-    std::vector<SinkOption> sinks;
-#if defined(USE_PIPEWIRE)
-    for (auto& s : crosspad_pc::pwEnumerateSinks())
-        sinks.push_back({s.name, s.description});
-#endif
-    if (sinks.empty()) {
-        for (auto& s : crosspad_pc::enumeratePulseSinks())
-            sinks.push_back({s.name, s.description});
-    }
-    for (auto& s : sinks) {
+    for (auto& s : crosspad_pc::audio_platform::outputSinkCandidates()) {
         if (!overlapsRtAudio(s.description))
             entries.push_back({s.description, 0, s.name});
     }
-#endif
     // Stable, enumeration-order-independent ordering. RtAudio does not
     // guarantee the same device order between two enumerations, so without
     // this a rebuild between showing the dropdown and clicking it (the UI
@@ -449,28 +434,21 @@ static std::mutex s_audioSelMutex;
 static std::vector<InUiEntry> buildInDeviceUiEntries() {
     std::vector<InUiEntry> entries;
     auto inDevices = enumerateAudioInputDevices();
-#if defined(USE_PIPEWIRE)
-    auto pwSources = crosspad_pc::pwEnumerateSources();
-    auto prettyName = [&](const std::string& raw) -> std::string {
-        std::istringstream tok(raw);
-        std::string w;
-        while (tok >> w) {
-            if (w.size() < 6) continue;
-            for (auto& s : pwSources)
-                if (s.description.find(w) != std::string::npos) return s.description;
-        }
-        return raw;
-    };
-#else
-    auto prettyName = [](const std::string& raw) { return raw; };
-#endif
+    // Relabel with PipeWire source descriptions where available; portable
+    // builds get the raw RtAudio names back. Labels line up with inDevices.
+    std::vector<std::string> rawNames;
+    rawNames.reserve(inDevices.size());
+    for (auto& d : inDevices) rawNames.push_back(d.name);
+    auto labels = crosspad_pc::audio_platform::prettyInputLabels(rawNames);
     std::set<std::string> seen;
-    for (auto& d : inDevices) {
-        std::string label = prettyName(d.name);
+    for (size_t i = 0; i < inDevices.size(); ++i) {
+        const std::string& label = labels[i];
         if (!seen.insert(label).second) continue;   // dedupe aliases of one card
-        entries.push_back({label, d.rtAudioId, {}, false});
+        entries.push_back({label, inDevices[i].rtAudioId, {}, false});
     }
-#if defined(USE_VIRTUAL_AUDIO) && defined(__linux__)
+#if defined(USE_VIRTUAL_AUDIO)
+    // CrossPad's own virtual sinks (system-wide mixer inputs). The manager is
+    // a no-op off-Linux, so list() is empty there and nothing is appended.
     if (s_virtualSinkManager) {
         for (auto& v : s_virtualSinkManager->list())
             entries.push_back({v.displayName, 0, v.captureDeviceName, true});
@@ -530,10 +508,11 @@ static bool appAudioOutSelectIdx(int slot, int uiIndex, std::string& outLabel) {
         if (slot == 0) { s_devicePrefs.audioOut1 = outLabel; s_devicePrefs.audioOut1Pa.clear(); }
         else           { s_devicePrefs.audioOut2 = outLabel; s_devicePrefs.audioOut2Pa.clear(); }
     }
-#if defined(USE_VIRTUAL_AUDIO) && defined(__linux__)
+#if defined(USE_VIRTUAL_AUDIO)
     else {
         // PA-only sink — open the RtAudio stream on the PulseAudio server
-        // device, then move the sink-input onto the chosen sink.
+        // device, then move the sink-input onto the chosen sink. The move is a
+        // portable stub off-Linux; on Mac/Win no such entry is offered anyway.
         if (!output.isOpen()) {
             for (auto& d : enumerateAudioOutputDevices()) {
                 if (d.name.find("PulseAudio") != std::string::npos) {

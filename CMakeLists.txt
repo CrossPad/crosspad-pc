@@ -288,6 +288,7 @@ endif()
 # Audio sources and libraries
 if(USE_AUDIO)
     list(APPEND MAIN_SOURCES src/audio/PcAudio.cpp src/audio/PcAudioInput.cpp src/audio/PcAudioModule.cpp)
+    list(APPEND MAIN_SOURCES src/audio/audio_platform.cpp)
     list(APPEND MAIN_LIBS rtaudio)
 
     # Streaming sample engine — the desktop stand-in for the board's sample
