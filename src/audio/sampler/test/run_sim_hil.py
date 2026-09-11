@@ -590,6 +590,25 @@ def sc_smpl(sim):
     check(r.get("load_main", -1) >= 0, "load non-negative", r.get("load_main"))
 
 
+def sc_led(sim):
+    """Pad LED state over led_state.
+
+    Parity with the board's LED_STATE. Brightness in 0..255, animating/coalesce
+    bools, exactly 16 pad colours each a 6-hex string.
+    """
+    print("\n[led] led_state parity")
+    r = sim.cmd(cmd="led_state")
+    check(r.get("ok"), "led_state ok", r.get("error"))
+    b = r.get("brightness", -1)
+    check(0 <= b <= 255, "brightness in 0..255", b)
+    check(isinstance(r.get("animating"), bool) and isinstance(r.get("coalesce"), bool),
+          "anim flags are bools", (r.get("animating"), r.get("coalesce")))
+    cols = r.get("colors", [])
+    check(len(cols) == 16, "exactly 16 pad colours", len(cols))
+    check(all(isinstance(c, str) and len(c) == 6 for c in cols),
+          "each colour is a 6-hex string", cols[:3])
+
+
 if __name__ == "__main__":
     which = sys.argv[1] if len(sys.argv) > 1 else "all"
     sim = Sim()
@@ -621,6 +640,8 @@ if __name__ == "__main__":
         sc_apps(sim)
     if which in ("all", "smpl"):
         sc_smpl(sim)
+    if which in ("all", "led"):
+        sc_led(sim)
 
     print("\nRESULT: %s%s" % ("PASS" if not fails else "FAIL",
                               "" if not fails else " — " + "; ".join(fails)))

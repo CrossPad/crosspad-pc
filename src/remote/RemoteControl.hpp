@@ -43,6 +43,8 @@
  *                             (parity with the board's APP_LIST verb)
  *   smpl_peak               — sample engine peak, free WAV slots, load
  *                             (parity with the board's SMPL_PEAK verb)
+ *   led_state               — pad LED brightness, anim flags, 16 colours
+ *                             (parity with the board's LED_STATE verb)
  *   ping                    — health check
  */
 

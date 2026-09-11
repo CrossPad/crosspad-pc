@@ -33,6 +33,7 @@
 
 // crosspad-core
 #include "crosspad/pad/PadManager.hpp"
+#include "crosspad/pad/PadLedController.hpp"   // getPadLedController() — led_state
 #include "crosspad/settings/CrosspadSettings.hpp"
 #include "crosspad/platform/PlatformCapabilities.hpp"
 #include "crosspad/app/AppRegistry.hpp"
@@ -1036,6 +1037,26 @@ static std::string handle_app_list() {
     return out;
 }
 
+// Pad LED state — the sim's parallel to the board's LED_STATE (shared core
+// PadLedController): brightness, animation flags and the 16 pad colours.
+static std::string handle_led_state() {
+    auto& leds = crosspad::getPadLedController();
+    std::string colors = "[";
+    for (int i = 0; i < 16; ++i) {
+        crosspad::RgbColor c = leds.getPadColor((uint8_t)i);
+        char b[10];
+        snprintf(b, sizeof(b), "\"%02X%02X%02X\"", c.R, c.G, c.B);
+        if (i) colors += ",";
+        colors += b;
+    }
+    colors += "]";
+    return "{" + json_bool("ok", true) + "," +
+           json_int("brightness", (int)leds.getBrightness()) + "," +
+           json_bool("animating", leds.getAnimating()) + "," +
+           json_bool("coalesce", leds.getCoalescedRefresh()) + "," +
+           "\"colors\":" + colors + "}";
+}
+
 // Sample engine peak + free WAV slots and load — the sim's parallel to the
 // board's SMPL_PEAK (shared streaming SampleStreamPlayer).
 static std::string handle_smpl_peak() {
@@ -1196,6 +1217,9 @@ static std::string dispatch_command(const std::string& json) {
     }
     if (cmd == "smpl_peak") {
         return handle_smpl_peak();
+    }
+    if (cmd == "led_state") {
+        return handle_led_state();
     }
     if (cmd == "citest_run") {
         return handle_citest_run(json);
