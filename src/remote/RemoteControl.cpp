@@ -42,6 +42,10 @@
 #include "crosspad/audio/IAudioModule.hpp"
 #include "crosspad/synth/ISynthEngine.hpp"
 #include "apps/citest/CITestApi.hpp"
+#if __has_include("crosspad-mixer/AudioMixerEngine.hpp")
+#include "crosspad-mixer/AudioMixerEngine.hpp"   // getMixerEngine() — mixer app present
+#define REMOTE_HAS_MIXER 1
+#endif
 #include "crosspad-gui/components/power_gesture.h"
 #include "crosspad-gui/components/status_bar.h"
 
@@ -902,6 +906,49 @@ static std::string handle_audio_in_set(const std::string& j) {
     return audio_set_json(j, s_audioCtl.inSelect);
 }
 
+// Per-channel and per-output mixer peaks + routing — the sim's parallel to the
+// board's MIX_LVL CDC verb (shared crosspad-mixer AudioMixerEngine), so HIL can
+// read the mixer the same way on both.
+static std::string handle_mix_lvl() {
+#ifdef REMOTE_HAS_MIXER
+    auto& mx = getMixerEngine();
+    const uint8_t nout = mx.numOutputs();
+    std::string out = "{" + json_bool("ok", true) + "," +
+                      json_int("outputs", nout) + ",\"channels\":[";
+    bool first = true;
+    for (uint8_t ch = 0; ch < mx.maxChannels(); ++ch) {
+        if (!mx.isChannelActive(ch)) continue;
+        float cl = 0.0f, cr = 0.0f;
+        mx.getChannelLevel(ch, cl, cr);
+        std::string routes;
+        for (uint8_t o = 0; o < nout; ++o) routes += mx.isRouteEnabled(ch, o) ? '1' : '0';
+        const char* nm = mx.getChannelName(ch);
+        if (!first) out += ",";
+        first = false;
+        out += "{" + json_int("ch", ch) + "," +
+               json_string("name", nm ? nm : "") + "," +
+               json_float("pk_l", cl) + "," + json_float("pk_r", cr) + "," +
+               json_float("vol", mx.getChannelVolume(ch)) + "," +
+               json_bool("mute", mx.isChannelMuted(ch)) + "," +
+               json_string("route", routes) + "}";
+    }
+    out += "],\"out\":[";
+    for (uint8_t o = 0; o < nout; ++o) {
+        float ol = 0.0f, orr = 0.0f;
+        mx.getOutputLevel(o, ol, orr);
+        if (o) out += ",";
+        out += "{" + json_int("out", o) + "," +
+               json_float("pk_l", ol) + "," + json_float("pk_r", orr) + "," +
+               json_float("vol", mx.getOutputVolume(o)) + "," +
+               json_bool("mute", mx.isOutputMuted(o)) + "}";
+    }
+    return out + "]}";
+#else
+    return "{" + json_bool("ok", false) + "," +
+           json_string("error", "mixer not built") + "}";
+#endif
+}
+
 static std::string handle_kit_list() {
     auto* mgr = crosspad::getKitManager();
     if (!mgr) {
@@ -1030,6 +1077,9 @@ static std::string dispatch_command(const std::string& json) {
     }
     if (cmd == "audio_in_set") {
         return handle_audio_in_set(json);
+    }
+    if (cmd == "mix_lvl") {
+        return handle_mix_lvl();
     }
     if (cmd == "citest_run") {
         return handle_citest_run(json);

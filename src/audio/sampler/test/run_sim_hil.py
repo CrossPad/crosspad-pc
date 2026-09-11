@@ -495,6 +495,30 @@ def sc_audio_devices(sim):
         sim.cmd(cmd="audio_in_set", slot=0, index=0)
 
 
+def sc_mixer(sim):
+    """The mixer's per-channel/per-output view over mix_lvl.
+
+    Parity with reading MIX_LVL off the board: same AudioMixerEngine, same
+    channels (Input 1/2, Synth, and Sampler once a kit app is up), same route
+    bitmap width as the output count.
+    """
+    print("\n[mixer] mix_lvl parity")
+    r = sim.cmd(cmd="mix_lvl")
+    check(r.get("ok"), "mix_lvl ok", r.get("error"))
+    nout = r.get("outputs", 0)
+    check(nout >= 1, "mixer reports at least one output", nout)
+    chans = r.get("channels", [])
+    names = [c.get("name") for c in chans]
+    check(len(chans) >= 1, "mixer has active channels", names)
+    check(any(n in ("Input 1", "Input 2", "Synth", "Sampler") for n in names),
+          "mixer channels carry the expected names", names)
+    check(all(len(c.get("route", "")) == nout for c in chans),
+          "each channel's route bitmap width matches the output count",
+          [(c.get("name"), c.get("route")) for c in chans])
+    check(len(r.get("out", [])) == nout,
+          "per-output block count matches outputs", len(r.get("out", [])))
+
+
 if __name__ == "__main__":
     which = sys.argv[1] if len(sys.argv) > 1 else "all"
     sim = Sim()
@@ -516,6 +540,8 @@ if __name__ == "__main__":
         sc_kit_churn(sim)
     if which in ("all", "audio"):
         sc_audio_devices(sim)
+    if which in ("all", "mixer"):
+        sc_mixer(sim)
 
     print("\nRESULT: %s%s" % ("PASS" if not fails else "FAIL",
                               "" if not fails else " — " + "; ".join(fails)))
