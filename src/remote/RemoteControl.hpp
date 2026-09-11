@@ -29,10 +29,17 @@
  *   kit_list                — kits the kit manager found
  *   kit_load {kit}          — load one by index, the way KIT_LOAD does on the device
  *   kit_status              — current kit, whether a load is in flight
+ *   audio_out_list          — OUT1/OUT2 dropdown entries (index 0 = "(None)")
+ *   audio_in_list           — IN1/IN2 dropdown entries (index 0 = "(None)")
+ *   audio_out_set {slot,index} — pick OUT device by dropdown index (slot 0/1)
+ *   audio_in_set {slot,index}  — pick IN device by dropdown index (slot 0/1)
  *   ping                    — health check
  */
 
 #include "lvgl/lvgl.h"
+
+#include <string>
+#include <vector>
 
 namespace remote {
 
@@ -55,5 +62,19 @@ void process_pending();
 /// @param loader  runs on the LVGL thread; takes a kit index.
 /// @param busy    true while a load is in flight.
 void set_kit_loader(void (*loader)(int), bool (*busy)());
+
+/// Audio-device control the platform hands in — same reason as the kit loader:
+/// the device objects live in crosspad_app.cpp, not here. list() returns the
+/// dropdown labels ("(None)" at index 0); select(slot, index, &label) opens the
+/// device at that index and reports whether it connected, writing the shown
+/// label back. select() blocks (ALSA/PA open) and runs on the server thread.
+struct AudioDeviceCtl {
+    std::vector<std::string> (*outList)() = nullptr;
+    std::vector<std::string> (*inList)()  = nullptr;
+    bool (*outSelect)(int slot, int index, std::string& label) = nullptr;
+    bool (*inSelect)(int slot, int index, std::string& label)  = nullptr;
+};
+
+void set_audio_device_ctl(const AudioDeviceCtl& ctl);
 
 } // namespace remote

@@ -843,6 +843,64 @@ static std::string handle_audio_level(const std::string& json) {
 
 static void (*s_kitLoader)(int) = nullptr;
 static bool (*s_kitBusy)()      = nullptr;
+static remote::AudioDeviceCtl s_audioCtl;
+
+// Minimal JSON string escaping for device labels (PipeWire descriptions can
+// carry quotes). Only " and \ need escaping for a valid one-line value.
+static std::string json_quote(const std::string& s) {
+    std::string out = "\"";
+    for (char c : s) {
+        if (c == '"' || c == '\\') out += '\\';
+        out += c;
+    }
+    out += "\"";
+    return out;
+}
+
+static std::string audio_list_json(std::vector<std::string> (*fn)()) {
+    if (!fn) {
+        return "{" + json_bool("ok", false) + "," +
+               json_string("error", "no audio device control") + "}";
+    }
+    auto names = fn();
+    std::string out = "{" + json_bool("ok", true) + "," +
+                      json_int("count", (int)names.size()) + ",\"devices\":[";
+    for (size_t i = 0; i < names.size(); ++i) {
+        if (i) out += ",";
+        out += json_quote(names[i]);
+    }
+    return out + "]}";
+}
+
+static std::string audio_set_json(const std::string& json,
+                                  bool (*fn)(int, int, std::string&)) {
+    if (!fn) {
+        return "{" + json_bool("ok", false) + "," +
+               json_string("error", "no audio device control") + "}";
+    }
+    const int slot  = json_get_int(json, "slot", 0);
+    const int index = json_get_int(json, "index", -1);
+    if (slot < 0 || slot > 1 || index < 0) {
+        return "{" + json_bool("ok", false) + "," +
+               json_string("error", "slot 0/1 and index >= 0 required") + "}";
+    }
+    std::string label;
+    bool connected = fn(slot, index, label);
+    // ok = the command was applied; connected = a device is live on the slot.
+    // index 0 is "(None)", a deliberate disconnect, so ok stays true.
+    return "{" + json_bool("ok", true) + "," + json_int("slot", slot) + "," +
+           json_int("index", index) + "," + json_bool("connected", connected) +
+           "," + json_string("name", label) + "}";
+}
+
+static std::string handle_audio_out_list() { return audio_list_json(s_audioCtl.outList); }
+static std::string handle_audio_in_list()  { return audio_list_json(s_audioCtl.inList); }
+static std::string handle_audio_out_set(const std::string& j) {
+    return audio_set_json(j, s_audioCtl.outSelect);
+}
+static std::string handle_audio_in_set(const std::string& j) {
+    return audio_set_json(j, s_audioCtl.inSelect);
+}
 
 static std::string handle_kit_list() {
     auto* mgr = crosspad::getKitManager();
@@ -960,6 +1018,18 @@ static std::string dispatch_command(const std::string& json) {
     }
     if (cmd == "kit_status") {
         return handle_kit_status();
+    }
+    if (cmd == "audio_out_list") {
+        return handle_audio_out_list();
+    }
+    if (cmd == "audio_in_list") {
+        return handle_audio_in_list();
+    }
+    if (cmd == "audio_out_set") {
+        return handle_audio_out_set(json);
+    }
+    if (cmd == "audio_in_set") {
+        return handle_audio_in_set(json);
     }
     if (cmd == "citest_run") {
         return handle_citest_run(json);
@@ -1128,6 +1198,10 @@ void stop() {
 void set_kit_loader(void (*loader)(int), bool (*busy)()) {
     s_kitLoader = loader;
     s_kitBusy   = busy;
+}
+
+void set_audio_device_ctl(const AudioDeviceCtl& ctl) {
+    s_audioCtl = ctl;
 }
 
 void process_pending() {

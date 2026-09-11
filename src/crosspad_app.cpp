@@ -14,6 +14,10 @@
 #include <vector>
 #include <atomic>
 #include <thread>
+#include <mutex>
+#include <set>
+#include <sstream>
+#include <algorithm>
 #include <chrono>
 #include <fstream>
 #include <filesystem>
@@ -33,6 +37,7 @@
 
 // STM32 hardware emulator window
 #include "stm32_emu/Stm32EmuWindow.hpp"
+#include "remote/RemoteControl.hpp"
 
 // crosspad-gui
 #include "crosspad-gui/theme/crosspad_theme.h"
@@ -397,7 +402,201 @@ static std::vector<OutUiEntry> buildOutDeviceUiEntries() {
             entries.push_back({s.description, 0, s.name});
     }
 #endif
+    // Stable, enumeration-order-independent ordering. RtAudio does not
+    // guarantee the same device order between two enumerations, so without
+    // this a rebuild between showing the dropdown and clicking it (the UI
+    // populate timer, or a second remote *_list) could move a device to a
+    // different index and open the wrong one. Sorting by label pins each
+    // device to a fixed slot.
+    std::sort(entries.begin(), entries.end(),
+              [](const OutUiEntry& a, const OutUiEntry& b) { return a.label < b.label; });
     return entries;
+}
+
+/* ── Cached UI device lists + thread-safe selection ─────────────────────
+ * The dropdowns are populated from these caches and the selection resolves
+ * the chosen index against the SAME cache — never a fresh enumeration.
+ * Rebuilding the list between showing it and clicking it was how a graph
+ * change (a sink appearing, RtAudio reordering its ids) shifted indices and
+ * opened a different device than the one the label named. The caches refresh
+ * on every populate and on every remote *_list. */
+struct InUiEntry {
+    std::string  label;              ///< what the dropdown shows
+    unsigned int rtAudioId = 0;      ///< 0 => not a physical RtAudio device
+    std::string  captureDeviceName;  ///< virtual-sink capture target (Pulse)
+    bool         isVirtual = false;
+};
+
+static std::vector<OutUiEntry> s_outUiCache;
+static std::vector<InUiEntry>  s_inUiCache;
+
+// Carries a completed device switch from the worker thread back to the LVGL
+// thread, where the jack-panel widgets may be touched.
+struct AudioJackUiResult {
+    int         jackId;
+    bool        connected;
+    std::string label;
+};
+// Serialises device switching: the UI runs it on a worker thread so the LVGL
+// thread never blocks on an ALSA/PulseAudio open, and the remote-control
+// server runs it on its TCP thread — both go through this lock.
+static std::mutex s_audioSelMutex;
+
+/// IN dropdown entries: physical RtAudio inputs relabelled with PipeWire
+/// source descriptions (parity with the OUT dropdown), the hw:/plughw:/
+/// sysdefault: aliases of one card collapsed to a single entry, then
+/// CrossPad's virtual sinks appended at the end.
+static std::vector<InUiEntry> buildInDeviceUiEntries() {
+    std::vector<InUiEntry> entries;
+    auto inDevices = enumerateAudioInputDevices();
+#if defined(USE_PIPEWIRE)
+    auto pwSources = crosspad_pc::pwEnumerateSources();
+    auto prettyName = [&](const std::string& raw) -> std::string {
+        std::istringstream tok(raw);
+        std::string w;
+        while (tok >> w) {
+            if (w.size() < 6) continue;
+            for (auto& s : pwSources)
+                if (s.description.find(w) != std::string::npos) return s.description;
+        }
+        return raw;
+    };
+#else
+    auto prettyName = [](const std::string& raw) { return raw; };
+#endif
+    std::set<std::string> seen;
+    for (auto& d : inDevices) {
+        std::string label = prettyName(d.name);
+        if (!seen.insert(label).second) continue;   // dedupe aliases of one card
+        entries.push_back({label, d.rtAudioId, {}, false});
+    }
+#if defined(USE_VIRTUAL_AUDIO) && defined(__linux__)
+    if (s_virtualSinkManager) {
+        for (auto& v : s_virtualSinkManager->list())
+            entries.push_back({v.displayName, 0, v.captureDeviceName, true});
+    }
+#endif
+    // Same enumeration-order-independence as the OUT list: pin each entry to a
+    // fixed index by label so a rebuild never re-slots a device.
+    std::sort(entries.begin(), entries.end(),
+              [](const InUiEntry& a, const InUiEntry& b) { return a.label < b.label; });
+    return entries;
+}
+
+/// Rebuild the OUT cache and return the dropdown labels ("(None)" at index 0).
+/// Locked because the remote-control thread lists while the LVGL thread may
+/// be populating, and the selection functions read the cache under the lock.
+static std::vector<std::string> refreshOutUiCache() {
+    std::lock_guard<std::mutex> lk(s_audioSelMutex);
+    s_outUiCache = buildOutDeviceUiEntries();
+    std::vector<std::string> names;
+    names.push_back("(None)");
+    for (auto& e : s_outUiCache) names.push_back(e.label);
+    return names;
+}
+
+/// Rebuild the IN cache and return the dropdown labels ("(None)" at index 0).
+static std::vector<std::string> refreshInUiCache() {
+    std::lock_guard<std::mutex> lk(s_audioSelMutex);
+    s_inUiCache = buildInDeviceUiEntries();
+    std::vector<std::string> names;
+    names.push_back("(None)");
+    for (auto& e : s_inUiCache) names.push_back(e.label);
+    return names;
+}
+
+/// Apply an OUT selection by dropdown index against the cached list. Blocking
+/// (RtAudio/PA open) — never call from the LVGL thread; wrap it in a worker.
+/// @return true if a device is connected on the slot afterwards.
+static bool appAudioOutSelectIdx(int slot, int uiIndex, std::string& outLabel) {
+    std::lock_guard<std::mutex> lk(s_audioSelMutex);
+    auto& output = (slot == 0) ? pcAudio : pcAudio2;
+    if (uiIndex <= 0) {
+        output.end();
+        outLabel.clear();
+        if (slot == 0) { s_devicePrefs.audioOut1.clear(); s_devicePrefs.audioOut1Pa.clear(); }
+        else           { s_devicePrefs.audioOut2.clear(); s_devicePrefs.audioOut2Pa.clear(); }
+        saveDevicePrefs();
+        return false;
+    }
+    size_t realIdx = static_cast<size_t>(uiIndex) - 1;
+    if (realIdx >= s_outUiCache.size()) return output.isOpen();
+    const auto& sel = s_outUiCache[realIdx];
+    bool connected = false;
+    if (sel.rtAudioId != 0) {
+        output.switchDevice(sel.rtAudioId);
+        connected = output.isOpen();
+        outLabel = output.getCurrentDeviceName();
+        if (slot == 0) { s_devicePrefs.audioOut1 = outLabel; s_devicePrefs.audioOut1Pa.clear(); }
+        else           { s_devicePrefs.audioOut2 = outLabel; s_devicePrefs.audioOut2Pa.clear(); }
+    }
+#if defined(USE_VIRTUAL_AUDIO) && defined(__linux__)
+    else {
+        // PA-only sink — open the RtAudio stream on the PulseAudio server
+        // device, then move the sink-input onto the chosen sink.
+        if (!output.isOpen()) {
+            for (auto& d : enumerateAudioOutputDevices()) {
+                if (d.name.find("PulseAudio") != std::string::npos) {
+                    output.switchDevice(d.rtAudioId);
+                    break;
+                }
+            }
+        }
+        if (crosspad_pc::movePulseOutputToSink(slot, sel.paSinkName)) {
+            connected = true;
+            outLabel = sel.label;
+            if (slot == 0) { s_devicePrefs.audioOut1 = sel.label; s_devicePrefs.audioOut1Pa = sel.paSinkName; }
+            else           { s_devicePrefs.audioOut2 = sel.label; s_devicePrefs.audioOut2Pa = sel.paSinkName; }
+        }
+    }
+#endif
+    saveDevicePrefs();
+    return connected;
+}
+
+/// Apply an IN selection by dropdown index against the cached list. Blocking —
+/// same worker-thread rule as appAudioOutSelectIdx.
+static bool appAudioInSelectIdx(int slot, int uiIndex, std::string& outLabel) {
+    std::lock_guard<std::mutex> lk(s_audioSelMutex);
+    auto& input = (slot == 0) ? pcAudioIn1 : pcAudioIn2;
+    // Tear down whichever capturer was bound to this slot — saves juggling
+    // state when switching between physical mics and virtual sinks.
+    input.end();
+#if defined(USE_VIRTUAL_AUDIO) && defined(__linux__)
+    auto& cap = (slot == 0) ? s_pulseCap1 : s_pulseCap2;
+    cap.stop();
+#endif
+    if (uiIndex <= 0) {
+        outLabel.clear();
+        pc_platform_set_audio_input(slot, nullptr);
+        if (slot == 0) s_devicePrefs.audioIn1.clear(); else s_devicePrefs.audioIn2.clear();
+        saveDevicePrefs();
+        return false;
+    }
+    size_t realIdx = static_cast<size_t>(uiIndex) - 1;
+    if (realIdx >= s_inUiCache.size()) { saveDevicePrefs(); return false; }
+    const auto& sel = s_inUiCache[realIdx];
+    bool connected = false;
+    if (!sel.isVirtual && sel.rtAudioId != 0) {
+        input.switchDevice(sel.rtAudioId);
+        connected = input.isOpen();
+        if (connected) pc_platform_set_audio_input(slot, &input);
+        outLabel = sel.label;   // store the shown label, not the raw device id
+        if (slot == 0) s_devicePrefs.audioIn1 = sel.label; else s_devicePrefs.audioIn2 = sel.label;
+    }
+#if defined(USE_VIRTUAL_AUDIO) && defined(__linux__)
+    else if (sel.isVirtual) {
+        uint32_t rate = pcAudio.isOpen() ? pcAudio.getSampleRate() : 44100;
+        if (cap.start(sel.captureDeviceName, rate, 256)) {
+            connected = true;
+            outLabel = sel.label;
+            pc_platform_set_audio_input(slot, &cap);
+            if (slot == 0) s_devicePrefs.audioIn1 = sel.label; else s_devicePrefs.audioIn2 = sel.label;
+        }
+    }
+#endif
+    saveDevicePrefs();
+    return connected;
 }
 
 /// Find device ID by name in a list. Returns 0 (default) if not found.
@@ -885,26 +1084,33 @@ void crosspad_app_init()
 #endif
 
         auto inDevices = enumerateAudioInputDevices();
-        if (!in1Skip && !pcAudioIn1.isOpen() && !s_devicePrefs.audioIn1.empty()) {
-            unsigned int devId = findDeviceByName(inDevices, s_devicePrefs.audioIn1);
+        // Restore a saved IN pick. New prefs store the UI label (a PipeWire
+        // description); prefs written before that stored the raw RtAudio name.
+        // Try the raw match first for back-compat, then resolve the label
+        // through the same builder the dropdown uses.
+        auto restoreInSlot = [&](PcAudioInput& in, int slot, const std::string& saved) {
+            if (saved.empty() || in.isOpen()) return;
+            unsigned int devId = findDeviceByName(inDevices, saved);
             if (devId != 0) {
-                pcAudioIn1.begin(devId, outSampleRate);
-                if (pcAudioIn1.isOpen()) {
-                    printf("[Audio] IN1 auto-connected: %s @ %u Hz\n",
-                           pcAudioIn1.getCurrentDeviceName().c_str(), pcAudioIn1.getSampleRate());
+                in.begin(devId, outSampleRate);
+                if (in.isOpen()) {
+                    pc_platform_set_audio_input(slot, &in);
+                    printf("[Audio] IN%d auto-connected: %s @ %u Hz\n", slot + 1,
+                           in.getCurrentDeviceName().c_str(), in.getSampleRate());
                 }
+                return;
             }
-        }
-        if (!in2Skip && !pcAudioIn2.isOpen() && !s_devicePrefs.audioIn2.empty()) {
-            unsigned int devId = findDeviceByName(inDevices, s_devicePrefs.audioIn2);
-            if (devId != 0) {
-                pcAudioIn2.begin(devId, outSampleRate);
-                if (pcAudioIn2.isOpen()) {
-                    printf("[Audio] IN2 auto-connected: %s @ %u Hz\n",
-                           pcAudioIn2.getCurrentDeviceName().c_str(), pcAudioIn2.getSampleRate());
-                }
+            s_inUiCache = buildInDeviceUiEntries();
+            for (size_t i = 0; i < s_inUiCache.size(); ++i) {
+                if (s_inUiCache[i].label != saved) continue;
+                std::string lbl;
+                if (appAudioInSelectIdx(slot, (int)i + 1, lbl))
+                    printf("[Audio] IN%d auto-connected: %s\n", slot + 1, lbl.c_str());
+                return;
             }
-        }
+        };
+        if (!in1Skip) restoreInSlot(pcAudioIn1, 0, s_devicePrefs.audioIn1);
+        if (!in2Skip) restoreInSlot(pcAudioIn2, 1, s_devicePrefs.audioIn2);
     }
 
 #ifdef USE_PIPEWIRE
@@ -1145,40 +1351,24 @@ void crosspad_app_init()
         jp.setDeviceName(EmuJackPanel::AUDIO_IN2, in2Name);
         jp.setConnected(EmuJackPanel::AUDIO_IN2, in2Connected);
 
-        // Populate device lists for all audio jacks
+        // Populate device lists for all audio jacks. refreshOut/InUiCache
+        // fill the caches the selection callback resolves against, so the
+        // list shown and the list clicked are byte-for-byte the same.
         {
-            // Shared builder — same list the selection callback resolves
-            // against, incl. feedback-loop guard and PA-sink dedupe.
-            auto outEntries = buildOutDeviceUiEntries();
-            std::vector<std::string> outNames;
-            outNames.push_back("(None)");
-            for (auto& e : outEntries) outNames.push_back(e.label);
-
+            auto outNames = refreshOutUiCache();
             jp.setDeviceList(EmuJackPanel::AUDIO_OUT1, outNames,
                              findDropdownIndex(outNames, pcAudio.getCurrentDeviceName()));
             jp.setDeviceList(EmuJackPanel::AUDIO_OUT2, outNames,
                              findDropdownIndex(outNames, pcAudio2.getCurrentDeviceName()));
 
-            auto inDevices = enumerateAudioInputDevices();
-            std::vector<std::string> inNames;
-            inNames.push_back("(None)");
-            for (auto& d : inDevices) inNames.push_back(d.name);
-
-#if defined(USE_VIRTUAL_AUDIO) && defined(__linux__)
-            // Append CrossPad virtual sinks at the end of the list so the user
-            // can route them as IN1/IN2 from the Jack panel dropdown. Indices
-            // beyond inDevices.size() in the callback indicate a virtual pick.
-            if (s_virtualSinkManager) {
-                for (const auto& v : s_virtualSinkManager->list()) {
-                    inNames.push_back(v.displayName);
-                }
-            }
-#endif
-
+            auto inNames = refreshInUiCache();
+            // IN prefs store the shown label (a PipeWire description), so the
+            // selected index is matched against the saved label, not the raw
+            // RtAudio device name getCurrentDeviceName() would return.
             jp.setDeviceList(EmuJackPanel::AUDIO_IN1, inNames,
-                             findDropdownIndex(inNames, in1Name));
+                             findDropdownIndex(inNames, s_devicePrefs.audioIn1));
             jp.setDeviceList(EmuJackPanel::AUDIO_IN2, inNames,
-                             findDropdownIndex(inNames, in2Name));
+                             findDropdownIndex(inNames, s_devicePrefs.audioIn2));
         }
 #endif
 
@@ -1289,132 +1479,36 @@ void crosspad_app_init()
             switch (jackId) {
 #ifdef USE_AUDIO
             case EmuJackPanel::AUDIO_OUT1:
-            case EmuJackPanel::AUDIO_OUT2: {
-                auto& output = (jackId == EmuJackPanel::AUDIO_OUT1) ? pcAudio : pcAudio2;
-                int slot = (jackId == EmuJackPanel::AUDIO_OUT1) ? 0 : 1;
-                auto jid = static_cast<EmuJackPanel::JackId>(jackId);
-
-                if (deviceIndex == 0) {
-                    output.end();
-                    jp.setConnected(jid, false);
-                    jp.setDeviceName(jid, "");
-                    if (jackId == EmuJackPanel::AUDIO_OUT1) {
-                        s_devicePrefs.audioOut1.clear();
-                        s_devicePrefs.audioOut1Pa.clear();
-                    } else {
-                        s_devicePrefs.audioOut2.clear();
-                        s_devicePrefs.audioOut2Pa.clear();
-                    }
-                } else {
-                    // Resolve against the SAME list the dropdown was built
-                    // from (incl. loop guard + PA dedupe) — never positional
-                    // into the raw enumeration.
-                    auto outEntries = buildOutDeviceUiEntries();
-                    size_t realIdx = static_cast<size_t>(deviceIndex) - 1;
-                    if (realIdx >= outEntries.size()) break;
-                    const auto& sel = outEntries[realIdx];
-
-                    if (sel.rtAudioId != 0) {
-                        output.switchDevice(sel.rtAudioId);
-                        jp.setConnected(jid, output.isOpen());
-                        jp.setDeviceName(jid, output.getCurrentDeviceName());
-                        if (jackId == EmuJackPanel::AUDIO_OUT1) {
-                            s_devicePrefs.audioOut1 = output.getCurrentDeviceName();
-                            s_devicePrefs.audioOut1Pa.clear();
-                        } else {
-                            s_devicePrefs.audioOut2 = output.getCurrentDeviceName();
-                            s_devicePrefs.audioOut2Pa.clear();
-                        }
-                    }
-#if defined(USE_VIRTUAL_AUDIO) && defined(__linux__)
-                    else {
-                        // PA-only sink — route the RtAudio stream through the
-                        // PulseAudio server device, then move the sink-input
-                        // onto the selected sink.
-                        if (!output.isOpen()) {
-                            for (auto& d : enumerateAudioOutputDevices()) {
-                                if (d.name.find("PulseAudio") != std::string::npos) {
-                                    output.switchDevice(d.rtAudioId);
-                                    break;
-                                }
-                            }
-                        }
-                        if (crosspad_pc::movePulseOutputToSink(slot, sel.paSinkName)) {
-                            jp.setConnected(jid, true);
-                            jp.setDeviceName(jid, sel.label);
-                            if (slot == 0) {
-                                s_devicePrefs.audioOut1   = sel.label;
-                                s_devicePrefs.audioOut1Pa = sel.paSinkName;
-                            } else {
-                                s_devicePrefs.audioOut2   = sel.label;
-                                s_devicePrefs.audioOut2Pa = sel.paSinkName;
-                            }
-                        }
-                    }
-#endif
-                }
-                saveDevicePrefs();
-                break;
-            }
-
+            case EmuJackPanel::AUDIO_OUT2:
             case EmuJackPanel::AUDIO_IN1:
             case EmuJackPanel::AUDIO_IN2: {
-                auto& input = (jackId == EmuJackPanel::AUDIO_IN1) ? pcAudioIn1 : pcAudioIn2;
-                int slot   = (jackId == EmuJackPanel::AUDIO_IN1) ? 0 : 1;
-                auto jid   = static_cast<EmuJackPanel::JackId>(jackId);
-
-                // Always tear down whichever capturer was previously bound to
-                // this slot — saves us juggling state when switching between
-                // physical mics and virtual sinks.
-                input.end();
-#if defined(USE_VIRTUAL_AUDIO) && defined(__linux__)
-                auto& cap = (slot == 0) ? s_pulseCap1 : s_pulseCap2;
-                cap.stop();
-#endif
-
-                if (deviceIndex == 0) {
-                    jp.setConnected(jid, false);
-                    jp.setDeviceName(jid, "");
-                    pc_platform_set_audio_input(slot, nullptr);
-                    if (slot == 0) s_devicePrefs.audioIn1.clear();
-                    else           s_devicePrefs.audioIn2.clear();
-                    saveDevicePrefs();
-                    break;
-                }
-
-                auto inDevices = enumerateAudioInputDevices();
-                unsigned int realIdx = deviceIndex - 1;
-
-                if (realIdx < inDevices.size()) {
-                    // Physical RtAudio device.
-                    input.switchDevice(inDevices[realIdx].rtAudioId);
-                    jp.setConnected(jid, input.isOpen());
-                    jp.setDeviceName(jid, input.getCurrentDeviceName());
-                    if (input.isOpen()) {
-                        pc_platform_set_audio_input(slot, &input);
-                    }
-                    if (slot == 0) s_devicePrefs.audioIn1 = input.getCurrentDeviceName();
-                    else           s_devicePrefs.audioIn2 = input.getCurrentDeviceName();
-                }
-#if defined(USE_VIRTUAL_AUDIO) && defined(__linux__)
-                else if (s_virtualSinkManager) {
-                    // Virtual sink picked — index past the physical block.
-                    size_t vIdx = realIdx - inDevices.size();
-                    auto sinks = s_virtualSinkManager->list();
-                    if (vIdx < sinks.size()) {
-                        uint32_t rate = pcAudio.isOpen() ? pcAudio.getSampleRate() : 44100;
-                        auto& cap2 = (slot == 0) ? s_pulseCap1 : s_pulseCap2;
-                        if (cap2.start(sinks[vIdx].captureDeviceName, rate, 256)) {
-                            jp.setConnected(jid, true);
-                            jp.setDeviceName(jid, sinks[vIdx].displayName);
-                            pc_platform_set_audio_input(slot, &cap2);
-                            if (slot == 0) s_devicePrefs.audioIn1 = sinks[vIdx].displayName;
-                            else           s_devicePrefs.audioIn2 = sinks[vIdx].displayName;
-                        }
-                    }
-                }
-#endif
-                saveDevicePrefs();
+                // Opening an ALSA/PulseAudio device blocks for 100–500 ms; doing
+                // it inline here froze the whole UI (this callback runs on the
+                // LVGL thread). Run the switch on a worker thread and push the
+                // result back with lv_async_call so only widget mutation — which
+                // must stay on the LVGL thread — happens there. Selection
+                // resolves against the cached list the dropdown was built from,
+                // never a fresh enumeration whose indices may have shifted.
+                const bool isOut = (jackId == EmuJackPanel::AUDIO_OUT1 ||
+                                    jackId == EmuJackPanel::AUDIO_OUT2);
+                const int  slot  = (jackId == EmuJackPanel::AUDIO_OUT1 ||
+                                    jackId == EmuJackPanel::AUDIO_IN1) ? 0 : 1;
+                const int  uiIndex = static_cast<int>(deviceIndex);
+                std::thread([jackId, slot, isOut, uiIndex]() {
+                    std::string label;
+                    bool connected = isOut ? appAudioOutSelectIdx(slot, uiIndex, label)
+                                           : appAudioInSelectIdx(slot, uiIndex, label);
+                    auto* res = new AudioJackUiResult{jackId, connected, std::move(label)};
+                    lv_async_call([](void* ud) {
+                        auto* r = static_cast<AudioJackUiResult*>(ud);
+                        auto& jp = stm32Emu.getJackPanel();
+                        jp.setConnected(static_cast<EmuJackPanel::JackId>(r->jackId),
+                                        r->connected);
+                        jp.setDeviceName(static_cast<EmuJackPanel::JackId>(r->jackId),
+                                         r->label);
+                        delete r;
+                    }, res);
+                }).detach();
                 break;
             }
 #endif
@@ -1500,6 +1594,14 @@ void crosspad_app_init()
             }
         });
     }
+
+#ifdef USE_AUDIO
+    // Hand the audio-device list/select entry points to the remote-control
+    // server so the simulator can be driven through the same audio-selector
+    // path the Jack panel uses — the sim's equivalent of an AUDIO_* CDC verb.
+    remote::set_audio_device_ctl({ refreshOutUiCache, refreshInUiCache,
+                                   appAudioOutSelectIdx, appAudioInSelectIdx });
+#endif
 
 #ifdef USE_AUDIO
     // ── VU meter timer: feed levels to jack panel bars + main VU meter ──

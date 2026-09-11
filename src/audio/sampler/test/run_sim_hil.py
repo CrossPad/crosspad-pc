@@ -431,6 +431,70 @@ def sc_kit_churn(sim, rounds=8, rate=10.0):
     return swapped
 
 
+def sc_audio_devices(sim):
+    """The audio IN/OUT selector, driven over the same path the Jack panel uses.
+
+    This is the sim's parallel to exercising AUDIO_* on the board: list the
+    devices, select one by dropdown index, and confirm the device that comes
+    back is the one that was picked — the index must resolve against the very
+    list that was shown, not a fresh enumeration. Also checks the switch does
+    not stall the sim (the open runs off the UI thread) and that IN labels are
+    human-readable rather than raw ALSA ids.
+    """
+    print("\n[audio_devices] IN/OUT selector over the remote path")
+
+    out = sim.cmd(cmd="audio_out_list")
+    check(out.get("ok"), "audio_out_list ok", out.get("error"))
+    odev = out.get("devices", [])
+    check(len(odev) >= 1 and odev[0] == "(None)",
+          "OUT list starts with (None)", odev[:3])
+
+    inp = sim.cmd(cmd="audio_in_list")
+    check(inp.get("ok"), "audio_in_list ok", inp.get("error"))
+    idev = inp.get("devices", [])
+    check(len(idev) >= 1 and idev[0] == "(None)",
+          "IN list starts with (None)", idev[:3])
+
+    raw = [d for d in idev[1:]
+           if d.startswith(("hw:", "plughw:", "sysdefault:", "surround"))]
+    check(not raw, "IN labels are human-readable (no raw ALSA ids)", raw)
+
+    # Determinism: RtAudio's enumeration order is not stable, but the list must
+    # be — a second list has to be byte-for-byte identical or an index picked
+    # from the first would open a different device on the second.
+    check(sim.cmd(cmd="audio_out_list").get("devices") == odev,
+          "OUT list order is stable across rebuilds")
+    check(sim.cmd(cmd="audio_in_list").get("devices") == idev,
+          "IN list order is stable across rebuilds")
+
+    if len(odev) > 1:
+        r = sim.cmd(cmd="audio_out_set", slot=0, index=1)
+        check(r.get("ok"), "audio_out_set slot0 index1 applied", r.get("error"))
+        if r.get("connected"):
+            check(r.get("name") == odev[1],
+                  "OUT set opened exactly the entry that was selected",
+                  (r.get("name"), odev[1]))
+        t0 = time.monotonic()
+        p = sim.cmd(cmd="ping")
+        dt = time.monotonic() - t0
+        check(p.get("ok") and dt < 1.0,
+              "sim stays responsive across an OUT switch", "%.3f s" % dt)
+        n = sim.cmd(cmd="audio_out_set", slot=0, index=0)
+        check(n.get("ok") and not n.get("connected"),
+              "OUT (None) disconnects the slot", n)
+
+    if len(idev) > 1:
+        r = sim.cmd(cmd="audio_in_set", slot=0, index=1)
+        check(r.get("ok"), "audio_in_set slot0 index1 applied", r.get("error"))
+        if r.get("connected"):
+            check(r.get("name") == idev[1],
+                  "IN set opened exactly the entry that was selected",
+                  (r.get("name"), idev[1]))
+        else:
+            print("  [info] IN index1 did not connect on this bench: %s" % idev[1])
+        sim.cmd(cmd="audio_in_set", slot=0, index=0)
+
+
 if __name__ == "__main__":
     which = sys.argv[1] if len(sys.argv) > 1 else "all"
     sim = Sim()
@@ -450,6 +514,8 @@ if __name__ == "__main__":
         sc_storm(sim)
     if which in ("all", "churn"):
         sc_kit_churn(sim)
+    if which in ("all", "audio"):
+        sc_audio_devices(sim)
 
     print("\nRESULT: %s%s" % ("PASS" if not fails else "FAIL",
                               "" if not fails else " — " + "; ".join(fails)))

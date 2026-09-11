@@ -50,7 +50,9 @@ bool syncRoundtrip(struct pw_core* core, struct pw_thread_loop* loop)
 }
 
 struct CollectCtx {
-    std::vector<PwSinkEntry> sinks;
+    const char* targetClass = "Audio/Sink";  ///< media.class to keep
+    bool        skipMonitor = false;          ///< drop `.monitor` sources
+    std::vector<PwSinkEntry> nodes;
 };
 
 void onRegistryGlobal(void* data, uint32_t /*id*/, uint32_t /*permissions*/,
@@ -62,24 +64,27 @@ void onRegistryGlobal(void* data, uint32_t /*id*/, uint32_t /*permissions*/,
     if (strcmp(type, PW_TYPE_INTERFACE_Node) != 0) return;
 
     const char* mediaClass = spa_dict_lookup(props, PW_KEY_MEDIA_CLASS);
-    if (!mediaClass || strcmp(mediaClass, "Audio/Sink") != 0) return;
+    if (!mediaClass || strcmp(mediaClass, ctx->targetClass) != 0) return;
 
     const char* name = spa_dict_lookup(props, PW_KEY_NODE_NAME);
     if (!name) return;
-    // Never offer CrossPad's own virtual sinks as an OUT target — that
-    // routes the mixer's output straight back into its input.
+    // Never offer CrossPad's own virtual nodes — routing OUT into our sink
+    // (or IN off our source) loops the mixer back into itself.
     if (strncmp(name, "crosspad_", 9) == 0) return;
+    // Sink monitors masquerade as sources; they are loopback taps, not
+    // capture hardware, and only clutter the IN dropdown.
+    if (ctx->skipMonitor && strstr(name, ".monitor")) return;
 
     const char* desc = spa_dict_lookup(props, PW_KEY_NODE_DESCRIPTION);
     if (!desc || !*desc) desc = spa_dict_lookup(props, PW_KEY_NODE_NICK);
     if (!desc || !*desc) desc = name;
 
-    ctx->sinks.push_back({name, desc});
+    ctx->nodes.push_back({name, desc});
 }
 
-} // namespace
-
-std::vector<PwSinkEntry> pwEnumerateSinks()
+// One registry round-trip collecting nodes of a single media class. Must be
+// called without the PwContext lock held — it takes the lock itself.
+std::vector<PwSinkEntry> enumerateByClass(const char* targetClass, bool skipMonitor)
 {
     auto& ctx = PwContext::instance();
     if (!ctx.init()) return {};
@@ -91,6 +96,8 @@ std::vector<PwSinkEntry> pwEnumerateSinks()
     if (!registry) return {};
 
     CollectCtx collect;
+    collect.targetClass = targetClass;
+    collect.skipMonitor = skipMonitor;
     struct spa_hook registryListener{};
     struct pw_registry_events registryEvents{};
     registryEvents.version = PW_VERSION_REGISTRY_EVENTS;
@@ -103,7 +110,19 @@ std::vector<PwSinkEntry> pwEnumerateSinks()
     pw_proxy_destroy(reinterpret_cast<struct pw_proxy*>(registry));
 
     if (!ok) return {};
-    return std::move(collect.sinks);
+    return std::move(collect.nodes);
+}
+
+} // namespace
+
+std::vector<PwSinkEntry> pwEnumerateSinks()
+{
+    return enumerateByClass("Audio/Sink", /*skipMonitor=*/false);
+}
+
+std::vector<PwSinkEntry> pwEnumerateSources()
+{
+    return enumerateByClass("Audio/Source", /*skipMonitor=*/true);
 }
 
 } // namespace crosspad_pc

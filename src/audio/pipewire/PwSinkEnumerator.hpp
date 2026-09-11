@@ -32,6 +32,14 @@ struct PwSinkEntry {
 /// callers fall back to the pactl parser.
 std::vector<PwSinkEntry> pwEnumerateSinks();
 
+/// Enumerate `media.class == Audio/Source` nodes — real capture sources
+/// (mics, line-in). Gives the IN dropdown the same human-readable
+/// node.description labels the OUT dropdown gets, instead of RtAudio's raw
+/// ALSA ids. Skips CrossPad's own `crosspad_*` sources and `.monitor`
+/// loopback sources (those are sink monitors, not capture hardware).
+/// Reuses PwSinkEntry as a name/description pair.
+std::vector<PwSinkEntry> pwEnumerateSources();
+
 } // namespace crosspad_pc
 
 #endif // __linux__
