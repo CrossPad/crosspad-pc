@@ -77,7 +77,6 @@
 #include "audio/pipewire/PwDefaultSinkGuard.hpp"
 #include "audio/pipewire/PwVirtualSource.hpp"
 #include "audio/pipewire/PwVirtualSinkCapture.hpp"
-#include "audio/pipewire/PwSinkEnumerator.hpp"
 #endif
 #include <csignal>
 #endif
