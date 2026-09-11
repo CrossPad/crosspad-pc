@@ -519,6 +519,25 @@ def sc_mixer(sim):
           "per-output block count matches outputs", len(r.get("out", [])))
 
 
+def sc_pitched(sim):
+    """The pitched engine's status over pitched_status.
+
+    Parity with the board's PITCHED_STATUS. Idle (no pitched kit) is a valid
+    state: active false, zero zones, no voices — the verb still answers with the
+    shape a parser expects. roots length must match the zone count.
+    """
+    print("\n[pitched] pitched_status parity")
+    r = sim.cmd(cmd="pitched_status")
+    check(r.get("ok"), "pitched_status ok", r.get("error"))
+    check(isinstance(r.get("active"), bool), "active is a bool", r.get("active"))
+    zones = r.get("zones", -1)
+    check(zones >= 0, "zones is non-negative", zones)
+    check(len(r.get("roots", [])) == zones,
+          "roots length matches zone count", (r.get("roots"), zones))
+    check(r.get("active_voices", -1) >= 0 and r.get("sounding_voices", -1) >= 0,
+          "voice counts present", (r.get("active_voices"), r.get("sounding_voices")))
+
+
 if __name__ == "__main__":
     which = sys.argv[1] if len(sys.argv) > 1 else "all"
     sim = Sim()
@@ -542,6 +561,8 @@ if __name__ == "__main__":
         sc_audio_devices(sim)
     if which in ("all", "mixer"):
         sc_mixer(sim)
+    if which in ("all", "pitched"):
+        sc_pitched(sim)
 
     print("\nRESULT: %s%s" % ("PASS" if not fails else "FAIL",
                               "" if not fails else " — " + "; ".join(fails)))

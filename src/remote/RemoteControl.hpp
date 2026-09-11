@@ -35,6 +35,8 @@
  *   audio_in_set {slot,index}  — pick IN device by dropdown index (slot 0/1)
  *   mix_lvl                 — per-channel/per-output mixer peaks + routing
  *                             (parity with the board's MIX_LVL CDC verb)
+ *   pitched_status          — pitched engine: zones/roots, voices, steals
+ *                             (parity with the board's PITCHED_STATUS verb)
  *   ping                    — health check
  */
 

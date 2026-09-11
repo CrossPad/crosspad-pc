@@ -46,6 +46,12 @@
 #include "crosspad-mixer/AudioMixerEngine.hpp"   // getMixerEngine() — mixer app present
 #define REMOTE_HAS_MIXER 1
 #endif
+#if __has_include("audio/sampler/PcPitchedPort.hpp")
+#include "audio/sampler/PcPitchedPort.hpp"
+#include <crosspad/instrument/PitchedInstrument.hpp>
+#include <crosspad/instrument/SampleBank.hpp>
+#define REMOTE_HAS_PITCHED 1
+#endif
 #include "crosspad-gui/components/power_gesture.h"
 #include "crosspad-gui/components/status_bar.h"
 
@@ -949,6 +955,36 @@ static std::string handle_mix_lvl() {
 #endif
 }
 
+// Pitched-engine status — the sim's parallel to the board's PITCHED_STATUS
+// (shared crosspad-core PitchedInstrument): zones/roots, live voices, steals.
+static std::string handle_pitched_status() {
+#ifdef REMOTE_HAS_PITCHED
+    auto& inst = crosspad_pc::pitched_port_instrument();
+    const bool active = crosspad_pc::pitched_port_active();
+    crosspad::SampleBank* bank = inst.bank();
+    const uint8_t zones = bank ? bank->zoneCount() : 0;
+    std::string roots = "[";
+    for (uint8_t i = 0; i < zones; ++i) {
+        if (i) roots += ",";
+        char b[16];
+        snprintf(b, sizeof(b), "%.2f", (double)bank->zone(i).rootMidi);
+        roots += b;
+    }
+    roots += "]";
+    const size_t bytes = bank ? bank->bytes() : 0;
+    return "{" + json_bool("ok", true) + "," + json_bool("active", active) + "," +
+           json_int("zones", zones) + ",\"roots\":" + roots + "," +
+           json_int("active_voices", inst.activeVoices()) + "," +
+           json_int("sounding_voices", inst.soundingVoices()) + "," +
+           json_int("steals", (int)inst.stealCount()) + "," +
+           json_float("last_note_hz", inst.lastNoteHz()) + "," +
+           json_int("bank_kb", (int)(bytes / 1024)) + "}";
+#else
+    return "{" + json_bool("ok", false) + "," +
+           json_string("error", "pitched not built") + "}";
+#endif
+}
+
 static std::string handle_kit_list() {
     auto* mgr = crosspad::getKitManager();
     if (!mgr) {
@@ -1080,6 +1116,9 @@ static std::string dispatch_command(const std::string& json) {
     }
     if (cmd == "mix_lvl") {
         return handle_mix_lvl();
+    }
+    if (cmd == "pitched_status") {
+        return handle_pitched_status();
     }
     if (cmd == "citest_run") {
         return handle_citest_run(json);
