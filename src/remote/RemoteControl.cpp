@@ -58,6 +58,7 @@
 #endif
 #include "crosspad-gui/components/power_gesture.h"
 #include "crosspad-gui/components/status_bar.h"
+#include "crosspad-gui/components/app_orchestrator.h"   // AppOrchestrator — app_list
 
 // PC platform
 #include "pc_stubs/pc_platform.h"
@@ -1012,6 +1013,25 @@ static std::string handle_wave_status() {
 #endif
 }
 
+// Registered apps + the one currently running — the sim's parallel to the
+// board's APP_LIST (shared crosspad-gui AppOrchestrator).
+static std::string handle_app_list() {
+    auto& orch = crosspad_gui::AppOrchestrator::getInstance();
+    std::string out = "{" + json_bool("ok", true) + ",\"apps\":[";
+    bool first = true;
+    for (const auto& app : orch.getApps()) {
+        if (!app) continue;
+        const char* nm = app->getName();
+        if (!first) out += ",";
+        first = false;
+        out += json_quote(nm ? nm : "");
+    }
+    auto* running = orch.getRunningApp();
+    const char* rn = running ? running->getName() : nullptr;
+    out += "]," + json_string("running", rn ? rn : "-") + "}";
+    return out;
+}
+
 static std::string handle_kit_list() {
     auto* mgr = crosspad::getKitManager();
     if (!mgr) {
@@ -1149,6 +1169,9 @@ static std::string dispatch_command(const std::string& json) {
     }
     if (cmd == "wave_status") {
         return handle_wave_status();
+    }
+    if (cmd == "app_list") {
+        return handle_app_list();
     }
     if (cmd == "citest_run") {
         return handle_citest_run(json);

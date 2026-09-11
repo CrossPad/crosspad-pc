@@ -39,6 +39,8 @@
  *                             (parity with the board's PITCHED_STATUS verb)
  *   wave_status             — waveform loader counters (requested/loaded/…)
  *                             (parity with the board's WAVE_STATUS verb)
+ *   app_list                — registered apps + the running one
+ *                             (parity with the board's APP_LIST verb)
  *   ping                    — health check
  */
 

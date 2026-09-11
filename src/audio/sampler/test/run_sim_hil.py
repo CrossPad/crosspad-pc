@@ -557,6 +557,21 @@ def sc_wave(sim):
           "loaded never exceeds requested", (r.get("loaded"), r.get("requested")))
 
 
+def sc_apps(sim):
+    """Registered apps + the running one over app_list.
+
+    Parity with the board's APP_LIST. At least one app is registered; `running`
+    is a name or "-" (nothing running at the launcher).
+    """
+    print("\n[apps] app_list parity")
+    r = sim.cmd(cmd="app_list")
+    check(r.get("ok"), "app_list ok", r.get("error"))
+    apps = r.get("apps", [])
+    check(len(apps) >= 1, "at least one app registered", apps)
+    check(isinstance(r.get("running"), str), "running is a name or '-'",
+          r.get("running"))
+
+
 if __name__ == "__main__":
     which = sys.argv[1] if len(sys.argv) > 1 else "all"
     sim = Sim()
@@ -584,6 +599,8 @@ if __name__ == "__main__":
         sc_pitched(sim)
     if which in ("all", "wave"):
         sc_wave(sim)
+    if which in ("all", "apps"):
+        sc_apps(sim)
 
     print("\nRESULT: %s%s" % ("PASS" if not fails else "FAIL",
                               "" if not fails else " — " + "; ".join(fails)))
