@@ -34,3 +34,6 @@ apps.json
 .crosspad/
 crosspad.local.json
 hil_logs/*
+
+# CP Tools: the app manager scripts/app_manager.py downloads
+scripts/.cache/
