@@ -12,6 +12,7 @@
 #include <catch2/catch_test_macros.hpp>
 
 #include "wav_io.hpp"
+#include "crosspad/dsp/DspMath.hpp"
 
 #include <cmath>
 
@@ -64,7 +65,7 @@ void writeSine(const std::filesystem::path& path, double hz, uint32_t rate,
     w.samples.resize(frames);
     for (uint32_t i = 0; i < frames; ++i) {
         const double t = static_cast<double>(i) / rate;
-        w.samples[i] = static_cast<int16_t>(kFixtureAmplitude * std::sin(2.0 * M_PI * hz * t));
+        w.samples[i] = static_cast<int16_t>(kFixtureAmplitude * std::sin(2.0 * crosspad::kPi * hz * t));
     }
     REQUIRE(wavWrite(path.string(), w));
 }
