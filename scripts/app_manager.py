@@ -76,11 +76,12 @@ def _ensure_core():
     replaces is kept as .prev — a broken or truncated upstream file must not
     leave a machine without a working manager. Offline, the cached copy runs.
     """
-    if _locally_modified() and not os.environ.get("CROSSPAD_MANAGER_REFRESH"):
+    refresh = os.environ.get("CROSSPAD_MANAGER_REFRESH")
+    if _locally_modified() and not refresh:
         print(f"Using your edited {CORE_FILE} "
               f"(CROSSPAD_MANAGER_REFRESH=1 to take upstream's again).")
         return
-    if CORE_CACHE.exists():
+    if CORE_CACHE.exists() and not refresh:
         import time
         if time.time() - CORE_CACHE.stat().st_mtime < CORE_TTL_S:
             return
