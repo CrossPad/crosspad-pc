@@ -86,7 +86,6 @@
 #include "synth/MlPianoSynth.hpp"
 #if __has_include("crosspad-mixer/AudioMixerEngine.hpp")
 #include "crosspad-mixer/AudioMixerEngine.hpp"
-#include "crosspad-mixer/MixerPadLogic.hpp"
 #define HAS_MIXER 1
 #endif
 #include <RtAudio.h>
@@ -146,7 +145,6 @@ static std::string s_pendingPin[2];
 #include "crosspad/audio/AudioInputNode.hpp"
 #include "pc_stubs/pc_platform.h"
 static AudioMixerEngine s_mixerEngine;
-static std::shared_ptr<MixerPadLogic> s_mixerPadLogic;
 // Adapters registered as mixer channels in IN1, IN2, SYNTH order so
 // MixerInput::IN1=0, IN2=1, SYNTH=2 stay valid against the dynamic API.
 // The indexed getter form picks up hot-swapped virtual inputs every cycle.
@@ -656,8 +654,6 @@ static void InitializeOrchestrator() {
 static void LoadMainScreen(lv_obj_t* parent) {
     if (parent == nullptr) parent = lv_screen_active();
 
-    crosspad::getPadManager().setActivePadLogic("Mixer");
-
     auto& orch = crosspad_gui::AppOrchestrator::getInstance();
 
     crosspad_gui::MainScreenConfig config;
@@ -667,6 +663,7 @@ static void LoadMainScreen(lv_obj_t* parent) {
     config.button_size    = APP_BUTTON_SIZE;
     config.button_spacing = 10;
     config.show_names     = APP_BUTTON_NAME_VISIBLE;
+    config.style          = crosspad::CrosspadSettings::getInstance()->launcherStyle;
     config.bg_color       = lv_color_black();
 
     auto result = orch.loadMainScreen(parent, config);
@@ -1177,14 +1174,6 @@ void crosspad_app_init()
     s_mixerEngine.setStateChangedCallback([]() {
         s_mixerEngine.saveState(getMixerStatePath());
     });
-
-    // Register mixer pad logic globally (always available)
-    s_mixerPadLogic = std::make_shared<MixerPadLogic>(s_mixerEngine);
-    s_mixerPadLogic->setOnStateChanged([]() {
-        s_mixerEngine.saveState(getMixerStatePath());
-    });
-    crosspad::getPadManager().registerPadLogic("Mixer", s_mixerPadLogic);
-    crosspad::getPadManager().setActivePadLogic("Mixer");
 #endif
 
     // ── Audio module pipeline (float bus + node chain or mixer override) ──
@@ -1698,11 +1687,7 @@ void crosspad_app_update_pad_icon()
 {
     std::string active = crosspad::getPadManager().getActivePadLogic();
 
-    if (active == "Mixer") {
-        crosspad_gui::statusbar_add_icon("pad_logic", LV_SYMBOL_SHUFFLE,
-                                          lv_color_hex(0x0099AA),
-                                          crosspad_gui::StatusIconSide::Right);
-    } else if (active == "MLPiano") {
+    if (active == "MLPiano") {
         crosspad_gui::statusbar_add_icon("pad_logic", LV_SYMBOL_KEYBOARD,
                                           lv_color_hex(0x9966FF),
                                           crosspad_gui::StatusIconSide::Right);

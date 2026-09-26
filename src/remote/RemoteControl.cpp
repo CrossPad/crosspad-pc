@@ -724,6 +724,10 @@ static std::string handle_settings_set(const std::string& json) {
     // System
     else if (key == "kit") { settings->Kit = (uint8_t)value; found = true; }
     else if (key == "audio_engine") { settings->AudioEngineEnabled = (value != 0); found = true; }
+    else if (key == "launcher_style") {   // 0 icon grid, 1 list; shown on the next launcher build
+        settings->launcherStyle = value ? crosspad::LauncherStyle::List : crosspad::LauncherStyle::Grid;
+        found = true;
+    }
     // Keypad
     else if (key == "keypad.enable") { settings->keypad.enableKeypad = (value != 0); found = true; }
     else if (key == "keypad.inactive_lights") { settings->keypad.inactiveLights = (value != 0); found = true; }
