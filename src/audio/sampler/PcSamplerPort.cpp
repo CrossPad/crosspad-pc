@@ -16,6 +16,7 @@
 #include <crosspad/kit/KitInfo.hpp>
 #include <crosspad/kit/KitPathUtils.hpp>
 #include <crosspad/kit/PortableKitLoader.hpp>
+#include <crosspad/pad/IPadMix.hpp>
 #include <crosspad/pad/PadManager.hpp>
 #include <crosspad/platform/PlatformServices.hpp>
 
@@ -79,6 +80,24 @@ void platform_setVolume(uint8_t padIdx, int volume) {
 void platform_setPan(uint8_t padIdx, int pan) {
     SampleStreamPlayer_SetPan(padIdx, toPlayerPan(pan));
 }
+
+/* Pad Mixer's levels, split as the board's sampler splits them: a pitched
+ * kit's pads are the instrument's, a sampler kit's the stream player's. */
+class PcPadMix final : public crosspad::IPadMix {
+public:
+    void setPadMix(uint8_t pad, int volume, int pan) override {
+        auto* km  = crosspad::getKitManager();
+        auto* kit = km ? km->getCurrentKit() : nullptr;
+        if (kit && kit->engine == crosspad::KitEngine::Pitched) {
+            if (auto* inst = crosspad::getPlatformServices().pitchedInstrument) {
+                inst->setPadMix(pad, volume, pan);
+            }
+            return;
+        }
+        platform_setVolume(pad, volume);
+        platform_setPan(pad, pan);
+    }
+};
 
 void platform_setLoopEnd(uint8_t padIdx, uint32_t endPos) {
     SampleStreamPlayer_SetLoopEnd(padIdx, endPos);
@@ -395,6 +414,8 @@ crosspad::IAudioNode* sampler_port_init() {
     SampleStreamPlayer_SetMaxPolyphony(16);
 
     crosspad::getPlatformServices().kitManager = &s_kitLoader;
+    static PcPadMix padMix;
+    crosspad::getPlatformServices().padMix = &padMix;
 
     crosspad_sampler::SamplerPlatformCallbacks cb{};
 
