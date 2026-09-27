@@ -116,6 +116,7 @@ tools/mcp-server/               — MCP development server (TypeScript, 16 tools
 
 - **crosspad-appstore**: Built-in App Store (cannot be removed)
 - **crosspad-mixer**, **crosspad-piano**, **crosspad-instructions**, **crosspad-serial-monitor**: Installable via `python3 scripts/app_manager.py install <name>` or via the App Store UI
+- **crosspad-sequencer**, **crosspad-song**, **crosspad-arrange**, **crosspad-pad-mixer**, **crosspad-dawcontrol**: the board's apps, with the platform services they need wired here -- the pattern sequencer and metronome (`src/sequencer/PcSequencer.cpp`, scenes in `<sdcard_path>/crosspad/sequences.json`), core's song engine (`src/song/PcSongEnginePort.cpp`, projects in `<sdcard_path>/SONGS`, bounces from the mixer's third "Rec (pads)" bus), per-pad levels (`PcPadMix` in `PcSamplerPort.cpp`) and `stm32MessageHandler` for DAW Control (no hub on PC, so no launch buttons)
 
 ### App Management
 
