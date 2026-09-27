@@ -30,6 +30,22 @@
     "sampler": {
       "track": "branch",
       "ref": "main"
+    },
+    "pad-mixer": {
+      "track": "registry"
+    },
+    "arrange": {
+      "track": "registry"
+    },
+    "sequencer": {
+      "track": "registry"
+    },
+    "song": {
+      "track": "registry"
+    },
+    "dawcontrol": {
+      "track": "branch",
+      "ref": "main"
     }
   }
 }

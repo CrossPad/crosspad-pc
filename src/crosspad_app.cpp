@@ -766,6 +766,9 @@ void crosspad_app_init()
 #ifdef USE_MIDI
     // Initialize STM32 message handler
     stm32Handler.init(crosspad::getPadManager(), status);
+    /* DAW Control takes host frames through the platform's catalog decoder,
+     * as on the board. */
+    crosspad::getPlatformServices().stm32MessageHandler = &stm32Handler;
 
     // Auto-connect MIDI from saved preferences or fall back to "CrossPad" keyword
     {

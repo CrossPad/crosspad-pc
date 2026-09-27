@@ -43,6 +43,36 @@
       "ref": "main",
       "repo": "https://github.com/CrossPad/crosspad-sampler.git",
       "installed_at": "2026-08-29T19:21:32.384114+00:00"
+    },
+    "pad-mixer": {
+      "version": "4d1bc323",
+      "ref": "main",
+      "repo": "https://github.com/CrossPad/crosspad-pad-mixer.git",
+      "installed_at": "2026-09-27T00:23:13.511059+00:00"
+    },
+    "arrange": {
+      "version": "33e1a4c",
+      "ref": "main",
+      "repo": "https://github.com/CrossPad/crosspad-arrange.git",
+      "installed_at": "2026-09-27T00:23:43.682955+00:00"
+    },
+    "sequencer": {
+      "version": "8e6fbde",
+      "ref": "main",
+      "repo": "https://github.com/CrossPad/crosspad-pattern-seq.git",
+      "installed_at": "2026-09-27T00:23:53.297779+00:00"
+    },
+    "song": {
+      "version": "2268bcab",
+      "ref": "main",
+      "repo": "https://github.com/CrossPad/crosspad-song.git",
+      "installed_at": "2026-09-27T00:24:00.851748+00:00"
+    },
+    "dawcontrol": {
+      "version": "d7f3aea",
+      "ref": "main",
+      "repo": "https://github.com/CrossPad/crosspad-dawcontrol.git",
+      "installed_at": "2026-09-27T00:25:11.371222+00:00"
     }
   }
 }
