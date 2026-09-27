@@ -20,7 +20,7 @@
       "installed_at": "2026-04-08T18:45:16.225115+00:00"
     },
     "mixer": {
-      "version": "7e904805",
+      "version": "e935fa86",
       "ref": "main",
       "repo": "https://github.com/CrossPad/crosspad-mixer.git",
       "installed_at": "2026-04-10T14:10:33.752307+00:00",
@@ -51,13 +51,13 @@
       "installed_at": "2026-09-27T00:23:13.511059+00:00"
     },
     "arrange": {
-      "version": "33e1a4c",
+      "version": "00b505d0",
       "ref": "main",
       "repo": "https://github.com/CrossPad/crosspad-arrange.git",
       "installed_at": "2026-09-27T00:23:43.682955+00:00"
     },
     "sequencer": {
-      "version": "8e6fbde",
+      "version": "5c74200d",
       "ref": "main",
       "repo": "https://github.com/CrossPad/crosspad-pattern-seq.git",
       "installed_at": "2026-09-27T00:23:53.297779+00:00"
