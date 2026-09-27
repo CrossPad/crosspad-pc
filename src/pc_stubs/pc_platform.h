@@ -89,8 +89,9 @@ void pc_platform_save_mixer_state();
 /// Pass empty string to unmount.
 void pc_platform_set_sdcard_path(const std::string& path);
 
-/// Get the current virtual SD card root directory, or empty if not mounted.
-const std::string& pc_platform_get_sdcard_path();
+/// The current virtual SD card root directory, or empty if not mounted. A
+/// copy: the SD slot remounts on the UI thread while workers read it.
+std::string pc_platform_get_sdcard_path();
 
 /// Resolve a virtual path (e.g. "/crosspad/kits/...") to the actual
 /// filesystem path under the mounted SD card root. Returns input unchanged

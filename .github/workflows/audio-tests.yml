@@ -1,0 +1,72 @@
+name: Audio Tests (Tier 2 + 3)
+
+on:
+  push:
+    branches: [master, main, feat/audio-tests-tier2-3]
+    paths:
+      - 'src/audio/**'
+      - 'src/apps/crosspad-mixer/**'
+      - 'src/synth/**'
+      - 'lib/crosspad-core/**'
+      - 'tests/audio/**'
+      - 'tests/golden/**'
+      - 'tests/CMakeLists.txt'
+      - 'CMakeLists.txt'
+      - '.github/workflows/audio-tests.yml'
+  pull_request:
+    branches: [master, main]
+    paths:
+      - 'src/audio/**'
+      - 'src/apps/crosspad-mixer/**'
+      - 'src/synth/**'
+      - 'lib/crosspad-core/**'
+      - 'tests/audio/**'
+      - 'tests/golden/**'
+      - 'tests/CMakeLists.txt'
+      - 'CMakeLists.txt'
+      - '.github/workflows/audio-tests.yml'
+  workflow_dispatch:
+
+jobs:
+  tier2-3-pc:
+    name: Tier 2 + 3 PC tests (Linux)
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
+          token: ${{ secrets.SUBMODULE_PAT }}
+
+      - name: Install build deps
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            cmake ninja-build g++ \
+            libsdl2-dev libsdl2-image-dev libsdl2-ttf-dev \
+            libpulse-dev libasound2-dev \
+            libfreetype6-dev libpng-dev libjpeg-dev
+
+      - name: Configure
+        run: |
+          cmake -B build -G Ninja \
+            -DCMAKE_BUILD_TYPE=Debug \
+            -DBUILD_TESTING=ON
+
+      - name: Build crosspad_tests
+        run: cmake --build build --target crosspad_tests
+
+      - name: Run audio Tier 2 + 3 (compact)
+        run: ./bin/crosspad_tests "[audio]" --reporter compact
+
+      - name: Verify goldens are byte-stable
+        run: |
+          ./bin/crosspad_tests "[golden]" --reporter compact
+          if [ -n "$(git status --porcelain tests/golden/)" ]; then
+            echo "::error::Golden WAVs drifted during the test run"
+            git --no-pager diff --stat tests/golden/
+            exit 1
+          fi
+
+      - name: Run full test suite (audio + non-audio, headless, exclude GUI)
+        run: ctest --test-dir build --output-on-failure -LE gui

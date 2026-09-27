@@ -18,8 +18,9 @@
 #include "FreeRTOS.h"
 #include "task.h"
 
-#include <cstdio>
 #include <atomic>
+#include <cstdio>
+#include <cstdlib>
 
 // ── FreeRTOS hooks (required by kernel config) ──
 
@@ -58,7 +59,12 @@ static void testRunnerTask(void* pvParameters)
 {
     (void)pvParameters;
     s_testResult = Catch::Session().run(s_argc, s_argv);
-    vTaskEndScheduler();
+    /* Not vTaskEndScheduler(): on the POSIX port it deadlocks now and then
+     * (2 runs in 1000 under load) with the results already printed, and
+     * ctest then reports a passed test as a 1500 s timeout. Nothing is left
+     * to tear down that the exit does not. */
+    std::fflush(nullptr);
+    std::_Exit(s_testResult.load());
 }
 
 int main(int argc, char* argv[])

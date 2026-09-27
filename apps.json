@@ -1,0 +1,78 @@
+{
+  "installed": {
+    "piano": {
+      "version": "73376751",
+      "ref": "main",
+      "repo": "https://github.com/CrossPad/crosspad-piano.git",
+      "installed_at": "2026-04-08T13:23:52.201526+00:00"
+    },
+    "instructions": {
+      "version": "3b6e4985",
+      "ref": "main",
+      "repo": "https://github.com/CrossPad/crosspad-instructions.git",
+      "installed_at": "2026-04-08T13:23:53.166029+00:00",
+      "updated_at": "2026-08-18T04:54:07.320608+00:00"
+    },
+    "serial-monitor": {
+      "version": "a946e264",
+      "ref": "main",
+      "repo": "https://github.com/CrossPad/crosspad-serial-monitor.git",
+      "installed_at": "2026-04-08T18:45:16.225115+00:00"
+    },
+    "mixer": {
+      "version": "e935fa86",
+      "ref": "main",
+      "repo": "https://github.com/CrossPad/crosspad-mixer.git",
+      "installed_at": "2026-04-10T14:10:33.752307+00:00",
+      "updated_at": "2026-08-18T04:54:07.483872+00:00"
+    },
+    "appstore": {
+      "version": "9f670b16",
+      "ref": "main",
+      "repo": "https://github.com/CrossPad/crosspad-appstore.git",
+      "installed_at": "2026-07-02T15:08:46.567243+00:00"
+    },
+    "fishtank": {
+      "version": "718fc513",
+      "ref": "main",
+      "repo": "https://github.com/matixan/crosspad-fishtank.git",
+      "installed_at": "2026-08-18T12:42:14.883674+00:00"
+    },
+    "sampler": {
+      "version": "dbcf5990",
+      "ref": "main",
+      "repo": "https://github.com/CrossPad/crosspad-sampler.git",
+      "installed_at": "2026-08-29T19:21:32.384114+00:00"
+    },
+    "pad-mixer": {
+      "version": "4d1bc323",
+      "ref": "main",
+      "repo": "https://github.com/CrossPad/crosspad-pad-mixer.git",
+      "installed_at": "2026-09-27T00:23:13.511059+00:00"
+    },
+    "arrange": {
+      "version": "00b505d0",
+      "ref": "main",
+      "repo": "https://github.com/CrossPad/crosspad-arrange.git",
+      "installed_at": "2026-09-27T00:23:43.682955+00:00"
+    },
+    "sequencer": {
+      "version": "5c74200d",
+      "ref": "main",
+      "repo": "https://github.com/CrossPad/crosspad-pattern-seq.git",
+      "installed_at": "2026-09-27T00:23:53.297779+00:00"
+    },
+    "song": {
+      "version": "2268bcab",
+      "ref": "main",
+      "repo": "https://github.com/CrossPad/crosspad-song.git",
+      "installed_at": "2026-09-27T00:24:00.851748+00:00"
+    },
+    "dawcontrol": {
+      "version": "d7f3aea",
+      "ref": "main",
+      "repo": "https://github.com/CrossPad/crosspad-dawcontrol.git",
+      "installed_at": "2026-09-27T00:25:11.371222+00:00"
+    }
+  }
+}

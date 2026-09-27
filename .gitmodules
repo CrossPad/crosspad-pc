@@ -8,8 +8,44 @@
 	path = FreeRTOS
 	url = https://github.com/FreeRTOS/FreeRTOS-Kernel.git
 [submodule "crosspad-core"]
-	path = crosspad-core
+	path = lib/crosspad-core
 	url = https://github.com/CrossPad/crosspad-core.git
 [submodule "crosspad-gui"]
-	path = crosspad-gui
+	path = lib/crosspad-gui
 	url = https://github.com/CrossPad/crosspad-gui.git
+[submodule "src/apps/crosspad-piano"]
+	path = src/apps/crosspad-piano
+	url = https://github.com/CrossPad/crosspad-piano.git
+[submodule "src/apps/crosspad-instructions"]
+	path = src/apps/crosspad-instructions
+	url = https://github.com/CrossPad/crosspad-instructions.git
+[submodule "src/apps/crosspad-appstore"]
+	path = src/apps/crosspad-appstore
+	url = https://github.com/CrossPad/crosspad-appstore.git
+[submodule "src/apps/crosspad-serial-monitor"]
+	path = src/apps/crosspad-serial-monitor
+	url = https://github.com/CrossPad/crosspad-serial-monitor.git
+[submodule "src/apps/crosspad-mixer"]
+	path = src/apps/crosspad-mixer
+	url = https://github.com/CrossPad/crosspad-mixer.git
+[submodule "src/apps/crosspad-fishtank"]
+	path = src/apps/crosspad-fishtank
+	url = https://github.com/matixan/crosspad-fishtank.git
+[submodule "src/apps/crosspad-sampler"]
+	path = src/apps/crosspad-sampler
+	url = https://github.com/CrossPad/crosspad-sampler.git
+[submodule "src/apps/crosspad-dawcontrol"]
+	path = src/apps/crosspad-dawcontrol
+	url = https://github.com/CrossPad/crosspad-dawcontrol.git
+[submodule "src/apps/crosspad-pad-mixer"]
+	path = src/apps/crosspad-pad-mixer
+	url = https://github.com/CrossPad/crosspad-pad-mixer.git
+[submodule "src/apps/crosspad-arrange"]
+	path = src/apps/crosspad-arrange
+	url = https://github.com/CrossPad/crosspad-arrange.git
+[submodule "src/apps/crosspad-sequencer"]
+	path = src/apps/crosspad-sequencer
+	url = https://github.com/CrossPad/crosspad-pattern-seq.git
+[submodule "src/apps/crosspad-song"]
+	path = src/apps/crosspad-song
+	url = https://github.com/CrossPad/crosspad-song.git

@@ -7,12 +7,18 @@
  * Shows pass/fail results on an LVGL status screen.
  */
 
+#include "CITestApi.hpp"
+
 #include "pc_stubs/PcApp.hpp"
 #include "pc_stubs/pc_platform.h"
-#include "apps/mixer/AudioMixerEngine.hpp"
+#if __has_include("crosspad-mixer/AudioMixerEngine.hpp")
+#include "crosspad-mixer/AudioMixerEngine.hpp"
+#define HAS_MIXER 1
+#endif
 #include "synth/MlPianoSynth.hpp"
 
 #include "crosspad/app/AppRegistrar.hpp"
+#include "crosspad-gui/components/app_icon.h"
 #include "crosspad-gui/platform/IGuiPlatform.h"
 #include "crosspad/audio/AudioRingBuffer.hpp"
 #include "crosspad/synth/ISynthEngine.hpp"
@@ -162,7 +168,9 @@ static void drainTap(crosspad::AudioRingBuffer<int16_t>& tap) {
 static void testRunnerTask(void* pvParam) {
     (void)pvParam;
 
+#ifdef HAS_MIXER
     auto& mixer = getMixerEngine();
+#endif
     auto* synth = pc_platform_get_synth_engine();
 
     // Tap buffer: 2 seconds stereo at 48kHz
@@ -176,6 +184,14 @@ static void testRunnerTask(void* pvParam) {
         return;
     }
 
+#ifndef HAS_MIXER
+    // No mixer installed — skip all mixer-dependent tests
+    for (int i = 0; i < NUM_STAGES; i++)
+        setStage(i, StageResult::FAIL, "mixer not installed");
+    s_testRunning.store(false);
+    vTaskDelete(nullptr);
+    return;
+#else
     // Save original mixer state
     float origSynthVol = mixer.getChannelVolume(MixerInput::SYNTH);
     bool origSynthMuted = mixer.isChannelMuted(MixerInput::SYNTH);
@@ -396,6 +412,7 @@ static void testRunnerTask(void* pvParam) {
 
         setStage(6, StageResult::PASS, "mixer restored");
     }
+#endif // HAS_MIXER
 
     // Count results
     int pass = 0, fail = 0;
@@ -472,14 +489,45 @@ static void CITest_destroy(lv_obj_t* obj) {
     printf("[CITest] App destroyed\n");
 }
 
-void _register_CITest_app() {
-    static char icon_path[256];
-    snprintf(icon_path, sizeof(icon_path), "%stest.png",
-             crosspad_gui::getGuiPlatform().assetPathPrefix());
-    static const crosspad::AppEntry entry = {
-        "CITest", icon_path,
-        CITest_create, CITest_destroy,
-        nullptr, nullptr, nullptr, nullptr, 0
-    };
-    crosspad::AppRegistry::getInstance().registerApp(entry);
+// ── Public C++ API for headless / remote-driven runs ────────────────────
+
+namespace citest {
+
+bool start() {
+    if (s_testRunning.exchange(true)) return false;
+    for (auto& st : s_stages) {
+        st.result = StageResult::PENDING;
+        st.detail[0] = '\0';
+    }
+    s_uiDirty.store(true);
+    BaseType_t ok = xTaskCreate(testRunnerTask, "CITest", 8192, nullptr, 1, nullptr);
+    if (ok != pdPASS) {
+        s_testRunning.store(false);
+        return false;
+    }
+    return true;
 }
+
+bool isRunning() { return s_testRunning.load(); }
+
+size_t stageCount() { return static_cast<size_t>(NUM_STAGES); }
+
+bool stageAt(size_t index, const char*& nameOut, Result& resultOut, const char*& detailOut) {
+    if (index >= static_cast<size_t>(NUM_STAGES)) return false;
+    const auto& st = s_stages[index];
+    nameOut = st.name;
+    detailOut = st.detail;
+    switch (st.result) {
+        case StageResult::PENDING: resultOut = Result::Pending; break;
+        case StageResult::RUNNING: resultOut = Result::Running; break;
+        case StageResult::PASS:    resultOut = Result::Pass;    break;
+        case StageResult::FAIL:    resultOut = Result::Fail;    break;
+    }
+    return true;
+}
+
+} // namespace citest
+
+REGISTER_APP(CITest, nullptr, crosspad_gui::resolveAppIcon("test.png"),
+             CITest_create, CITest_destroy,
+             nullptr, nullptr, nullptr, 0)

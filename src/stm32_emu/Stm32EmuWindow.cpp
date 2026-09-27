@@ -15,6 +15,7 @@
 
 #include <SDL2/SDL.h>
 #include "crosspad-gui/platform/IGuiPlatform.h"
+#include "crosspad_app.hpp"
 
 /* ── SDL event watcher (encoder + keyboard capture) ──────────────────── */
 
@@ -30,10 +31,13 @@ static int sdlEventWatcher(void* userdata, SDL_Event* event)
             return 0;  // consumed — don't pass to LVGL
     }
 
-    // Window close — use _exit() to avoid abort() from detached FreeRTOS threads
+    // Window close — use _exit() to avoid abort() from detached FreeRTOS threads.
+    // Call app shutdown first so virtual audio sinks get unloaded cleanly before
+    // the process vanishes (PulseAudio/PipeWire won't auto-clean them for us).
     if (event->type == SDL_QUIT) {
         printf("[PC] Window closed — exiting\n");
         fflush(stdout);
+        crosspad_app_shutdown();
         _Exit(0);
     }
 
@@ -61,9 +65,9 @@ Stm32EmuWindow::~Stm32EmuWindow()
 
 /* ── Layout constants ────────────────────────────────────────────────── */
 
-// LCD container
-static constexpr int32_t LCD_W = 320;
-static constexpr int32_t LCD_H = 240;
+// LCD container — geometry lives in the header (the remote server reads it too)
+static constexpr int32_t LCD_W = Stm32EmuWindow::LCD_W;
+static constexpr int32_t LCD_H = Stm32EmuWindow::LCD_H;
 
 // Pad grid
 static constexpr int32_t PAD_SIZE_SCALE = 5;  // overall size multiplier for emulator UI
@@ -73,8 +77,8 @@ static constexpr int32_t GRID_W   = 4 * PAD_SIZE + 3 * PAD_GAP;
 static constexpr int32_t GRID_H   = crosspad_gui::VirtualPadGrid::gridHeight(PAD_SIZE, PAD_GAP*2/3);
 
 // LCD centered horizontally in window
-static constexpr int32_t LCD_X = (Stm32EmuWindow::WIN_W - LCD_W) / 2;
-static constexpr int32_t LCD_Y = 58;
+static constexpr int32_t LCD_X = Stm32EmuWindow::LCD_X;
+static constexpr int32_t LCD_Y = Stm32EmuWindow::LCD_Y;
 
 // Encoder to the right of LCD
 static constexpr int32_t ENC_SIZE = 60;
@@ -376,7 +380,14 @@ void Stm32EmuWindow::handleEncoderWheel(int dy)
 {
     encoder_.handleWheelDelta(dy);
 
-    // Scroll the active app's scrollable content
+    /* LVGL's SDL mousewheel indev is the encoder, and it already saw this event
+     * — moving focus inside whatever group crosspad-gui handed it. Scrolling on
+     * top of that would move two things at once, so the old scroll fallback now
+     * only runs for screens that never built a group. */
+    lv_indev_t* nav = crosspad_gui::getGuiPlatform().getNavigationEncoder();
+    lv_group_t* navGroup = nav ? lv_indev_get_group(nav) : nullptr;
+    if (navGroup && lv_group_get_obj_count(navGroup) > 0) return;
+
     lv_obj_t* target = findScrollable(lcdContainer_);
     if (target) {
         lv_obj_scroll_by(target, 0, dy * 20, LV_ANIM_ON);

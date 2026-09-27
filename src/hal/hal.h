@@ -33,6 +33,12 @@ extern "C" {
  */
 lv_display_t * sdl_hal_init(int32_t w, int32_t h);
 
+/**
+ * The rotary encoder input device (LVGL's SDL mousewheel driver: wheel to
+ * rotate, middle click to push). NULL before sdl_hal_init().
+ */
+lv_indev_t * sdl_hal_get_encoder(void);
+
 /**********************
  *      MACROS
  **********************/

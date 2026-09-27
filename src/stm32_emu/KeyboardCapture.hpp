@@ -56,6 +56,8 @@ public:
 
     /// Set callback for power button (Ctrl key → volume overlay toggle).
     void setPowerCallback(ActionCallback cb) { onPower_ = cb; }
+    void setPowerReleaseCallback(ActionCallback cb) { onPowerRelease_ = cb; }
+    void setVolumeCallback(ActionCallback cb) { onVolume_ = cb; }
 
     /// Process Windows messages for global hotkeys (call from a timer or message pump).
     /// Only relevant in Global mode on Windows.
@@ -65,6 +67,8 @@ private:
     Mode mode_ = Mode::Off;
     ActionCallback onEscape_ = nullptr;
     ActionCallback onPower_  = nullptr;
+    ActionCallback onPowerRelease_ = nullptr;
+    ActionCallback onVolume_ = nullptr;
 
     /// Map SDL keycode to pad index (0-15), or -1 if unmapped.
     static int keyToPad(int keycode);

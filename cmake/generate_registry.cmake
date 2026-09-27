@@ -11,6 +11,8 @@
 #   generate_app_registry("${CMAKE_BINARY_DIR}/app_registry_init.cpp" APP_SCAN_DIRS)
 
 function(generate_app_registry OUTPUT_FILE SCAN_DIRS)
+    # Optional: extra args are exclude patterns (directory names to skip)
+    set(EXCLUDE_DIRS ${ARGN})
     set(APP_NAMES "")
 
     foreach(SCAN_DIR ${SCAN_DIRS})
@@ -20,12 +22,34 @@ function(generate_app_registry OUTPUT_FILE SCAN_DIRS)
             if(NOT EXISTS "${src}")
                 continue()
             endif()
+            # Check exclude patterns
+            set(_skip FALSE)
+            foreach(_excl ${EXCLUDE_DIRS})
+                if("${src}" MATCHES "/${_excl}/")
+                    set(_skip TRUE)
+                endif()
+            endforeach()
+            if(_skip)
+                continue()
+            endif()
             file(READ "${src}" FILE_CONTENT)
 
             # Pattern 1: REGISTER_APP(Name, ...) macro
             string(REGEX MATCHALL "REGISTER_APP\\(([^,]+)," MATCHES "${FILE_CONTENT}")
             foreach(MATCH ${MATCHES})
                 string(REGEX REPLACE "REGISTER_APP\\(([^,]+)," "\\1" APP_NAME "${MATCH}")
+                string(STRIP "${APP_NAME}" APP_NAME)
+                list(APPEND APP_NAMES "${APP_NAME}")
+            endforeach()
+
+            # Pattern 1b: REGISTER_APP_PL(Name, ...) — the pad-logic variant.
+            # Matched separately so the capture-group index of the plain form
+            # above stays put. Without this an app that declares pad logic
+            # compiles and links but never registers, so it simply never
+            # appears in the launcher.
+            string(REGEX MATCHALL "REGISTER_APP_PL\\(([^,]+)," MATCHES_PL "${FILE_CONTENT}")
+            foreach(MATCH ${MATCHES_PL})
+                string(REGEX REPLACE "REGISTER_APP_PL\\(([^,]+)," "\\1" APP_NAME "${MATCH}")
                 string(STRIP "${APP_NAME}" APP_NAME)
                 list(APPEND APP_NAMES "${APP_NAME}")
             endforeach()

@@ -57,11 +57,19 @@ public:
     uint8_t getMidiChannel() const { return midiChannel_; }
 
     /**
-     * @brief Process audio: generate stereo int16 interleaved samples
+     * @brief Process audio: generate stereo int16 interleaved samples (legacy path)
      * @param stereoOut  Output buffer (interleaved L,R,L,R,...)
      * @param frames     Number of stereo frames to generate
      */
     void process(int16_t* stereoOut, uint32_t frames);
+
+    /**
+     * @brief Process audio: generate stereo float interleaved samples [-1.0, 1.0].
+     *
+     * Preferred path — keeps DSP in float end-to-end. Override of
+     * crosspad::ISynthEngine::process(float*, frames).
+     */
+    void process(float* stereoOut, uint32_t frames) override;
 
     uint32_t getSampleRate() const { return sampleRate_; }
     void setSampleRate(uint32_t sr) { sampleRate_ = sr; }
