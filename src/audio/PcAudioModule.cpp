@@ -45,10 +45,8 @@ PcAudioModule::~PcAudioModule() {
 bool PcAudioModule::setup(const crosspad::AudioModuleConfig& config) {
     if (!AbstractAudioModule::setup(config)) return false;
     const size_t samples = static_cast<size_t>(config_.frameCount) * 2;
-    for (uint8_t s = 0; s < NUM_OUTPUTS; ++s) {
-        mixerBus_[s].assign(samples, 0.0f);
-        pushScratchInt16_[s].assign(samples, 0);
-    }
+    for (uint8_t s = 0; s < NUM_BUSES; ++s) mixerBus_[s].assign(samples, 0.0f);
+    for (uint8_t s = 0; s < NUM_OUTPUTS; ++s) pushScratchInt16_[s].assign(samples, 0);
     printf("[PcAudioModule] Setup: %u Hz, %u frames, %u streams, %u channels\n",
            config_.sampleRate, config_.frameCount,
            config_.streamCount, config_.channelCount);
@@ -67,9 +65,12 @@ void PcAudioModule::processMixer() {
     const uint32_t frames  = config_.frameCount;
     const uint32_t samples = frames * 2;
 
-    float* outBuses[NUM_OUTPUTS];
-    for (uint8_t s = 0; s < NUM_OUTPUTS; ++s) outBuses[s] = mixerBus_[s].data();
-    mixer_->render(outBuses, NUM_OUTPUTS, frames);
+    float* outBuses[NUM_BUSES];
+    for (uint8_t s = 0; s < NUM_BUSES; ++s) outBuses[s] = mixerBus_[s].data();
+    mixer_->render(outBuses, NUM_BUSES, frames);
+    if (CaptureTap tap = captureTap_.load(std::memory_order_acquire)) {
+        tap(mixerBus_[CAPTURE_BUS].data(), frames);
+    }
 
     for (uint8_t s = 0; s < NUM_OUTPUTS; ++s) {
         // Convert unconditionally — even with no physical stream open, the

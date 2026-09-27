@@ -62,6 +62,12 @@ private:
 class PcAudioModule : public crosspad::AbstractAudioModule {
 public:
     static constexpr uint8_t NUM_OUTPUTS = 2;
+    /// A third mixer bus nothing plays: the pads alone, what a song bounce
+    /// records (the board's "USB rec" bus).
+    static constexpr uint8_t CAPTURE_BUS = NUM_OUTPUTS;
+    static constexpr uint8_t NUM_BUSES = NUM_OUTPUTS + 1;
+    /// Called on the audio thread with the capture bus after every render.
+    using CaptureTap = void (*)(const float* bus, uint32_t frames);
 
     PcAudioModule() = default;
     ~PcAudioModule() override;
@@ -89,6 +95,8 @@ public:
     /// leak into this module; wiring happens at the app-init call site.
     void setAuxStream(crosspad::IAudioStream* aux) { aux_.store(aux, std::memory_order_release); }
 
+    void setCaptureTap(CaptureTap tap) { captureTap_.store(tap, std::memory_order_release); }
+
     /// Start the audio processing thread
     void start();
 
@@ -101,6 +109,7 @@ private:
     PcRtAudioOutputStream outputs_[NUM_OUTPUTS];
     AudioMixerEngine* mixer_ = nullptr;
     std::atomic<crosspad::IAudioStream*> aux_{nullptr};
+    std::atomic<CaptureTap> captureTap_{nullptr};
 
     std::atomic<bool> running_{false};
     std::unique_ptr<std::thread> thread_;
@@ -116,7 +125,7 @@ public:
 
 private:
     // Per-stream float buses for mixer-driven mode (sized in setup).
-    std::vector<float>   mixerBus_[NUM_OUTPUTS];
+    std::vector<float>   mixerBus_[NUM_BUSES];
     std::vector<int16_t> pushScratchInt16_[NUM_OUTPUTS];
 
     // Ring overflow tracking and rate-limited logging

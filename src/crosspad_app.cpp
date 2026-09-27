@@ -87,6 +87,7 @@
 #if __has_include("crosspad-mixer/AudioMixerEngine.hpp")
 #include "crosspad-mixer/AudioMixerEngine.hpp"
 #include "sequencer/PcSequencer.hpp"
+#include "song/PcSongEnginePort.hpp"
 #define HAS_MIXER 1
 #endif
 #include <RtAudio.h>
@@ -1137,7 +1138,8 @@ void crosspad_app_init()
         mixerSr = pcAudio.isOpen() ? pcAudio.getSampleRate()
                  : (settings ? settings->audioEngine.sampleRate : 44100);
         const uint32_t mixerFrames = settings ? settings->audioEngine.frameCount : 256;
-        s_mixerEngine.setup(mixerFrames < 128 ? 128 : mixerFrames, mixerSr, 2);
+        s_mixerEngine.setup(mixerFrames < 128 ? 128 : mixerFrames, mixerSr,
+                            crosspad_pc::PcAudioModule::NUM_BUSES);
     }
     s_mixerEngine.setDefaults();
 
@@ -1169,12 +1171,27 @@ void crosspad_app_init()
         s_mixerEngine.setRouteEnabled(static_cast<MixerInput>(4), MixerOutput::OUT1, true);
     }
 
-    // The click and the pattern sequencer ride the mixer, as on the board.
+    // The click and the pattern sequencer ride the mixer, as on the board,
+    // and so does the song engine that plays clips and bounces scenes.
     crosspad_pc::sequencer_init(s_mixerEngine, crosspad_pc::PcAudioModule::NUM_OUTPUTS);
+    crosspad_pc::song_engine_init(s_mixerEngine, crosspad_pc::PcAudioModule::NUM_OUTPUTS,
+                                  crosspad_pc::PcAudioModule::CAPTURE_BUS);
 
     // Load mixer state AFTER channel slots exist so saved per-channel routing
     // applies; loadState only patches existing slots, never creates them.
     s_mixerEngine.loadState(getMixerStatePath());
+
+    // The pads alone on the capture bus a bounce records, whatever an older
+    // saved state (two outputs) said about routes it did not know.
+    s_mixerEngine.setOutputName(crosspad_pc::PcAudioModule::CAPTURE_BUS, "Rec (pads)");
+    if (s_samplerNode) {
+        s_mixerEngine.setRouteEnabled(static_cast<MixerInput>(3),
+                                      static_cast<MixerOutput>(crosspad_pc::PcAudioModule::CAPTURE_BUS), true);
+    }
+    if (s_pitchedNode) {
+        s_mixerEngine.setRouteEnabled(static_cast<MixerInput>(4),
+                                      static_cast<MixerOutput>(crosspad_pc::PcAudioModule::CAPTURE_BUS), true);
+    }
 
     // Engine-level state-changed sink — MixerApp.cpp (cross-platform) calls
     // notifyStateChanged() after every GUI mutation; this hook flushes to disk.
@@ -1212,6 +1229,7 @@ void crosspad_app_init()
         s_audioModule.setup(cfg);
 #ifdef HAS_MIXER
         s_audioModule.setMixerEngine(&s_mixerEngine);
+        s_audioModule.setCaptureTap(crosspad_pc::song_engine_rt_capture);
 #else
         s_synthNode.setEngine(&fmSynth);
         s_audioModule.addNode(&s_synthNode);
