@@ -86,6 +86,7 @@
 #include "synth/MlPianoSynth.hpp"
 #if __has_include("crosspad-mixer/AudioMixerEngine.hpp")
 #include "crosspad-mixer/AudioMixerEngine.hpp"
+#include "sequencer/PcSequencer.hpp"
 #define HAS_MIXER 1
 #endif
 #include <RtAudio.h>
@@ -1167,6 +1168,9 @@ void crosspad_app_init()
         s_mixerEngine.addChannel(s_pitchedNode, "Pitched");
         s_mixerEngine.setRouteEnabled(static_cast<MixerInput>(4), MixerOutput::OUT1, true);
     }
+
+    // The click and the pattern sequencer ride the mixer, as on the board.
+    crosspad_pc::sequencer_init(s_mixerEngine, crosspad_pc::PcAudioModule::NUM_OUTPUTS);
 
     // Load mixer state AFTER channel slots exist so saved per-channel routing
     // applies; loadState only patches existing slots, never creates them.

@@ -310,6 +310,7 @@ if(USE_AUDIO)
         src/audio/sampler/PcSampleNode.cpp
         src/audio/sampler/PcSamplerPort.cpp
         src/audio/sampler/PcPitchedPort.cpp
+        src/sequencer/PcSequencer.cpp
     )
 
     if(USE_VIRTUAL_AUDIO)
