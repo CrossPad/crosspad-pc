@@ -1,5 +1,6 @@
-// The song engine on PC: a std::thread worker, malloc'd rings, projects in
-// <sdcard_path>/SONGS, the current project in SONGS/.current, and a bounce
+// The song engine on PC: a FreeRTOS worker task (its sequencer calls post on
+// the event bus, which only a FreeRTOS task may do), malloc'd rings, projects
+// in <sdcard_path>/SONGS, the current project in SONGS/.current, and a bounce
 // records the capture bus PcAudioModule renders beside the two it plays.
 
 #include "PcSongEnginePort.hpp"
@@ -8,44 +9,43 @@
 #include "crosspad/platform/PlatformServices.hpp"
 #include "crosspad/sequencer/MetronomeNode.hpp"
 #include "crosspad/song/SongEngine.hpp"
+#include "pc_stubs/pc_platform.h"
 #include "sequencer/PcSequencer.hpp"
 
+#include "FreeRTOS.h"
+#include "semphr.h"
+#include "task.h"
+
 #include <chrono>
-#include <condition_variable>
 #include <cstdio>
 #include <cstdlib>
 #include <fstream>
 #include <mutex>
 #include <string>
-#include <thread>
-
-const std::string& pc_platform_get_sdcard_path();
 
 namespace {
 
 constexpr const char* kSongsDir = "/SONGS";
 constexpr const char* kCurrentFile = "/.current";
+constexpr uint32_t kWorkerStack = 8192;
+/// Above the LVGL task (1), as on the board: a busy screen must not starve
+/// the take's writer. It spends its time waiting on the disk.
+constexpr UBaseType_t kWorkerPriority = 2;
 
 class PcSongPlatform final : public crosspad::ISongEnginePlatform {
 public:
-    PcSongPlatform(AudioMixerEngine& mixer, uint8_t captureBus) : mixer_(mixer), bus_(captureBus) {}
+    PcSongPlatform(AudioMixerEngine& mixer, uint8_t captureBus)
+        : mixer_(mixer), bus_(captureBus), wake_(xSemaphoreCreateBinary()) {}
 
     bool startWorker(void (*entry)(void*), void* arg) override {
-        worker_ = std::thread(entry, arg);
-        return true;
+        return xTaskCreate(entry, "song_io", kWorkerStack, arg, kWorkerPriority, nullptr) == pdPASS;
     }
-    void joinWorker() override { if (worker_.joinable()) worker_.join(); }
-    void wake() override {
-        { std::lock_guard<std::mutex> l(m_); woken_ = true; }
-        cv_.notify_one();
-    }
+    void joinWorker() override {}   // the engine lives until the process's _Exit()
+    void wake() override { xSemaphoreGive(wake_); }
     void waitWake(uint32_t ms) override {
-        std::unique_lock<std::mutex> l(m_);
-        if (ms == UINT32_MAX) cv_.wait(l, [&] { return woken_; });
-        else cv_.wait_for(l, std::chrono::milliseconds(ms), [&] { return woken_; });
-        woken_ = false;
+        xSemaphoreTake(wake_, ms == UINT32_MAX ? portMAX_DELAY : pdMS_TO_TICKS(ms));
     }
-    void sleepMs(uint32_t ms) override { std::this_thread::sleep_for(std::chrono::milliseconds(ms ? ms : 1)); }
+    void sleepMs(uint32_t ms) override { vTaskDelay(ms ? pdMS_TO_TICKS(ms) : 1); }
     int64_t nowUs() override {
         return std::chrono::duration_cast<std::chrono::microseconds>(
             std::chrono::steady_clock::now().time_since_epoch()).count();
@@ -91,10 +91,7 @@ public:
 private:
     AudioMixerEngine& mixer_;
     uint8_t bus_;
-    std::thread worker_;
-    std::mutex m_;
-    std::condition_variable cv_;
-    bool woken_ = false;
+    SemaphoreHandle_t wake_;
     std::mutex rootMutex_;
     std::string root_;
     float gain_ = 1.0f;

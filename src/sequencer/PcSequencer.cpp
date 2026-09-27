@@ -12,13 +12,12 @@
 #include "crosspad/sequencer/PatternSequencer.hpp"
 #include "crosspad/sequencer/SequenceStore.hpp"
 #include "crosspad/sequencer/SequencerController.hpp"
+#include "pc_stubs/pc_platform.h"
 
-#include <chrono>
+#include "FreeRTOS.h"
+#include "task.h"
+
 #include <string>
-#include <thread>
-
-std::string pc_platform_resolve_sdcard_path(const std::string& virtualPath);
-const std::string& pc_platform_get_sdcard_path();
 
 namespace {
 
@@ -29,28 +28,34 @@ crosspad::SequencerController s_controller;
 constexpr const char* kScenesFile = "/crosspad/sequences.json";
 /// While a pattern or a count-in runs the poll is the jitter a fired hit
 /// inherits; idle it only decides how soon a transport start is noticed.
-constexpr auto kPollLive = std::chrono::milliseconds(2);
-constexpr auto kPollIdle = std::chrono::milliseconds(20);
-constexpr auto kStoreSweep = std::chrono::milliseconds(500);
+constexpr uint32_t kPollLiveMs = 2;
+constexpr uint32_t kPollIdleMs = 20;
+constexpr uint32_t kStoreSweepMs = 500;
+constexpr uint32_t kTaskStack = 4096;
+/// The poll fires pads, which post on the event bus: a FreeRTOS task, above
+/// the LVGL task (1) so a busy screen cannot drag the beat. The store writes
+/// files and waits its turn with the UI.
+constexpr UBaseType_t kPollPriority = 2;
+constexpr UBaseType_t kStorePriority = 1;
 
-void poll_loop()
+void poll_task(void*)
 {
     for (;;) {
         s_sequencer.poll();
         const auto st = s_sequencer.state();
         const bool live = st == crosspad::SequencerState::Running ||
                           st == crosspad::SequencerState::PreBeat;
-        std::this_thread::sleep_for(live ? kPollLive : kPollIdle);
+        vTaskDelay(pdMS_TO_TICKS(live ? kPollLiveMs : kPollIdleMs));
     }
 }
 
 /// Read the scenes once a card is there, then write them back whenever they
 /// change -- never mid-take, and never over a file that did not read.
-void store_loop()
+void store_task(void*)
 {
     std::string file;
     for (;;) {
-        std::this_thread::sleep_for(kStoreSweep);
+        vTaskDelay(pdMS_TO_TICKS(kStoreSweepMs));
         if (pc_platform_get_sdcard_path().empty()) continue;
         if (file.empty()) {
             const std::string path = pc_platform_resolve_sdcard_path(kScenesFile);
@@ -99,8 +104,8 @@ void sequencer_init(AudioMixerEngine& mixer, uint8_t audibleOutputs)
     crosspad::getPlatformServices().sequencer = &s_controller;
     crosspad::getPlatformServices().sequencerEngine = &s_sequencer;
     /* The process ends with _Exit(); these run until then. */
-    std::thread(poll_loop).detach();
-    std::thread(store_loop).detach();
+    xTaskCreate(poll_task, "seq_poll", kTaskStack, nullptr, kPollPriority, nullptr);
+    xTaskCreate(store_task, "seq_store", kTaskStack, nullptr, kStorePriority, nullptr);
 }
 
 } // namespace crosspad_pc

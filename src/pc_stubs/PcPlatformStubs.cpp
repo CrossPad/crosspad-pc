@@ -17,6 +17,7 @@
 #include <map>
 #include <fstream>
 #include <filesystem>
+#include <mutex>
 
 #ifdef USE_FREERTOS
 #include "FreeRTOS.h"
@@ -86,7 +87,7 @@ lv_obj_t* status_c = nullptr;
 
 // Forward declarations — defined after anonymous namespace
 std::string pc_platform_resolve_sdcard_path(const std::string& virtualPath);
-const std::string& pc_platform_get_sdcard_path();
+std::string pc_platform_get_sdcard_path();
 
 // =============================================================================
 // PcClock — IClock via std::chrono
@@ -652,8 +653,10 @@ void pc_platform_set_usb_autoconnect(bool enabled) {
 // =============================================================================
 
 static std::string s_sdcardRoot;
+static std::mutex s_sdcardMutex;   // the SD slot writes it on the UI thread; workers read it
 
 void pc_platform_set_sdcard_path(const std::string& path) {
+    std::unique_lock<std::mutex> lock(s_sdcardMutex);
     s_sdcardRoot = path;
 
     // Normalize backslashes
@@ -681,16 +684,18 @@ void pc_platform_set_sdcard_path(const std::string& path) {
     status.sdCardDetected   = !s_sdcardRoot.empty();
 }
 
-const std::string& pc_platform_get_sdcard_path() {
+std::string pc_platform_get_sdcard_path() {
+    std::lock_guard<std::mutex> lock(s_sdcardMutex);
     return s_sdcardRoot;
 }
 
 std::string pc_platform_resolve_sdcard_path(const std::string& virtualPath) {
-    if (s_sdcardRoot.empty()) return virtualPath;
+    const std::string root = pc_platform_get_sdcard_path();
+    if (root.empty()) return virtualPath;
 
     // Map "/crosspad/..." → "<sdcard_root>/crosspad/..."
     if (virtualPath.size() >= 9 && virtualPath.compare(0, 9, "/crosspad") == 0) {
-        return s_sdcardRoot + virtualPath;
+        return root + virtualPath;
     }
     return virtualPath;
 }
