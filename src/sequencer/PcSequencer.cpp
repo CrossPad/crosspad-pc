@@ -32,10 +32,12 @@ constexpr uint32_t kPollLiveMs = 2;
 constexpr uint32_t kPollIdleMs = 20;
 constexpr uint32_t kStoreSweepMs = 500;
 constexpr uint32_t kTaskStack = 4096;
-/// The poll fires pads, which post on the event bus: a FreeRTOS task, above
-/// the LVGL task (1) so a busy screen cannot drag the beat. The store writes
-/// files and waits its turn with the UI.
-constexpr UBaseType_t kPollPriority = 2;
+/// The poll fires pads, which post on the event bus: a FreeRTOS task. At the
+/// LVGL task's priority (1), not above it as on the board: the poll and the
+/// Sequencer screen share the pattern's std::mutex, and on the POSIX port a
+/// task blocked on one still counts as running, so a higher priority would
+/// starve LVGL of the CPU it needs to let go. The store likewise.
+constexpr UBaseType_t kPollPriority = 1;
 constexpr UBaseType_t kStorePriority = 1;
 
 void poll_task(void*)

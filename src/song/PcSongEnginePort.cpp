@@ -28,9 +28,12 @@ namespace {
 constexpr const char* kSongsDir = "/SONGS";
 constexpr const char* kCurrentFile = "/.current";
 constexpr uint32_t kWorkerStack = 8192;
-/// Above the LVGL task (1), as on the board: a busy screen must not starve
-/// the take's writer. It spends its time waiting on the disk.
-constexpr UBaseType_t kWorkerPriority = 2;
+/// The LVGL task's priority (1), not above it as on the board: the worker and
+/// the UI share std::mutexes (the song's), and on the POSIX port a task
+/// blocked on one still counts as running -- above LVGL it would wait forever
+/// for a mutex LVGL never gets the CPU to release. At equal priority the tick
+/// hands LVGL its turn.
+constexpr UBaseType_t kWorkerPriority = 1;
 
 class PcSongPlatform final : public crosspad::ISongEnginePlatform {
 public:
