@@ -171,6 +171,16 @@ endif()
 
 # BLE MIDI support via SimpleBLE
 if(USE_BLE)
+    # SimpleBLE 0.7.3 vendors an fmt older than 10, which uses MSVC's
+    # stdext::checked_array_iterator -- gone from the STL since VS 2022 17.8.
+    # It takes the fmt::fmt-header-only target instead when one exists.
+    FetchContent_Declare(
+        fmt
+        GIT_REPOSITORY https://github.com/fmtlib/fmt.git
+        GIT_TAG        11.0.2
+    )
+    FetchContent_MakeAvailable(fmt)
+    set_target_properties(fmt PROPERTIES EXCLUDE_FROM_ALL TRUE)
     FetchContent_Declare(
         simpleble
         GIT_REPOSITORY https://github.com/OpenBluetoothToolbox/SimpleBLE.git
@@ -178,9 +188,16 @@ if(USE_BLE)
         SOURCE_SUBDIR  simpleble
     )
     FetchContent_MakeAvailable(simpleble)
-    # SimpleBLE sets /WX /W1 internally — override to suppress warnings
+    # SimpleBLE sets /WX /W1 internally — override to suppress warnings. Its
+    # WinRT backend still uses the /await coroutines, which VS 18 refuses
+    # unless told it has been warned (STL1011).
     if(MSVC)
-        target_compile_options(simpleble PRIVATE /w /WX-)
+        foreach(t simpleble simpleble-c)
+            if(TARGET ${t})
+                target_compile_options(${t} PRIVATE /w /WX-)
+                target_compile_definitions(${t} PRIVATE _SILENCE_EXPERIMENTAL_COROUTINE_DEPRECATION_WARNINGS)
+            endif()
+        endforeach()
     endif()
     message(STATUS "BLE support enabled (SimpleBLE)")
 endif()
