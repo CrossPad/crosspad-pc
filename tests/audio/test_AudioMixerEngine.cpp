@@ -73,7 +73,7 @@ TEST_CASE("AudioMixerEngine: render synth-only into OUT1", "[audio][mixer]") {
     for (float v : out1) REQUIRE_THAT(v, WithinAbs(0.0f,  1e-6f));
 }
 
-TEST_CASE("AudioMixerEngine: route disabled → output silent", "[audio][mixer]") {
+TEST_CASE("AudioMixerEngine: route disabled -> output silent", "[audio][mixer]") {
     MixerFixture f;  // setDefaults already cleared all routes
 
     ConstSynth synth(0.5f);
@@ -102,7 +102,7 @@ TEST_CASE("AudioMixerEngine: per-route volume scales mix", "[audio][mixer]") {
     for (float v : out0) REQUIRE_THAT(v, WithinAbs(0.2f, 1e-6f));
 }
 
-TEST_CASE("AudioMixerEngine: multi-route mixing (SYNTH + IN1 → OUT1)", "[audio][mixer]") {
+TEST_CASE("AudioMixerEngine: multi-route mixing (SYNTH + IN1 -> OUT1)", "[audio][mixer]") {
     MixerFixture f;
     f.mixer.setRouteEnabled(MixerInput::SYNTH, MixerOutput::OUT1, true);
     f.mixer.setRouteEnabled(MixerInput::IN1,   MixerOutput::OUT1, true);
@@ -140,7 +140,7 @@ TEST_CASE("AudioMixerEngine: output volume halves bus", "[audio][mixer]") {
     for (float v : out0) REQUIRE_THAT(v, WithinAbs(0.2f, 1e-6f));
 }
 
-TEST_CASE("AudioMixerEngine: output mute → silent regardless of routes", "[audio][mixer]") {
+TEST_CASE("AudioMixerEngine: output mute -> silent regardless of routes", "[audio][mixer]") {
     MixerFixture f;
     f.mixer.setRouteEnabled(MixerInput::SYNTH, MixerOutput::OUT1, true);
     f.mixer.setOutputMute(MixerOutput::OUT1, true);
@@ -254,7 +254,7 @@ TEST_CASE("AudioMixerEngine: peak meter populates output level", "[audio][mixer]
     REQUIRE(std::abs(static_cast<int>(peakR - expected)) <= 1);
 }
 
-TEST_CASE("AudioMixerEngine: null synth → silence", "[audio][mixer]") {
+TEST_CASE("AudioMixerEngine: null synth -> silence", "[audio][mixer]") {
     MixerFixture f;
     f.mixer.setRouteEnabled(MixerInput::SYNTH, MixerOutput::OUT1, true);
     f.setSynth(nullptr);

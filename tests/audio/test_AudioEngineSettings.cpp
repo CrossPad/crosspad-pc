@@ -53,7 +53,7 @@ TEST_CASE("CrosspadSettings: audioEngine save/load round-trip", "[settings][audi
     s->saveTo(store);
 }
 
-TEST_CASE("CrosspadSettings: missing audioEngine keys → default 44100/64", "[settings][audio]") {
+TEST_CASE("CrosspadSettings: missing audioEngine keys -> default 44100/64", "[settings][audio]") {
     test::MemoryKVStore store;
     store.init();   // empty store
 

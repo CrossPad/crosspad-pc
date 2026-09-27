@@ -117,7 +117,7 @@ void assertGolden(const std::string& name, std::vector<int16_t>& actual) {
 
 } // namespace
 
-TEST_CASE("Golden: mixer_sine_440_1s — SYNTH→OUT1, 440Hz sine", "[audio][golden][mixer]") {
+TEST_CASE("Golden: mixer_sine_440_1s - SYNTH->OUT1, 440Hz sine", "[audio][golden][mixer]") {
     GoldenFixture f;
     f.mixer.setRouteEnabled(MixerInput::SYNTH, MixerOutput::OUT1, true);
 
@@ -128,7 +128,7 @@ TEST_CASE("Golden: mixer_sine_440_1s — SYNTH→OUT1, 440Hz sine", "[audio][gol
     assertGolden("mixer_sine_440_1s", samples);
 }
 
-TEST_CASE("Golden: mixer_sine_plus_silent_input — regression for second-route noise",
+TEST_CASE("Golden: mixer_sine_plus_silent_input - regression for second-route noise",
           "[audio][golden][mixer]") {
     GoldenFixture f;
     f.mixer.setRouteEnabled(MixerInput::SYNTH, MixerOutput::OUT1, true);
@@ -145,7 +145,7 @@ TEST_CASE("Golden: mixer_sine_plus_silent_input — regression for second-route 
     clearTestAudioInputs();
 }
 
-TEST_CASE("Golden: mixer_outvol_half — output volume halves", "[audio][golden][mixer]") {
+TEST_CASE("Golden: mixer_outvol_half - output volume halves", "[audio][golden][mixer]") {
     GoldenFixture f;
     f.mixer.setRouteEnabled(MixerInput::SYNTH, MixerOutput::OUT1, true);
     f.mixer.setOutputVolume(MixerOutput::OUT1, 0.5f);
@@ -157,7 +157,7 @@ TEST_CASE("Golden: mixer_outvol_half — output volume halves", "[audio][golden]
     assertGolden("mixer_outvol_half", samples);
 }
 
-TEST_CASE("Golden: mixer_in1_const_to_out1 — input-only path", "[audio][golden][mixer]") {
+TEST_CASE("Golden: mixer_in1_const_to_out1 - input-only path", "[audio][golden][mixer]") {
     GoldenFixture f;
     f.mixer.setRouteEnabled(MixerInput::IN1,   MixerOutput::OUT1, true);
     f.mixer.setRouteVolume (MixerInput::IN1,   MixerOutput::OUT1, 1.0f);
