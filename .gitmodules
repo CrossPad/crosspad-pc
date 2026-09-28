@@ -49,3 +49,9 @@
 [submodule "src/apps/crosspad-song"]
 	path = src/apps/crosspad-song
 	url = https://github.com/CrossPad/crosspad-song.git
+[submodule "src/apps/crosspad-recorder"]
+	path = src/apps/crosspad-recorder
+	url = https://github.com/CrossPad/crosspad-recorder.git
+[submodule "src/apps/crosspad-slicer"]
+	path = src/apps/crosspad-slicer
+	url = https://github.com/CrossPad/crosspad-slicer.git
