@@ -50,6 +50,19 @@ Run: `bin/main.exe`
 | `LV_USE_FFMPEG` | OFF | Video playback |
 | `LV_USE_FREETYPE` | OFF | FreeType font rendering |
 | `ASAN` | OFF | AddressSanitizer (Debug, non-MSVC only) |
+| `CROSSPAD_FIRMWARE_DIR` | (empty) | A platform-idf checkout: build *its* crosspad-core, crosspad-gui, apps, LVGL and fonts instead of this repo's pins (defines `CROSSPAD_BOARD_FIRMWARE`). Required for the browser build |
+
+### Browser twin (WebAssembly)
+
+`cmake --preset web-twin && cmake --build --preset web-twin` (emsdk sourced) ->
+`web/build/`: the firmware of `../platform-idf` in a web page, following a real
+board over Web MIDI in lockstep (`web/twin.html`) or standalone with the device
+body (`web/crosspad.html`). Browser-only code is `src/wasm/` (bridge, Web
+MIDI/Audio/Serial, the board's data and `src/wasm/board/` headers for its
+Settings/Firmware apps) and `src/freertos/wasm/` (tasks as fibers); page glue in
+`web/`, board-data and test tools in `tools/twin/`. `--lcd` (any build) makes
+the display the LCD alone. Everything, including the protocol with the
+board: [docs/web-twin.md](docs/web-twin.md).
 
 ### Compile Defines
 

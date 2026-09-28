@@ -1,0 +1,79 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>CrossPad twin</title>
+<style>
+  :root { --bg: #0e0f11; --fg: #d8dbe0; --dim: #7b8089; --ok: #3ddc84; --warn: #ffb020; }
+  html, body { margin: 0; height: 100%; background: var(--bg); color: var(--fg);
+               font: 14px/1.4 system-ui, sans-serif; }
+  main { min-height: 100%; display: grid; place-items: center; gap: 14px; padding: 16px; box-sizing: border-box; }
+  canvas#lcd { width: min(96vw, 640px); aspect-ratio: 4 / 3; image-rendering: pixelated;
+               border-radius: 6px; box-shadow: 0 0 0 1px #2a2d33; background: #000; }
+  p { margin: 0; color: var(--dim); text-align: center; }
+  b.ok { color: var(--ok); } b.warn { color: var(--warn); }
+  button { font: inherit; padding: 6px 14px; border-radius: 6px; border: 1px solid #3a3e46;
+           background: #1a1c20; color: var(--fg); cursor: pointer; }
+</style>
+</head>
+<body>
+<main>
+  <canvas id="lcd" width="320" height="240"></canvas>
+  <p id="status">starting the firmware…</p>
+  <button id="midi" hidden>Connect to the CrossPad</button>
+</main>
+<script type="module">
+// The live twin of a CrossPad plugged into this computer: the board's own
+// firmware, fed what the board's LVGL reads (boardlink.js). Needs Web MIDI
+// with SysEx (Chrome, Edge). ?log prints the firmware's log to the console.
+import { startSim } from './simtwin.js';
+import { linkBoard, isBoardPort } from './boardlink.js';
+
+const Q = new URLSearchParams(location.search);
+const $ = (id) => document.getElementById(id);
+const status = (html) => { $('status').innerHTML = html; };
+
+const sim = await startSim({ lcd: true, midi: false, audio: false, log: Q.has('log') });
+let app = '-';
+const link = linkBoard(sim, { onApp: (a) => { app = a; } });
+window.__sim = sim;
+window.__link = link;
+
+// The LCD, whenever LVGL finished a frame.
+const ctx = $('lcd').getContext('2d');
+const img = ctx.createImageData(sim.W, sim.H);
+(function draw() {
+  const px = sim.lcd();
+  if (px) { img.data.set(px); ctx.putImageData(img, 0, 0); }
+  requestAnimationFrame(draw);
+})();
+
+let midi = null;
+function bind() {
+  const ins = [...midi.inputs.values()].filter((p) => p.state === 'connected' && isBoardPort(p));
+  for (const p of midi.inputs.values()) p.onmidimessage = ins.includes(p) ? (e) => link.onMessage(e.data) : null;
+  link.setOutput([...midi.outputs.values()].find((p) => p.state === 'connected' && isBoardPort(p)) || null);
+}
+async function connect() {
+  try {
+    midi = await navigator.requestMIDIAccess({ sysex: true });
+    midi.onstatechange = bind;
+    bind();
+    $('midi').hidden = true;
+  } catch (e) {
+    status(`<b class="warn">Web MIDI with SysEx refused</b> — ${e.message}`);
+    $('midi').hidden = false;
+  }
+}
+$('midi').onclick = connect;
+if (navigator.requestMIDIAccess) connect(); else status('<b class="warn">No Web MIDI in this browser</b>');
+
+setInterval(() => {
+  if (!midi) return;
+  status(link.locked() ? `<b class="ok">in lockstep</b> with the board · ${app === '-' ? 'launcher' : app}`
+                       : 'waiting for a CrossPad with twin mirroring (firmware with twin_mirror)…');
+}, 500);
+</script>
+</body>
+</html>

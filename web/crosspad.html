@@ -1,0 +1,139 @@
+<!doctype html>
+<html lang="pl">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>CrossPad w przeglądarce</title>
+<style>
+  :root { --bg: #111317; --panel: #1b1e24; --line: #2c313a; --fg: #e7e9ee; --dim: #8a919e; --acc: #19e38d; --warn: #f0b429; --bad: #ff5d5d; }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; height: 100%; background: var(--bg); color: var(--fg); font: 14px/1.4 system-ui, sans-serif; }
+  main { display: flex; gap: 20px; height: 100%; padding: 16px; align-items: stretch; }
+  #dev { flex: 1; display: flex; align-items: center; justify-content: center; min-width: 0; }
+  #cpsim-canvas { height: min(100%, 92vh); aspect-ratio: 490 / 714; max-width: 100%; outline: none; image-rendering: auto; border-radius: 10px; }
+  aside { width: 300px; flex: none; display: flex; flex-direction: column; gap: 12px; overflow-y: auto; }
+  section { background: var(--panel); border: 1px solid var(--line); border-radius: 10px; padding: 12px; }
+  h2 { font-size: 12px; letter-spacing: .08em; text-transform: uppercase; color: var(--dim); margin: 0 0 8px; }
+  .row { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+  button { background: #262a32; color: var(--fg); border: 1px solid var(--line); border-radius: 7px; padding: 6px 10px; font: inherit; cursor: pointer; }
+  button:hover { border-color: var(--acc); }
+  button.on { background: var(--acc); color: #06170f; border-color: var(--acc); }
+  .st { font-size: 12px; color: var(--dim); margin-top: 6px; white-space: pre-line; }
+  .dot { display: inline-block; width: 8px; height: 8px; border-radius: 50%; background: var(--dim); margin-right: 6px; }
+  .dot.ok { background: var(--acc); } .dot.warn { background: var(--warn); }
+  input[type=range] { flex: 1; accent-color: var(--acc); }
+  #log { font: 11px/1.35 ui-monospace, monospace; color: var(--dim); max-height: 160px; overflow-y: auto; white-space: pre-wrap; }
+  #loading { position: fixed; inset: 0; display: grid; place-items: center; color: var(--dim); }
+  @media (max-width: 760px) { main { flex-direction: column; height: auto; } aside { width: auto; } #cpsim-canvas { height: auto; width: 100%; } }
+</style>
+</head>
+<body>
+<div id="loading">Ładowanie firmware…</div>
+<main>
+  <div id="dev"><canvas id="cpsim-canvas"></canvas></div>
+  <aside>
+    <section>
+      <h2>Dźwięk</h2>
+      <div class="row"><button id="audio">Włącz dźwięk</button><button id="mic">Mikrofon</button></div>
+      <div class="row" style="margin-top:8px"><span style="color:var(--dim)">Głośność</span><input id="vol" type="range" min="0" max="1.5" step="0.01" value="1"></div>
+      <div class="st" id="audio-st"></div>
+    </section>
+    <section>
+      <h2>MIDI</h2>
+      <div class="st" id="midi-st" style="margin-top:0"></div>
+    </section>
+    <section>
+      <h2>Serial (USB)</h2>
+      <div class="row"><button id="serial">Dodaj port…</button></div>
+      <div class="st" id="serial-st">Port pojawi się w emulatorze (gniazdo USB) i w ustawieniach UART.</div>
+    </section>
+    <section>
+      <h2>Karta SD</h2>
+      <div class="row"><button id="sd-exp">Eksport .zip</button><button id="sd-imp">Import .zip</button><button id="sd-wipe">Wyczyść</button></div>
+      <input id="sd-file" type="file" accept=".zip,application/zip" hidden>
+      <div class="st" id="sd-st"></div>
+    </section>
+    <section>
+      <h2>Urządzenie</h2>
+      <div class="row"><button id="reset">Reset ustawień</button><button id="reload">Restart</button></div>
+      <div class="st">Ustawienia i karta zostają w przeglądarce (IndexedDB).</div>
+    </section>
+    <section>
+      <h2>Log</h2>
+      <div id="log"></div>
+    </section>
+  </aside>
+</main>
+<script type="module">
+import { startSim } from './simtwin.js';
+
+const $ = (id) => document.getElementById(id);
+const logEl = $('log');
+const lines = [];
+const onLog = (s) => {
+  if (/fs_open|image_decoder|lv_image_set_src|registerOrRemove|target: null|main_loop_timing/.test(s)) return;
+  lines.push(s); if (lines.length > 200) lines.shift();
+  logEl.textContent = lines.join('\n'); logEl.scrollTop = logEl.scrollHeight;
+};
+
+const sim = await startSim({ canvas: $('cpsim-canvas'), onLog });
+window.sim = sim;
+$('loading').remove();
+$('cpsim-canvas').focus();
+
+const kb = (n) => (n > 1 << 20 ? `${(n / (1 << 20)).toFixed(1)} MB` : `${(n / 1024).toFixed(0)} kB`);
+function render() {
+  const a = sim.webAudio;
+  $('audio').classList.toggle('on', a.running);
+  $('audio').textContent = a.running ? 'Dźwięk włączony' : 'Włącz dźwięk';
+  $('mic').classList.toggle('on', a.micEnabled);
+  $('audio-st').textContent = a.running ? `WebAudio ${a.ctx.sampleRate} Hz` : 'Przeglądarka startuje dźwięk po kliknięciu.';
+  const m = sim.webMidi;
+  $('midi-st').innerHTML = '';
+  if (!m.access) $('midi-st').textContent = 'Web MIDI niedostępne (Chrome/Edge, zgoda na MIDI).';
+  else {
+    const add = (p, dir) => {
+      const d = document.createElement('div');
+      const dot = document.createElement('span');
+      dot.className = 'dot' + (p.state !== 'connected' ? '' : m.opened.has(p.id) || dir === 'out' ? ' ok' : '');
+      d.append(dot, `${dir === 'in' ? '⇠' : '⇢'} ${p.name}`);
+      $('midi-st').append(d);
+    };
+    m.ins.forEach((p) => add(p, 'in')); m.outs.forEach((p) => add(p, 'out'));
+    if (!m.ins.length && !m.outs.length) $('midi-st').textContent = 'Brak portów MIDI.';
+  }
+  const s = sim.webSerial;
+  $('serial-st').textContent = s.list.length
+    ? s.list.map((e) => `${e === s.cur ? '● ' : '○ '}${e.name}`).join('\n')
+    : navigator.serial ? 'Port pojawi się w emulatorze (gniazdo USB) i w ustawieniach UART.' : 'Web Serial niedostępny (Chrome/Edge).';
+  const u = sim.sdUsage();
+  $('sd-st').textContent = `${u.files} plików · ${kb(u.bytes)}`;
+}
+render();
+setInterval(render, 1000);
+
+$('audio').onclick = async () => { await sim.webAudio.start(); render(); };
+$('mic').onclick = async () => { try { await sim.webAudio.enableMic(); } catch (e) { alert('Mikrofon: ' + e.message); } render(); };
+$('vol').oninput = (e) => sim.webAudio.setVolume(+e.target.value);
+$('serial').onclick = async () => { try { await sim.webSerial.request(); } catch {} render(); };
+$('sd-exp').onclick = async () => {
+  const blob = await sim.exportSd();
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(blob); a.download = `crosspad-sd-${new Date().toISOString().slice(0, 10)}.zip`;
+  a.click(); setTimeout(() => URL.revokeObjectURL(a.href), 5000);
+};
+$('sd-imp').onclick = () => $('sd-file').click();
+$('sd-file').onchange = async (e) => {
+  const f = e.target.files[0]; if (!f) return;
+  $('sd-st').textContent = 'Wgrywam…';
+  const n = await sim.importSd(f);
+  e.target.value = '';
+  $('sd-st').textContent = `Wgrano ${n} plików. Aplikacje zobaczą je po ponownym otwarciu.`;
+  setTimeout(render, 3000);
+};
+$('sd-wipe').onclick = async () => { if (confirm('Usunąć całą zawartość karty SD w przeglądarce?')) { await sim.wipeSd(); render(); } };
+$('reset').onclick = async () => { if (confirm('Przywrócić ustawienia fabryczne i zrestartować?')) { await sim.resetSettings(); location.reload(); } };
+$('reload').onclick = async () => { await sim.persist(); location.reload(); };
+</script>
+</body>
+</html>

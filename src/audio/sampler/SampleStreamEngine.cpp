@@ -62,6 +62,11 @@ uint32_t StreamRing::read(int16_t* dst, uint32_t frames) {
 
 // ── Lifecycle ────────────────────────────────────────────────────────────
 
+#ifdef __EMSCRIPTEN__
+extern "C" void wasm_service_add(void (*fn)(void*), void* ctx);
+extern "C" void wasm_service_remove(void* ctx);
+#endif
+
 SampleStreamEngine::~SampleStreamEngine() { deinit(); }
 
 bool SampleStreamEngine::init(bool ownThread) {
@@ -73,12 +78,20 @@ bool SampleStreamEngine::init(bool ownThread) {
 
     if (ownThread) {
         running_.store(true, std::memory_order_release);
+#ifdef __EMSCRIPTEN__
+        // Refilled from the page's audio pull and the LVGL loop (src/wasm/web_io.cpp).
+        wasm_service_add([](void* self) { static_cast<SampleStreamEngine*>(self)->pump(); }, this);
+#else
         streamThread_ = std::thread(&SampleStreamEngine::streamLoop, this);
+#endif
     }
     return true;
 }
 
 void SampleStreamEngine::deinit() {
+#ifdef __EMSCRIPTEN__
+    wasm_service_remove(this);
+#endif
     if (running_.exchange(false, std::memory_order_acq_rel) && streamThread_.joinable()) {
         streamThread_.join();
     }

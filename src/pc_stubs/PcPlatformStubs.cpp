@@ -81,6 +81,12 @@ using namespace crosspad;
 // Global variables required by crosspad-gui (extern in status_bar.cpp etc.)
 // =============================================================================
 
+#ifdef __EMSCRIPTEN__
+/* The board a browser twin follows, as it reports itself (src/wasm/wasm_bridge.cpp). */
+extern "C" bool wasm_twin_heap(uint8_t* ramPct, uint8_t* psramPct);
+extern "C" bool wasm_twin_audio_route(crosspad_gui::AudioRouteState* out);
+extern "C" bool wasm_twin_stm_config(void);
+#endif
 CrosspadSettings* settings = nullptr;
 CrosspadStatus status;
 lv_obj_t* status_c = nullptr;
@@ -250,7 +256,20 @@ public:
         initAssetPath();
     }
 
+#ifdef __EMSCRIPTEN__
+    /* The board's platform, as TWIN_STATE reports it: the apps show the rows
+     * and states the board would. The twin never drives them. */
+    bool usbAudioSupported() override { return true; }
+    bool usbTransferSupported() override { return true; }
+    bool audioRouteSupported() override { return true; }
+    bool getAudioRoute(crosspad_gui::AudioRouteState& out) override { return wasm_twin_audio_route(&out); }
+    bool hasStmConfigWrite() override { return wasm_twin_stm_config(); }
+#endif
     crosspad_gui::HeapStats getHeapStats() override {
+#ifdef __EMSCRIPTEN__
+        uint8_t r = 0, p = 0;
+        if (wasm_twin_heap(&r, &p)) return {100u - r, 100u, 100u - p, 100u};
+#endif
 #ifdef USE_FREERTOS
         uint32_t total = configTOTAL_HEAP_SIZE;
         uint32_t free  = (uint32_t)xPortGetFreeHeapSize();

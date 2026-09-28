@@ -133,9 +133,9 @@ static void createScrew(lv_obj_t* parent, int32_t cx, int32_t cy, int32_t dia)
 
 /* ── init ─────────────────────────────────────────────────────────────── */
 
-lv_obj_t* Stm32EmuWindow::init()
+lv_obj_t* Stm32EmuWindow::init(lv_obj_t* screen)
 {
-    screen_ = lv_screen_active();
+    screen_ = screen ? screen : lv_screen_active();
 
     lv_display_t* disp = lv_display_get_default();
     lv_sdl_window_set_title(disp, "CrossPad");

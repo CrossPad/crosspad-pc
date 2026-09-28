@@ -24,6 +24,43 @@ if(NOT EXISTS "${CMAKE_CURRENT_LIST_DIR}/.vscode/settings.json"
     endif()
 endif()
 
+# ── Which firmware this builds ──────────────────────────────────────────
+# Unset: this repository's pinned crosspad-core, crosspad-gui, apps, LVGL and
+# fonts -- the desktop simulator. Set to a platform-idf checkout: that
+# firmware's own components, its LVGL (the ESP-IDF managed component) and its
+# fonts, so what runs is what the board runs. The browser twin of a board is
+# built this way (docs/web-twin.md, preset web-twin).
+set(CROSSPAD_FIRMWARE_DIR "" CACHE PATH "platform-idf checkout to build the firmware from (empty: this repository's pins)")
+if(CROSSPAD_FIRMWARE_DIR)
+    get_filename_component(CROSSPAD_FIRMWARE_DIR "${CROSSPAD_FIRMWARE_DIR}" ABSOLUTE BASE_DIR "${CMAKE_SOURCE_DIR}")
+    set(CP_CORE_DIR "${CROSSPAD_FIRMWARE_DIR}/components/crosspad-core")
+    set(CP_GUI_DIR  "${CROSSPAD_FIRMWARE_DIR}/components/crosspad-gui")
+    set(CP_LVGL_DIR "${CROSSPAD_FIRMWARE_DIR}/managed_components/lvgl__lvgl")
+    set(CP_FONT_DIR "${CROSSPAD_FIRMWARE_DIR}/main/fonts")
+    file(GLOB CP_APP_DIRS LIST_DIRECTORIES true "${CROSSPAD_FIRMWARE_DIR}/components/crosspad-*")
+    list(FILTER CP_APP_DIRS EXCLUDE REGEX "/crosspad-(core|gui|platform-idf)$")
+    foreach(_need CP_CORE_DIR CP_GUI_DIR CP_LVGL_DIR CP_FONT_DIR)
+        if(NOT EXISTS "${${_need}}")
+            message(FATAL_ERROR "CROSSPAD_FIRMWARE_DIR: no ${${_need}} (run a firmware build there once: it fetches the managed LVGL)")
+        endif()
+    endforeach()
+    # The board's lv_conf values (lv_conf.h) and the board's desk and status bar
+    # (crosspad_app.cpp) instead of the simulator's.
+    add_compile_definitions(CROSSPAD_BOARD_FIRMWARE=1)
+    message(STATUS "Firmware from ${CROSSPAD_FIRMWARE_DIR}")
+else()
+    set(CP_CORE_DIR "${CMAKE_SOURCE_DIR}/lib/crosspad-core")
+    set(CP_GUI_DIR  "${CMAKE_SOURCE_DIR}/lib/crosspad-gui")
+    set(CP_LVGL_DIR "${CMAKE_SOURCE_DIR}/lvgl")
+    set(CP_FONT_DIR "${CMAKE_SOURCE_DIR}/src/fonts")
+    file(GLOB CP_APP_DIRS LIST_DIRECTORIES true "${CMAKE_SOURCE_DIR}/src/apps/crosspad-*")
+endif()
+
+# The browser build is a board's twin: the same firmware, fed the board's inputs.
+if(EMSCRIPTEN AND NOT CROSSPAD_FIRMWARE_DIR)
+    message(FATAL_ERROR "The browser build runs a board's firmware: set CROSSPAD_FIRMWARE_DIR to a platform-idf checkout (preset web-twin)")
+endif()
+
 # Set the correct FreeRTOS port for the current compiler
 if(MSVC OR MINGW)
     set(FREERTOS_PORT MSVC_MINGW CACHE STRING "FreeRTOS port" FORCE)
@@ -45,12 +82,17 @@ add_library(freertos_config INTERFACE)
 target_include_directories(freertos_config SYSTEM INTERFACE ${PROJECT_SOURCE_DIR}/config)
 target_compile_definitions(freertos_config INTERFACE projCOVERAGE_TEST=0)
 
-add_subdirectory(FreeRTOS)
+if(NOT EMSCRIPTEN)
+    add_subdirectory(FreeRTOS)
+endif()
 
 include_directories(${PROJECT_SOURCE_DIR}/FreeRTOS/include)
 include_directories(${PROJECT_SOURCE_DIR}/config)
 
-if(MSVC OR MINGW)
+if(EMSCRIPTEN)
+    # The browser: tasks are fibers on one thread (src/freertos/wasm/port.c).
+    set(FREERTOS_PORT_DIR ${PROJECT_SOURCE_DIR}/src/freertos/wasm)
+elseif(MSVC OR MINGW)
     set(FREERTOS_PORT_DIR ${PROJECT_SOURCE_DIR}/FreeRTOS/portable/MSVC-MingW)
 else()
     set(FREERTOS_PORT_DIR ${PROJECT_SOURCE_DIR}/FreeRTOS/portable/ThirdParty/GCC/Posix)
@@ -91,8 +133,17 @@ set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(EXECUTABLE_OUTPUT_PATH ${PROJECT_SOURCE_DIR}/bin)
 set(WORKING_DIRECTORY ${PROJECT_SOURCE_DIR})
 
-# Find and include SDL2 library
-find_package(SDL2 REQUIRED)
+# Find and include SDL2 library (Emscripten brings its own port)
+if(EMSCRIPTEN)
+    set(CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -sUSE_SDL=2")
+    set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -sUSE_SDL=2")
+    set(SDL2_INCLUDE_DIRS "${EMSCRIPTEN_SYSROOT}/include/SDL2")
+    set(SDL2_LIBRARIES "")
+    # Web MIDI / WebAudio stand in for RtMidi / RtAudio (src/wasm/web_io.cpp).
+    include_directories(${SDL2_INCLUDE_DIRS} ${PROJECT_SOURCE_DIR}/src/wasm/shim)
+else()
+    find_package(SDL2 REQUIRED)
+endif()
 
 include(FetchContent)
 
@@ -113,7 +164,7 @@ FetchContent_Declare(
 FetchContent_MakeAvailable(ArduinoJson)
 
 # MIDI support via RtMidi
-if(USE_MIDI)
+if(USE_MIDI AND NOT EMSCRIPTEN)
     FetchContent_Declare(
         rtmidi
         GIT_REPOSITORY https://github.com/thestk/rtmidi.git
@@ -127,7 +178,7 @@ if(USE_MIDI)
 endif()
 
 # Audio support via RtAudio
-if(USE_AUDIO)
+if(USE_AUDIO AND NOT EMSCRIPTEN)
     FetchContent_Declare(
         rtaudio
         GIT_REPOSITORY https://github.com/thestk/rtaudio.git
@@ -222,7 +273,14 @@ add_compile_definitions($<$<BOOL:${LV_USE_FFMPEG}>:LV_USE_FFMPEG=1>)
 # when built as a separate DLL)
 set(BUILD_SHARED_LIBS OFF)
 
-add_subdirectory(lvgl)
+# Code includes "lvgl/lvgl.h": with an LVGL other than the submodule, that name
+# has to reach it before the project root (where the submodule sits) does.
+if(NOT CP_LVGL_DIR STREQUAL "${CMAKE_SOURCE_DIR}/lvgl")
+    file(MAKE_DIRECTORY "${CMAKE_BINARY_DIR}/lvgl_include")
+    file(CREATE_LINK "${CP_LVGL_DIR}" "${CMAKE_BINARY_DIR}/lvgl_include/lvgl" SYMBOLIC)
+    include_directories(BEFORE "${CMAKE_BINARY_DIR}/lvgl_include")
+endif()
+add_subdirectory(${CP_LVGL_DIR} lvgl)
 target_include_directories(lvgl PUBLIC ${PROJECT_SOURCE_DIR} ${SDL2_INCLUDE_DIRS})
 
 # The Montserrat sizes this UI uses come from src/fonts/, not from LVGL: same
@@ -233,6 +291,19 @@ target_include_directories(lvgl PUBLIC ${PROJECT_SOURCE_DIR} ${SDL2_INCLUDE_DIRS
 # duplicate symbols. Regenerated by platform-idf's tools/fonts/generate.py;
 # the firmware carries the same files.
 file(GLOB CROSSPAD_FONT_SOURCES ${CMAKE_CURRENT_SOURCE_DIR}/src/fonts/lv_font_montserrat_*.c)
+# A firmware's own fonts win; sizes only the simulator uses stay ours.
+if(NOT CP_FONT_DIR STREQUAL "${CMAKE_SOURCE_DIR}/src/fonts")
+    set(_fonts "")
+    foreach(_f ${CROSSPAD_FONT_SOURCES})
+        get_filename_component(_n "${_f}" NAME)
+        if(EXISTS "${CP_FONT_DIR}/${_n}")
+            list(APPEND _fonts "${CP_FONT_DIR}/${_n}")
+        else()
+            list(APPEND _fonts "${_f}")
+        endif()
+    endforeach()
+    set(CROSSPAD_FONT_SOURCES ${_fonts})
+endif()
 get_target_property(_lvgl_srcs lvgl SOURCES)
 list(FILTER _lvgl_srcs EXCLUDE REGEX "lv_font_montserrat_(10|12|14|16|18|24)\\.c$")
 set_property(TARGET lvgl PROPERTY SOURCES ${_lvgl_srcs})
@@ -244,20 +315,20 @@ if(MSVC)
 endif()
 
 # ── crosspad-core portable sources (auto-discover, excluding platform-specific) ──
-file(GLOB_RECURSE CROSSPAD_CORE_SOURCES lib/crosspad-core/src/*.cpp)
+file(GLOB_RECURSE CROSSPAD_CORE_SOURCES ${CP_CORE_DIR}/src/*.cpp)
 list(FILTER CROSSPAD_CORE_SOURCES EXCLUDE REGEX "EspEventBus\\.cpp$")
 list(FILTER CROSSPAD_CORE_SOURCES EXCLUDE REGEX "SyncEventBus\\.cpp$")
 list(FILTER CROSSPAD_CORE_SOURCES EXCLUDE REGEX "Stm32Manager\\.cpp$")
 # FreeRtosEventBus.cpp stays — used as the event bus implementation
 
 # ── crosspad-gui sources (auto-discover) ──
-file(GLOB_RECURSE CROSSPAD_GUI_SOURCES lib/crosspad-gui/src/*.cpp)
+file(GLOB_RECURSE CROSSPAD_GUI_SOURCES ${CP_GUI_DIR}/src/*.cpp)
 
 # ── Auto-reconfigure when source files are added/removed ──
 # Ninja watches these directories and triggers cmake reconfigure on changes
 set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS
-    "${CMAKE_SOURCE_DIR}/lib/crosspad-core/src"
-    "${CMAKE_SOURCE_DIR}/lib/crosspad-gui/src"
+    "${CP_CORE_DIR}/src"
+    "${CP_GUI_DIR}/src"
     "${CMAKE_SOURCE_DIR}/src/apps"
     "${CMAKE_SOURCE_DIR}/src/pc_stubs"
     "${CMAKE_SOURCE_DIR}/src/updater"
@@ -282,33 +353,48 @@ set(MAIN_SOURCES ${WIN_RESOURCES} src/mouse_cursor_icon.c src/hal/hal.c
     src/stm32_emu/EmuJackPanel.cpp
     src/stm32_emu/EmuSdCardSlot.cpp
     src/stm32_emu/KeyboardCapture.cpp
-    src/uart/PcUart.cpp
     src/crosspad_app.cpp
-    src/remote/RemoteControl.cpp
     ${CROSSPAD_CORE_SOURCES}
     ${CROSSPAD_GUI_SOURCES}
     ${CROSSPAD_FONT_SOURCES}
     ${PC_STUB_SOURCES}
 )
+if(EMSCRIPTEN)
+    # The page's side door (LCD out, the board's inputs in), Web MIDI/Audio, Web Serial.
+    list(APPEND MAIN_SOURCES src/wasm/wasm_bridge.cpp src/wasm/web_io.cpp src/wasm/web_uart.cpp
+                             src/wasm/twin_board.cpp)
+else()
+    list(APPEND MAIN_SOURCES src/uart/PcUart.cpp src/remote/RemoteControl.cpp)
+endif()
 set(MAIN_LIBS lvgl lvgl::examples lvgl::demos lvgl::thorvg ${SDL2_LIBRARIES} ArduinoJson)
 
 # FreeRTOS entry point + platform port
-if(MSVC OR MINGW)
+if(EMSCRIPTEN)
+    list(APPEND MAIN_SOURCES src/freertos_main.cpp ${FREERTOS_SOURCES})
+elseif(MSVC OR MINGW)
     list(APPEND MAIN_SOURCES src/freertos_main.cpp src/freertos/freertos_win32_port.c ${FREERTOS_SOURCES})
 else()
     list(APPEND MAIN_SOURCES src/freertos_main.cpp src/freertos/freertos_posix_port.c ${FREERTOS_SOURCES})
 endif()
-list(APPEND MAIN_LIBS freertos_config freertos_kernel)
+if(EMSCRIPTEN)
+    list(APPEND MAIN_LIBS freertos_config)
+else()
+    list(APPEND MAIN_LIBS freertos_config freertos_kernel)
+endif()
 
 
-if(NOT MSVC)
+if(EMSCRIPTEN)
+    list(APPEND MAIN_LIBS m)
+elseif(NOT MSVC)
     list(APPEND MAIN_LIBS m pthread)
 endif()
 
 # MIDI sources and libraries
 if(USE_MIDI)
     list(APPEND MAIN_SOURCES src/midi/PcMidi.cpp)
-    list(APPEND MAIN_LIBS rtmidi)
+    if(NOT EMSCRIPTEN)
+        list(APPEND MAIN_LIBS rtmidi)
+    endif()
     if(WIN32)
         list(APPEND MAIN_LIBS winmm)
     endif()
@@ -324,7 +410,9 @@ endif()
 if(USE_AUDIO)
     list(APPEND MAIN_SOURCES src/audio/PcAudio.cpp src/audio/PcAudioInput.cpp src/audio/PcAudioModule.cpp)
     list(APPEND MAIN_SOURCES src/audio/audio_platform.cpp)
-    list(APPEND MAIN_LIBS rtaudio)
+    if(NOT EMSCRIPTEN)
+        list(APPEND MAIN_LIBS rtaudio)
+    endif()
 
     # Streaming sample engine — the desktop stand-in for the board's sample
     # player. Listed explicitly rather than globbed so a stray file in the
@@ -386,15 +474,35 @@ if(USE_AUDIO)
 endif()
 
 # ── Built-in apps (always present) ──────────────────────────────────────
-foreach(_builtin settings citest update)
-    if(EXISTS "${CMAKE_SOURCE_DIR}/src/apps/${_builtin}/CMakeLists.txt")
-        add_subdirectory(src/apps/${_builtin})
-    endif()
-endforeach()
-list(APPEND MAIN_SOURCES ${SETTINGS_APP_SOURCES} ${CITEST_APP_SOURCES} ${UPDATE_APP_SOURCES})
+# A board has Settings and Firmware, no CITest. In the browser the board's own
+# two are built, their ESP half answered by src/wasm/board/ with the board's
+# data (TWIN_INFO, TWIN_FW); on the desktop the simulator's.
+if(CROSSPAD_FIRMWARE_DIR)
+    set(_builtins settings update)
+else()
+    set(_builtins settings citest update)
+endif()
+set(CP_BUILTIN_APP_DIRS "")
+if(CROSSPAD_FIRMWARE_DIR AND EMSCRIPTEN)
+    set(_board_builtin_sources
+        "${CROSSPAD_FIRMWARE_DIR}/main/app/settings/settings_app.cpp"
+        "${CROSSPAD_FIRMWARE_DIR}/main/app/update/update_app.cpp")
+    set_source_files_properties(${_board_builtin_sources} PROPERTIES
+        INCLUDE_DIRECTORIES "${PROJECT_SOURCE_DIR}/src/wasm/board;${CROSSPAD_FIRMWARE_DIR}/main/app/update")
+    list(APPEND MAIN_SOURCES ${_board_builtin_sources})
+    list(APPEND CP_BUILTIN_APP_DIRS "${CROSSPAD_FIRMWARE_DIR}/main/app/settings" "${CROSSPAD_FIRMWARE_DIR}/main/app/update")
+else()
+    foreach(_builtin ${_builtins})
+        if(EXISTS "${CMAKE_SOURCE_DIR}/src/apps/${_builtin}/CMakeLists.txt")
+            add_subdirectory(src/apps/${_builtin})
+            list(APPEND CP_BUILTIN_APP_DIRS "${CMAKE_SOURCE_DIR}/src/apps/${_builtin}")
+        endif()
+    endforeach()
+    list(APPEND MAIN_SOURCES ${SETTINGS_APP_SOURCES} ${CITEST_APP_SOURCES} ${UPDATE_APP_SOURCES})
+endif()
 
 # ── Installable apps (submodules in src/apps/crosspad-*) ────────────────
-file(GLOB _app_submodule_dirs "${CMAKE_SOURCE_DIR}/src/apps/crosspad-*/")
+set(_app_submodule_dirs ${CP_APP_DIRS})
 foreach(_app_dir ${_app_submodule_dirs})
     if(NOT IS_DIRECTORY "${_app_dir}")
         continue()
@@ -433,6 +541,13 @@ foreach(_app_dir ${_app_submodule_dirs})
     endif()
     if(_app_sources)
         list(APPEND MAIN_SOURCES ${_app_sources})
+        # The browser twin builds the apps as the board does: their encoder
+        # half and their other board-only paths sit behind ESP_PLATFORM
+        # (src/compat answers the ESP headers they take; LV_KCONFIG_IGNORE keeps
+        # LVGL from looking for an sdkconfig.h).
+        if(CROSSPAD_FIRMWARE_DIR AND EMSCRIPTEN)
+            set_source_files_properties(${_app_sources} PROPERTIES COMPILE_DEFINITIONS "ESP_PLATFORM=1;LV_KCONFIG_IGNORE=1")
+        endif()
     endif()
 
     message(STATUS "App submodule: ${_app_name} (${_app_sources})")
@@ -445,9 +560,13 @@ endforeach()
 # on the search path, and an installed app's icon lives in its own repo.
 set(_crosspad_asset_stage "${CMAKE_SOURCE_DIR}/bin/assets")
 file(MAKE_DIRECTORY "${_crosspad_asset_stage}")
-file(GLOB _crosspad_gui_assets "${CMAKE_SOURCE_DIR}/lib/crosspad-gui/assets/*.png")
-file(GLOB _crosspad_app_asset_dirs
-     "${CMAKE_SOURCE_DIR}/src/apps/*/assets")
+file(GLOB _crosspad_gui_assets "${CP_GUI_DIR}/assets/*.png")
+set(_crosspad_app_asset_dirs "")
+foreach(_dir ${CP_APP_DIRS} ${CP_BUILTIN_APP_DIRS})
+    if(IS_DIRECTORY "${_dir}/assets")
+        list(APPEND _crosspad_app_asset_dirs "${_dir}/assets")
+    endif()
+endforeach()
 set(_crosspad_app_assets "")
 foreach(_dir ${_crosspad_app_asset_dirs})
     file(GLOB _found "${_dir}/*.png")
@@ -490,8 +609,8 @@ function(crosspad_git_rev out_var dir)
     set(${out_var} "${rev}" PARENT_SCOPE)
 endfunction()
 
-crosspad_git_rev(CROSSPAD_CORE_REV "${PROJECT_SOURCE_DIR}/lib/crosspad-core")
-crosspad_git_rev(CROSSPAD_GUI_REV  "${PROJECT_SOURCE_DIR}/lib/crosspad-gui")
+crosspad_git_rev(CROSSPAD_CORE_REV "${CP_CORE_DIR}")
+crosspad_git_rev(CROSSPAD_GUI_REV  "${CP_GUI_DIR}")
 
 
 # Auto-generate app registry initialization
@@ -501,7 +620,11 @@ set(_registry_excludes "")
 if(NOT BUILD_TESTING)
     list(APPEND _registry_excludes "crosspad-appstore")
 endif()
-generate_app_registry("${APP_REGISTRY_FILE}" "${PROJECT_SOURCE_DIR}/src/apps" ${_registry_excludes})
+if(CROSSPAD_FIRMWARE_DIR)
+    generate_app_registry("${APP_REGISTRY_FILE}" "${CP_APP_DIRS};${CP_BUILTIN_APP_DIRS}" ${_registry_excludes})
+else()
+    generate_app_registry("${APP_REGISTRY_FILE}" "${PROJECT_SOURCE_DIR}/src/apps" ${_registry_excludes})
+endif()
 list(APPEND MAIN_SOURCES "${APP_REGISTRY_FILE}")
 
 # Custom target to run the executable
@@ -563,14 +686,17 @@ endif()
 # Build-time inventory of installed apps and shared submodules (commit + pin).
 # Same generator the firmware uses, so `--versions` here and APP_VERSIONS on a
 # board answer in the same format.
-include(${CMAKE_CURRENT_LIST_DIR}/lib/crosspad-core/cmake/crosspad_app_versions.cmake)
-file(GLOB _crosspad_app_dirs "${CMAKE_CURRENT_LIST_DIR}/src/apps/crosspad-*")
+include(${CP_CORE_DIR}/cmake/crosspad_app_versions.cmake)
+set(_crosspad_app_manifest "${CMAKE_CURRENT_LIST_DIR}/apps.json")
+if(CROSSPAD_FIRMWARE_DIR AND EXISTS "${CROSSPAD_FIRMWARE_DIR}/apps.json")
+    set(_crosspad_app_manifest "${CROSSPAD_FIRMWARE_DIR}/apps.json")
+endif()
 crosspad_generate_app_versions(
     OUTPUT   "${CMAKE_BINARY_DIR}/app_versions.cpp"
-    SHARED   "${CMAKE_CURRENT_LIST_DIR}/lib/crosspad-core"
-             "${CMAKE_CURRENT_LIST_DIR}/lib/crosspad-gui"
-    APPS     ${_crosspad_app_dirs}
-    MANIFEST "${CMAKE_CURRENT_LIST_DIR}/apps.json")
+    SHARED   "${CP_CORE_DIR}"
+             "${CP_GUI_DIR}"
+    APPS     ${CP_APP_DIRS}
+    MANIFEST "${_crosspad_app_manifest}")
 list(APPEND MAIN_SOURCES "${CMAKE_BINARY_DIR}/app_versions.cpp")
 
 add_executable(CrossPad ${MAIN_SOURCES})
@@ -587,11 +713,11 @@ target_compile_definitions(CrossPad PRIVATE
 )
 target_include_directories(CrossPad PRIVATE
     ${PROJECT_SOURCE_DIR}/src
-    ${PROJECT_SOURCE_DIR}/lib/crosspad-core/include
-    ${PROJECT_SOURCE_DIR}/lib/crosspad-gui/include
+    ${CP_CORE_DIR}/include
+    ${CP_GUI_DIR}/include
     ${PROJECT_SOURCE_DIR}/lib/ml_synth
     ${PROJECT_SOURCE_DIR}/lib
-    ${PROJECT_SOURCE_DIR}/lvgl/src
+    ${CP_LVGL_DIR}/src
     ${CMAKE_BINARY_DIR}/generated
 )
 # Add include dirs from installable app submodules
@@ -606,6 +732,37 @@ foreach(_app_dir ${_app_submodule_dirs})
     endif()
 endforeach()
 target_link_libraries(CrossPad ${MAIN_LIBS})
+
+if(EMSCRIPTEN)
+    # The browser build: an ES module a page instantiates (web/simtwin.js).
+    # ASYNCIFY carries the fiber scheduler; sleeps inside tasks yield
+    # (src/wasm/web_io.cpp); time() is the board's in a twin (wasm_bridge.cpp).
+    set(CROSSPAD_WEB_OUT "${CMAKE_SOURCE_DIR}/web/build" CACHE PATH "Where the browser build (CrossPad.mjs/.wasm/.data) goes")
+    # /assets: the board's assets partition when tools/twin/pull_assets.py has
+    # mirrored it (a board can run with an older one than its firmware), else
+    # the images this tree stages.
+    set(_web_assets "${CMAKE_SOURCE_DIR}/bin/assets")
+    if(CROSSPAD_FIRMWARE_DIR AND EXISTS "${CMAKE_SOURCE_DIR}/web/board/assets/.pulled")
+        set(_web_assets "${CMAKE_SOURCE_DIR}/web/board/assets")
+        set_property(TARGET CrossPad APPEND PROPERTY LINK_DEPENDS "${_web_assets}/.pulled")
+    endif()
+    message(STATUS "Web build -> ${CROSSPAD_WEB_OUT} (assets ${_web_assets})")
+    set_target_properties(CrossPad PROPERTIES SUFFIX ".mjs" RUNTIME_OUTPUT_DIRECTORY "${CROSSPAD_WEB_OUT}")
+    target_link_options(CrossPad PRIVATE
+        -sUSE_SDL=2 -sASYNCIFY=1 -sASYNCIFY_STACK_SIZE=524288 -sSTACK_SIZE=4194304
+        -sALLOW_MEMORY_GROWTH=1 -sINITIAL_MEMORY=268435456
+        -sMODULARIZE=1 -sEXPORT_ES6=1 -sEXPORT_NAME=CrossPadSim -sENVIRONMENT=web -sEXIT_RUNTIME=0
+        -lidbfs.js -sFORCE_FILESYSTEM=1
+        -Wl,--wrap=nanosleep -Wl,--wrap=time -Wl,--wrap=sched_yield
+        -Wl,--wrap=pthread_create -Wl,--wrap=pthread_join -Wl,--wrap=pthread_detach
+        "-sEXPORTED_FUNCTIONS=['_main','_malloc','_free']"
+        "-sDEFAULT_LIBRARY_FUNCS_TO_INCLUDE=['$stringToNewUTF8']"
+        "-sEXPORTED_RUNTIME_METHODS=['HEAPU8','HEAPF32','FS','IDBFS','callMain','addRunDependency','removeRunDependency','stringToNewUTF8','UTF8ToString']"
+        --preload-file "${_web_assets}@/assets"
+    )
+    # What the board and its twin both describe their screens with (TWIN_STATE).
+    configure_file("${CROSSPAD_FIRMWARE_DIR}/main/include/twin_state.h" "${CMAKE_BINARY_DIR}/generated/twin_state.h" COPYONLY)
+endif()
 
 # Winsock + COM (folder picker dialog) for Windows
 if(WIN32)

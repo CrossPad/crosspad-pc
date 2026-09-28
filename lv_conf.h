@@ -1537,6 +1537,47 @@
     #define LV_USE_DEMO_SMARTWATCH      0
 #endif /* LV_BUILD_DEMOS */
 
+/*=====================================
+ * A BOARD'S FIRMWARE
+ *
+ * Built from a platform-idf checkout (CMake CROSSPAD_FIRMWARE_DIR): the
+ * board's own values wherever they decide layout or behaviour, as its
+ * sdkconfig.v2 has them -- word wrapping, fixed-point instead of float,
+ * the large font format, colour rounding, the style cache and the debug
+ * checks -- so the same code lays out and behaves the same. Colour depth
+ * and the drivers stay the simulator's.
+ *====================================*/
+#ifdef CROSSPAD_BOARD_FIRMWARE
+    #undef  LV_TXT_BREAK_CHARS
+    #define LV_TXT_BREAK_CHARS " ,.;:-_)}"
+    #undef  LV_USE_FLOAT
+    #define LV_USE_FLOAT 0
+    #undef  LV_USE_MATRIX
+    #define LV_USE_MATRIX 0
+    #undef  LV_USE_VECTOR_GRAPHIC
+    #define LV_USE_VECTOR_GRAPHIC 0
+    #undef  LV_USE_THORVG_INTERNAL
+    #define LV_USE_THORVG_INTERNAL 0
+    #undef  LV_USE_LOTTIE
+    #define LV_USE_LOTTIE 0
+    #undef  LV_OBJ_STYLE_CACHE
+    #define LV_OBJ_STYLE_CACHE 0
+    #undef  LV_FONT_FMT_TXT_LARGE
+    #define LV_FONT_FMT_TXT_LARGE 1
+    #undef  LV_COLOR_MIX_ROUND_OFS
+    #define LV_COLOR_MIX_ROUND_OFS 128
+    #undef  LV_USE_DRAW_SW_COMPLEX_GRADIENTS
+    #define LV_USE_DRAW_SW_COMPLEX_GRADIENTS 0
+    #undef  LV_USE_SNAPSHOT
+    #define LV_USE_SNAPSHOT 1
+    #undef  LV_USE_ASSERT_STYLE
+    #define LV_USE_ASSERT_STYLE 0
+    #undef  LV_USE_ASSERT_MEM_INTEGRITY
+    #define LV_USE_ASSERT_MEM_INTEGRITY 0
+    #undef  LV_USE_ASSERT_OBJ
+    #define LV_USE_ASSERT_OBJ 0
+#endif
+
 /*--END OF LV_CONF_H--*/
 
 #endif /*LV_CONF_H*/

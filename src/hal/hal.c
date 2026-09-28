@@ -19,6 +19,7 @@ lv_display_t * sdl_hal_init(int32_t w, int32_t h)
   lv_indev_set_group(mouse, lv_group_get_default());
   lv_indev_set_display(mouse, disp);
   lv_display_set_default(disp);
+#ifndef __EMSCRIPTEN__   /* the page reads the LCD out as pixels: no cursor on it */
   /*Declare the image file.*/
   LV_IMAGE_DECLARE(mouse_cursor_icon); 
   lv_obj_t * cursor_obj;
@@ -27,7 +28,8 @@ lv_display_t * sdl_hal_init(int32_t w, int32_t h)
   /*Set the image source*/
   lv_image_set_src(cursor_obj, &mouse_cursor_icon);           
   /*Connect the image  object to the driver*/
-  lv_indev_set_cursor(mouse, cursor_obj);             
+  lv_indev_set_cursor(mouse, cursor_obj);
+#endif             
 
   /* The rotary encoder. Left without a group on purpose: crosspad-gui hands it
    * one per screen (launcher, settings, the quick-settings drawer), the same

@@ -37,7 +37,10 @@ void vApplicationMallocFailedHook(void)
     for (;;);
 }
 
-#ifdef _MSC_VER
+#if defined(__EMSCRIPTEN__)
+/* Every task is blocked: hand the CPU back to the page (src/freertos/wasm/port.c). */
+void vApplicationIdleHook(void) { vPortWasmIdle(); }
+#elif defined(_MSC_VER)
 void vApplicationIdleHook(void) { Sleep(1); }
 #else
 void vApplicationIdleHook(void) { usleep(1000); }
@@ -59,8 +62,15 @@ static void lvgl_task(void* pvParameters)
 {
     (void)pvParameters;
     printf("Starting LVGL task\n");
+#ifdef __EMSCRIPTEN__
+    // The page keeps its keyboard: SDL listens only on its own canvas.
+    SDL_SetHint(SDL_HINT_EMSCRIPTEN_KEYBOARD_ELEMENT, "#cpsim-canvas");
+#endif
     lv_init();
-    lv_display_t* disp = sdl_hal_init(Stm32EmuWindow::WIN_W, Stm32EmuWindow::WIN_H);
+    // --lcd: the display is the board's LCD and nothing else (crosspad_app.hpp).
+    lv_display_t* disp = crosspad_app_lcd_only()
+        ? sdl_hal_init(Stm32EmuWindow::LCD_W, Stm32EmuWindow::LCD_H)
+        : sdl_hal_init(Stm32EmuWindow::WIN_W, Stm32EmuWindow::WIN_H);
     crosspad_app_init();
 
     // Start remote control server (TCP localhost:19840) for MCP integration
@@ -95,6 +105,8 @@ int main(int argc, char** argv)
         printf("APPVER: end count=%zu\n", crosspad::appVersionCount());
         return 0;
     }
+    for (int i = 1; i < argc; ++i)
+        if (std::strcmp(argv[i], "--lcd") == 0) crosspad_app_set_lcd_only(true);
 
     if (xTaskCreate(lvgl_task, "LVGL", 8192, NULL, 1, NULL) != pdPASS) {
         printf("Error creating LVGL task\n");

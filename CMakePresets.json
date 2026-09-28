@@ -1,0 +1,25 @@
+{
+  "version": 3,
+  "cmakeMinimumRequired": { "major": 3, "minor": 21, "patch": 0 },
+  "configurePresets": [
+    {
+      "name": "web-twin",
+      "displayName": "Browser twin of a board",
+      "description": "The firmware of the platform-idf checkout beside this one, compiled to WebAssembly into web/build/ (docs/web-twin.md). Needs emsdk_env sourced.",
+      "generator": "Ninja",
+      "binaryDir": "${sourceDir}/build-web",
+      "toolchainFile": "$env{EMSDK}/upstream/emscripten/cmake/Modules/Platform/Emscripten.cmake",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Release",
+        "CROSSPAD_FIRMWARE_DIR": "${sourceParentDir}/platform-idf",
+        "USE_BLE": "OFF",
+        "USE_VIRTUAL_AUDIO": "OFF",
+        "USE_PIPEWIRE": "OFF",
+        "BUILD_TESTING": "OFF"
+      }
+    }
+  ],
+  "buildPresets": [
+    { "name": "web-twin", "configurePreset": "web-twin", "targets": ["CrossPad"] }
+  ]
+}

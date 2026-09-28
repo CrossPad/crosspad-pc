@@ -39,6 +39,11 @@ uint32_t PcRtAudioOutputStream::getSampleRate() const {
 
 // ── PcAudioModule ──────────────────────────────────────────────────────────
 
+#ifdef __EMSCRIPTEN__
+extern "C" void wasm_audio_add_producer(void (*fn)(void*), void* ctx, uint32_t block);
+extern "C" void wasm_audio_remove_producer(void* ctx);
+#endif
+
 PcAudioModule::~PcAudioModule() {
     stop();
 }
@@ -139,12 +144,21 @@ void PcAudioModule::setOutputDevice(uint8_t index, PcAudioOutput* device) {
 void PcAudioModule::start() {
     if (running_.load()) return;
     running_.store(true);
+#ifdef __EMSCRIPTEN__
+    // The page pulls audio (src/wasm/web_io.cpp): process() runs per block it asks for.
+    wasm_audio_add_producer([](void* self) { static_cast<PcAudioModule*>(self)->process(); },
+                            this, config_.frameCount);
+    return;
+#endif
     thread_ = std::make_unique<std::thread>(&PcAudioModule::audioThreadFunc, this);
     printf("[PcAudioModule] Audio thread started\n");
 }
 
 void PcAudioModule::stop() {
     running_.store(false);
+#ifdef __EMSCRIPTEN__
+    wasm_audio_remove_producer(this);
+#endif
     if (thread_ && thread_->joinable()) {
         thread_->join();
         thread_.reset();
