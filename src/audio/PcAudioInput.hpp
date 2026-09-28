@@ -44,6 +44,8 @@ public:
     uint32_t getSampleRate() const override;
     uint32_t getBufferSize() const override;
     void getInputLevel(int16_t& left, int16_t& right) const override;
+    /// The sample tools (Recorder) record this input as board codec @p c.
+    void setToolsCodec(int c) { toolsCodec_.store(c); }
 
     // -- Device management --
     unsigned int getInputDeviceCount() const;
@@ -68,6 +70,7 @@ private:
     unsigned int currentDeviceId_ = 0;
     std::string  currentDeviceName_;
 
+    std::atomic<int>     toolsCodec_{-1};   // which board codec this input stands for (0 mics, 1 line)
     std::atomic<int16_t> inPeakL_{0};
     std::atomic<int16_t> inPeakR_{0};
 

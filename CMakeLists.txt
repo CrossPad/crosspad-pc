@@ -65,6 +65,15 @@ file(GLOB FREERTOS_SOURCES
 
 # Main include files of the project
 include_directories(${PROJECT_SOURCE_DIR}/main/inc)
+# ESP-IDF header shims (esp_log, esp_timer, heap caps, FreeRTOS idf additions)
+# for app code written against the board.
+include_directories(${PROJECT_SOURCE_DIR}/src/compat)
+
+# The simulator registers more built-in apps than a board (CITest, AppStore,
+# MLPiano, Serial Monitor, Update); at the core's default of 16 the last ones --
+# Settings and Update -- were silently dropped. Global: AppRegistry's size is in
+# its header, so every translation unit has to agree on it.
+add_compile_definitions(CROSSPAD_MAX_APPS=32)
 
 # Define options for LVGL with default values (OFF)
 option(LV_USE_DRAW_SDL "Use SDL draw unit" OFF)
@@ -329,6 +338,7 @@ if(USE_AUDIO)
         src/audio/sampler/PcPitchedPort.cpp
         src/sequencer/PcSequencer.cpp
         src/song/PcSongEnginePort.cpp
+        src/sampletools/PcSampleToolsPort.cpp
     )
 
     if(USE_VIRTUAL_AUDIO)

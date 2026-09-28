@@ -66,6 +66,7 @@
 #ifdef USE_AUDIO
 #include "audio/PcAudio.hpp"
 #include "audio/PcAudioInput.hpp"
+#include "sampletools/SampleToolsPort.hpp"
 #include "audio/PcAudioModule.hpp"
 #include "audio/audio_platform.hpp"
 #include "audio/sampler/PcPitchedPort.hpp"
@@ -150,6 +151,25 @@ static AudioMixerEngine s_mixerEngine;
 // Adapters registered as mixer channels in IN1, IN2, SYNTH order so
 // MixerInput::IN1=0, IN2=1, SYNTH=2 stay valid against the dynamic API.
 // The indexed getter form picks up hot-swapped virtual inputs every cycle.
+
+/* A native virtual input seen by the Recorder too: the ISampleTools port takes its
+ * MIC / LINE blocks from the input the mixer reads, whichever backend it is. */
+class ToolsTapInput : public crosspad::IAudioInput {
+public:
+    ToolsTapInput(crosspad::IAudioInput* in, int codec) : in_(in), codec_(codec) {}
+    uint32_t read(int16_t* buf, uint32_t frames) override {
+        const uint32_t got = in_->read(buf, frames);
+        if (got && crosspad::sample_tools_wants_codec(codec_)) crosspad::sample_tools_rt_input(codec_, buf, got);
+        return got;
+    }
+    uint32_t getSampleRate() const override { return in_->getSampleRate(); }
+    uint32_t getBufferSize() const override { return in_->getBufferSize(); }
+    void getInputLevel(int16_t& l, int16_t& r) const override { in_->getInputLevel(l, r); }
+private:
+    crosspad::IAudioInput* in_;
+    int codec_;
+};
+static ToolsTapInput* s_toolsTap[2] = {nullptr, nullptr};
 static crosspad::AudioInputNode s_in1Node{&pc_platform_get_audio_input, 0, "Input 1"};
 static crosspad::AudioInputNode s_in2Node{&pc_platform_get_audio_input, 1, "Input 2"};
 static crosspad::SynthEngineNode s_mixerSynthNode;
@@ -1023,7 +1043,8 @@ void crosspad_app_init()
             crosspad::IAudioInput* nativeIn2 = s_virtualSinkManager->input(1);
             if (nativeIn1) {
                 printf("[Audio] IN1 connected to native virtual sink (crosspad_vin1)\n");
-                pc_platform_set_audio_input(0, nativeIn1);
+                s_toolsTap[0] = new ToolsTapInput(nativeIn1, 0);
+                pc_platform_set_audio_input(0, s_toolsTap[0]);
                 in1Virtual = true;
             } else if (sinks.size() >= 1) {
                 if (auto* cap = crosspad_pc::audio_platform::startVirtualCapture(
@@ -1036,7 +1057,8 @@ void crosspad_app_init()
             }
             if (nativeIn2) {
                 printf("[Audio] IN2 connected to native virtual sink (crosspad_vin2)\n");
-                pc_platform_set_audio_input(1, nativeIn2);
+                s_toolsTap[1] = new ToolsTapInput(nativeIn2, 1);
+                pc_platform_set_audio_input(1, s_toolsTap[1]);
                 in2Virtual = true;
             } else if (sinks.size() >= 2) {
                 if (auto* cap = crosspad_pc::audio_platform::startVirtualCapture(
@@ -1229,7 +1251,14 @@ void crosspad_app_init()
         s_audioModule.setup(cfg);
 #ifdef HAS_MIXER
         s_audioModule.setMixerEngine(&s_mixerEngine);
-        s_audioModule.setCaptureTap(crosspad_pc::song_engine_rt_capture);
+        /* The pads-only bus feeds a song bounce and a Recorder resample alike. */
+        s_audioModule.setCaptureTap([](const float* bus, uint32_t frames) {
+            crosspad_pc::song_engine_rt_capture(bus, frames);
+            crosspad::sample_tools_rt_bus(bus, frames);
+        });
+        crosspad::sample_tools_init(s_mixerEngine);
+        pcAudioIn1.setToolsCodec(0);   // IN1 = the board's mics
+        pcAudioIn2.setToolsCodec(1);   // IN2 = the line-in jack
 #else
         s_synthNode.setEngine(&fmSynth);
         s_audioModule.addNode(&s_synthNode);

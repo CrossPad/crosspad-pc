@@ -2,6 +2,7 @@
 
 #include "PcAudioModule.hpp"
 #include "PcAudio.hpp"
+#include "sampletools/SampleToolsPort.hpp"
 
 #include <crosspad/audio/AudioFormatConvert.hpp>
 #include <crosspad-mixer/AudioMixerEngine.hpp>
@@ -64,6 +65,8 @@ void PcAudioModule::process() {
 void PcAudioModule::processMixer() {
     const uint32_t frames  = config_.frameCount;
     const uint32_t samples = frames * 2;
+
+    crosspad::sample_tools_rt_block_begin();
 
     float* outBuses[NUM_BUSES];
     for (uint8_t s = 0; s < NUM_BUSES; ++s) outBuses[s] = mixerBus_[s].data();
