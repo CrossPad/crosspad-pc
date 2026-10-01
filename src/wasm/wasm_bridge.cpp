@@ -737,6 +737,17 @@ extern "C" bool wasm_twin_heap(uint8_t* ramPct, uint8_t* psramPct) {
 
 extern "C" {
 
+/** The pad LEDs, 16 × RGB, as the firmware's PadManager colours them (what the board's
+ *  STM lights; crosspad-gui's VirtualPadGrid reads the same); valid until the next call. */
+EMSCRIPTEN_KEEPALIVE const uint8_t* wasm_pad_colors() {
+    static uint8_t rgb[16 * 3];
+    for (uint8_t i = 0; i < 16; ++i) {
+        const crosspad::RgbColor c = crosspad::getPadManager().getPadColor(i);
+        rgb[i * 3] = c.R; rgb[i * 3 + 1] = c.G; rgb[i * 3 + 2] = c.B;
+    }
+    return rgb;
+}
+
 /** Frames LVGL has finished so far — the page re-uploads the LCD when it moves. */
 EMSCRIPTEN_KEEPALIVE uint32_t wasm_lcd_frame() { return s_frame; }
 
