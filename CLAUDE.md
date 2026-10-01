@@ -51,18 +51,22 @@ Run: `bin/main.exe`
 | `LV_USE_FREETYPE` | OFF | FreeType font rendering |
 | `ASAN` | OFF | AddressSanitizer (Debug, non-MSVC only) |
 | `CROSSPAD_FIRMWARE_DIR` | (empty) | A platform-idf checkout: build *its* crosspad-core, crosspad-gui, apps, LVGL and fonts instead of this repo's pins (defines `CROSSPAD_BOARD_FIRMWARE`). Required for the browser build |
+| `CROSSPAD_WEB_OUT` | `build-*/web` | Browser build only: where `CrossPad.{mjs,wasm,data}` go |
+| `CROSSPAD_WEB_ASSETS` | (empty) | Browser build only: a board's mirrored assets partition (with a `.pulled` stamp) preloaded as `/assets`; empty = `bin/assets` |
 
 ### Browser twin (WebAssembly)
 
 `cmake --preset web-twin && cmake --build --preset web-twin` (emsdk sourced) ->
-`web/build/`: the firmware of `../platform-idf` in a web page, following a real
-board over Web MIDI in lockstep (`web/twin.html`) or standalone with the device
-body (`web/crosspad.html`). Browser-only code is `src/wasm/` (bridge, Web
-MIDI/Audio/Serial, the board's data and `src/wasm/board/` headers for its
-Settings/Firmware apps) and `src/freertos/wasm/` (tasks as fibers); page glue in
-`web/`, board-data and test tools in `tools/twin/`. `--lcd` (any build) makes
-the display the LCD alone. Everything, including the protocol with the
-board: [docs/web-twin.md](docs/web-twin.md).
+`build-web/web/CrossPad.{mjs,wasm,data}`: the firmware of `../platform-idf` in a
+web page. The pages that run it (live twin of a board over Web MIDI, standalone
+emulator), board-data and test tools, the build wrapper and the docs live in
+[CrossPad/crosspad-web-twin](https://github.com/CrossPad/crosspad-web-twin),
+which has this repository as a submodule; it sets `CROSSPAD_WEB_OUT` (where the
+build goes) and `CROSSPAD_WEB_ASSETS` (a board's mirrored assets partition).
+Browser-only code here is `src/wasm/` (bridge, Web MIDI/Audio/Serial, the
+board's data and `src/wasm/board/` headers for its Settings/Firmware apps) and
+`src/freertos/wasm/` (tasks as fibers). `--lcd` (any build) makes the display
+the LCD alone.
 
 ### Compile Defines
 

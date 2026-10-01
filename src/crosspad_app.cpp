@@ -744,7 +744,7 @@ void crosspad_app_init()
 
     /* Virtual SD card slot — auto-mount from saved preferences */
 #ifdef __EMSCRIPTEN__
-    // The page mounts the card (IndexedDB) at /sdcard (web/simtwin.js).
+    // The page mounts the card (IndexedDB) at /sdcard (crosspad-web-twin web/simtwin.js).
     if (s_devicePrefs.sdcardPath.empty()) s_devicePrefs.sdcardPath = "/sdcard";
 #endif
     if (!s_devicePrefs.sdcardPath.empty()) {

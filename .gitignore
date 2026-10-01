@@ -38,7 +38,5 @@ hil_logs/*
 # CP Tools: the app manager scripts/app_manager.py downloads
 scripts/.cache/
 
-# Browser twin: the build and a board's data (tools/twin/)
+# Browser build (preset web-twin)
 /build-web/
-/web/build/
-/web/board/

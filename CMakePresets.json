@@ -5,7 +5,7 @@
     {
       "name": "web-twin",
       "displayName": "Browser twin of a board",
-      "description": "The firmware of the platform-idf checkout beside this one, compiled to WebAssembly into web/build/ (docs/web-twin.md). Needs emsdk_env sourced.",
+      "description": "The firmware of the platform-idf checkout beside this one, compiled to WebAssembly into build-web/web/ (the pages: CrossPad/crosspad-web-twin). Needs emsdk_env sourced.",
       "generator": "Ninja",
       "binaryDir": "${sourceDir}/build-web",
       "toolchainFile": "$env{EMSDK}/upstream/emscripten/cmake/Modules/Platform/Emscripten.cmake",

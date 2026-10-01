@@ -29,7 +29,7 @@ endif()
 # fonts -- the desktop simulator. Set to a platform-idf checkout: that
 # firmware's own components, its LVGL (the ESP-IDF managed component) and its
 # fonts, so what runs is what the board runs. The browser twin of a board is
-# built this way (docs/web-twin.md, preset web-twin).
+# built this way (preset web-twin; the pages and tools: crosspad-web-twin).
 set(CROSSPAD_FIRMWARE_DIR "" CACHE PATH "platform-idf checkout to build the firmware from (empty: this repository's pins)")
 if(CROSSPAD_FIRMWARE_DIR)
     get_filename_component(CROSSPAD_FIRMWARE_DIR "${CROSSPAD_FIRMWARE_DIR}" ABSOLUTE BASE_DIR "${CMAKE_SOURCE_DIR}")
@@ -734,16 +734,19 @@ endforeach()
 target_link_libraries(CrossPad ${MAIN_LIBS})
 
 if(EMSCRIPTEN)
-    # The browser build: an ES module a page instantiates (web/simtwin.js).
+    # The browser build: an ES module a page instantiates (crosspad-web-twin's
+    # web/simtwin.js).
     # ASYNCIFY carries the fiber scheduler; sleeps inside tasks yield
     # (src/wasm/web_io.cpp); time() is the board's in a twin (wasm_bridge.cpp).
-    set(CROSSPAD_WEB_OUT "${CMAKE_SOURCE_DIR}/web/build" CACHE PATH "Where the browser build (CrossPad.mjs/.wasm/.data) goes")
-    # /assets: the board's assets partition when tools/twin/pull_assets.py has
-    # mirrored it (a board can run with an older one than its firmware), else
-    # the images this tree stages.
+    # The pages that load it live in crosspad-web-twin, whose build sets both.
+    set(CROSSPAD_WEB_OUT "${CMAKE_BINARY_DIR}/web" CACHE PATH "Where the browser build (CrossPad.mjs/.wasm/.data) goes")
+    # /assets: a board's assets partition when one was mirrored (a board can
+    # run with an older one than its firmware; crosspad-web-twin
+    # tools/pull_assets.py), else the images this tree stages.
+    set(CROSSPAD_WEB_ASSETS "" CACHE PATH "A board's mirrored assets partition to preload as /assets (empty: bin/assets)")
     set(_web_assets "${CMAKE_SOURCE_DIR}/bin/assets")
-    if(CROSSPAD_FIRMWARE_DIR AND EXISTS "${CMAKE_SOURCE_DIR}/web/board/assets/.pulled")
-        set(_web_assets "${CMAKE_SOURCE_DIR}/web/board/assets")
+    if(CROSSPAD_WEB_ASSETS AND EXISTS "${CROSSPAD_WEB_ASSETS}/.pulled")
+        set(_web_assets "${CROSSPAD_WEB_ASSETS}")
         set_property(TARGET CrossPad APPEND PROPERTY LINK_DEPENDS "${_web_assets}/.pulled")
     endif()
     message(STATUS "Web build -> ${CROSSPAD_WEB_OUT} (assets ${_web_assets})")
