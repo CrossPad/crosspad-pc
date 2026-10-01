@@ -32,3 +32,11 @@ crosspad::IAudioInput* pc_platform_get_audio_input(int index) {
 crosspad::ISynthEngine* pc_platform_get_synth_engine() {
     return crosspad::getPlatformServices().synthEngine;
 }
+
+// ── Symbol expected by PcAudioModule.cpp ─────────────────────────────────
+// The sample tools port (src/sampletools/) is not in the test binary: no take
+// to frame, so a block begins with nothing to do.
+
+namespace crosspad {
+void sample_tools_rt_block_begin() {}
+} // namespace crosspad
