@@ -51,6 +51,7 @@ Run: `bin/main.exe`
 | `LV_USE_FREETYPE` | OFF | FreeType font rendering |
 | `ASAN` | OFF | AddressSanitizer (Debug, non-MSVC only) |
 | `CROSSPAD_FIRMWARE_DIR` | (empty) | A platform-idf checkout: build *its* crosspad-core, crosspad-gui, apps, LVGL and fonts instead of this repo's pins (defines `CROSSPAD_BOARD_FIRMWARE`). Required for the browser build |
+| `CROSSPAD_EXTRA_APPS` | (empty) | More app directories to build (`;`-separated), e.g. the apps a board installed beside its firmware's own; one with the same name replaces it |
 | `CROSSPAD_WEB_OUT` | `build-*/web` | Browser build only: where `CrossPad.{mjs,wasm,data}` go |
 | `CROSSPAD_WEB_ASSETS` | (empty) | Browser build only: a board's mirrored assets partition (with a `.pulled` stamp) preloaded as `/assets`; empty = `bin/assets` |
 

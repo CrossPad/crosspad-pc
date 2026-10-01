@@ -55,6 +55,15 @@ else()
     set(CP_FONT_DIR "${CMAKE_SOURCE_DIR}/src/fonts")
     file(GLOB CP_APP_DIRS LIST_DIRECTORIES true "${CMAKE_SOURCE_DIR}/src/apps/crosspad-*")
 endif()
+# Apps a board has installed beside its firmware's own (the app manager puts
+# them in components/ untracked): a twin of that board builds them too.
+set(CROSSPAD_EXTRA_APPS "" CACHE STRING "More app directories to build (;-separated)")
+foreach(_extra ${CROSSPAD_EXTRA_APPS})
+    get_filename_component(_extra "${_extra}" ABSOLUTE BASE_DIR "${CMAKE_SOURCE_DIR}")
+    get_filename_component(_extra_name "${_extra}" NAME)
+    list(FILTER CP_APP_DIRS EXCLUDE REGEX "/${_extra_name}$")
+    list(APPEND CP_APP_DIRS "${_extra}")
+endforeach()
 
 # The browser build is a board's twin: the same firmware, fed the board's inputs.
 if(EMSCRIPTEN AND NOT CROSSPAD_FIRMWARE_DIR)
