@@ -47,6 +47,7 @@
 #include "remote/RemoteControl.hpp"
 #include "stm32_emu/Stm32EmuWindow.hpp"
 #include "crosspad/pad/PadManager.hpp"
+#include "crosspad/pad/PadLedController.hpp"
 #include "crosspad/midi/MidiInputHandler.hpp"
 #include "crosspad/protocol/Stm32MessageHandler.hpp"
 #include "crosspad-gui/components/power_gesture.h"
@@ -737,14 +738,17 @@ extern "C" bool wasm_twin_heap(uint8_t* ramPct, uint8_t* psramPct) {
 
 extern "C" {
 
-/** The pad LEDs, 16 × RGB, as the firmware's PadManager colours them (what the board's
- *  STM lights; crosspad-gui's VirtualPadGrid reads the same); valid until the next call. */
+/** The pad LEDs, 16 × RGB and then the strip's brightness (0..255), as the firmware's
+ *  PadLedController drives them -- what the board's LED_STATE reports and its pads show
+ *  (not PadManager's colour, which a pad keeps while it is dark); valid until the next call. */
 EMSCRIPTEN_KEEPALIVE const uint8_t* wasm_pad_colors() {
-    static uint8_t rgb[16 * 3];
+    static uint8_t rgb[16 * 3 + 1];
+    auto& leds = crosspad::getPadLedController();
     for (uint8_t i = 0; i < 16; ++i) {
-        const crosspad::RgbColor c = crosspad::getPadManager().getPadColor(i);
+        const crosspad::RgbColor c = leds.getPadColor(i);
         rgb[i * 3] = c.R; rgb[i * 3 + 1] = c.G; rgb[i * 3 + 2] = c.B;
     }
+    rgb[48] = (uint8_t)leds.getBrightness();
     return rgb;
 }
 
