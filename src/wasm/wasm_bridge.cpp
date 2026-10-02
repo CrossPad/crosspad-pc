@@ -810,6 +810,18 @@ EMSCRIPTEN_KEEPALIVE void wasm_twin_settings(const char* text) {
 
 /** Lockstep on (the board's frames are arriving). */
 EMSCRIPTEN_KEEPALIVE int wasm_twin_locked() { return s_lock ? 1 : 0; }
+
+// What this twin can mirror: the protocol and the source id of what its screen is built
+// from, in the board's TWIN_HELLO format; boardlink.js compares the two.
+EMSCRIPTEN_KEEPALIVE const char* wasm_twin_hello() {
+#if TWIN_HELLO
+    static char s[64];
+    snprintf(s, sizeof s, "proto=%d src=%s", twin_state::kProtocol, twin_source_id);
+    return s;
+#else
+    return "proto=0 src=unknown";   // built from a firmware that predates TWIN_HELLO
+#endif
+}
 /** The twin's own TWIN_STATE line. */
 EMSCRIPTEN_KEEPALIVE const char* wasm_twin_state() {
     static std::string s;

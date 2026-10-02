@@ -708,7 +708,23 @@ crosspad_generate_app_versions(
     MANIFEST "${_crosspad_app_manifest}")
 list(APPEND MAIN_SOURCES "${CMAKE_BINARY_DIR}/app_versions.cpp")
 
+# A board's firmware: the source id of what the screen is built from, as the board's own
+# build computes it (platform-idf tools/twin_source_id.cmake, TWIN_HELLO). Written now,
+# and on every build by the target below (sources change without a reconfigure).
+if(CROSSPAD_FIRMWARE_DIR AND EXISTS "${CROSSPAD_FIRMWARE_DIR}/tools/twin_source_id.cmake")
+    set(_twin_sid "${CMAKE_BINARY_DIR}/generated/twin_source_id.c")
+    set(_twin_sid_cmd ${CMAKE_COMMAND} -DFW=${CROSSPAD_FIRMWARE_DIR} -DOUT=${_twin_sid}
+                      -P ${CROSSPAD_FIRMWARE_DIR}/tools/twin_source_id.cmake)
+    execute_process(COMMAND ${_twin_sid_cmd})
+    add_custom_target(twin_source_id COMMAND ${_twin_sid_cmd} BYPRODUCTS ${_twin_sid} COMMENT "twin source id")
+    list(APPEND MAIN_SOURCES "${_twin_sid}")
+endif()
+
 add_executable(CrossPad ${MAIN_SOURCES})
+if(TARGET twin_source_id)
+    add_dependencies(CrossPad twin_source_id)
+    target_compile_definitions(CrossPad PRIVATE TWIN_HELLO=1)   # else a firmware from before it
+endif()
 target_compile_definitions(CrossPad PRIVATE
     LV_CONF_INCLUDE_SIMPLE
     USE_LVGL=1
