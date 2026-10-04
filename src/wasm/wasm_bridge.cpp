@@ -585,11 +585,13 @@ void sync_to(const std::string& app, int launcher) {
         rebuild = true;
     }
     auto& orch = crosspad_gui::AppOrchestrator::getInstance();
-    crosspad_gui::ILvglApp* running = orch.getRunningApp();
-    if (running && !running->isStarted()) running = nullptr;
+    // `open`: the app on screen, started or still starting (the Sampler's kit list comes
+    // before it starts); it is closed before another opens, or to go home
+    crosspad_gui::ILvglApp* open = orch.getRunningApp();
+    crosspad_gui::ILvglApp* running = open && open->isStarted() ? open : nullptr;
     const std::string cur = running ? running->getName() : "-";
     if (app == "-" || app.empty()) {
-        if (running || rebuild) crosspad_app_go_home();
+        if (open || rebuild) crosspad_app_go_home();
         return;
     }
     if (!strcasecmp(cur.c_str(), app.c_str()) && !rebuild) return;
@@ -597,7 +599,7 @@ void sync_to(const std::string& app, int launcher) {
     for (const auto& a : orch.getApps())
         if (a && !strcasecmp(a->getName(), app.c_str())) want = a.get();
     if (!want) { printf("[twin] no app '%s' here\n", app.c_str()); return; }
-    if (running || rebuild) crosspad_app_go_home();
+    if (open || rebuild) crosspad_app_go_home();
     printf("[twin] following the board into %s\n", want->getName());
     crosspad_gui::AppOrchestrator::onAppSelected(want, crosspad_app_container());
 }
@@ -689,6 +691,9 @@ void process_pending() {
             s_queue.pop_front();
             apply_loose(in);
         }
+        // SDL's pointer is read when SDL has a mouse event, not on a timer: a touch from the page
+        // (the embed, a test) is read here, one state per pass, as long as one is down or queued
+        if (s_ptr && (s_looseHeld || !s_looseTouch.empty())) lv_indev_read(s_ptr);
     }
     if (!s_settingsIn.empty()) {
         auto* cfg = crosspad::CrosspadSettings::getInstance();
@@ -856,6 +861,15 @@ EMSCRIPTEN_KEEPALIVE void wasm_power(int down) { s_queue.push_back({POWER, down 
 /** Follow the board: its running app ("-" = launcher) and launcher style (-1 = unknown). */
 EMSCRIPTEN_KEEPALIVE void wasm_ui_sync(const char* app, int launcher) {
     s_queue.push_back({SYNC, launcher, 0, 0, app ? app : "-"});
+}
+/** The apps this build has, by the names wasm_ui_sync takes, one per line in the
+ *  launcher's order (the embed's app menu: crosspad-web-twin embed/). */
+EMSCRIPTEN_KEEPALIVE const char* wasm_ui_apps() {
+    static std::string out;
+    out.clear();
+    for (const auto& a : crosspad_gui::AppOrchestrator::getInstance().getApps())
+        if (a && a->getName() && *a->getName()) { out += a->getName(); out += '\n'; }
+    return out.c_str();
 }
 /** The twin's running app ("-" on the launcher). */
 EMSCRIPTEN_KEEPALIVE const char* wasm_ui_app() {
