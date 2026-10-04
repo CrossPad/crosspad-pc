@@ -691,9 +691,11 @@ void process_pending() {
             s_queue.pop_front();
             apply_loose(in);
         }
-        // SDL's pointer is read when SDL has a mouse event, not on a timer: a touch from the page
-        // (the embed, a test) is read here, one state per pass, as long as one is down or queued
+        // SDL's pointer and encoder are read when SDL has an event of its own, not on a timer:
+        // input from the page (the embed, a test) is read here, one state per pass, as long as
+        // a touch is down or queued, the knob has turned or its button has a change pending
         if (s_ptr && (s_looseHeld || !s_looseTouch.empty())) lv_indev_read(s_ptr);
+        if (s_enc && (s_looseDiff || !s_looseBtn.empty())) lv_indev_read(s_enc);
     }
     if (!s_settingsIn.empty()) {
         auto* cfg = crosspad::CrosspadSettings::getInstance();
