@@ -64,6 +64,12 @@ foreach(_extra ${CROSSPAD_EXTRA_APPS})
     list(FILTER CP_APP_DIRS EXCLUDE REGEX "/${_extra_name}$")
     list(APPEND CP_APP_DIRS "${_extra}")
 endforeach()
+# ... and the ones not to build (directory names, ;-separated): a public build leaves out what a
+# board installed for itself (crosspad-web-twin's CROSSPAD_PUBLIC=1).
+set(CROSSPAD_EXCLUDE_APPS "" CACHE STRING "App directory names not to build (;-separated)")
+foreach(_ex ${CROSSPAD_EXCLUDE_APPS})
+    list(FILTER CP_APP_DIRS EXCLUDE REGEX "/${_ex}$")
+endforeach()
 
 # The browser build is a board's twin: the same firmware, fed the board's inputs.
 if(EMSCRIPTEN AND NOT CROSSPAD_FIRMWARE_DIR)
