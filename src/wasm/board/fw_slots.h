@@ -22,3 +22,4 @@ bool fw_package_stm_proto_older(const FwPackage &pkg);
 inline bool fw_install_start(const char *, bool, const char **error) { if (error) *error = "twin"; return false; }
 inline bool fw_switch_request(const char **error) { if (error) *error = "twin"; return false; }
 inline void fw_confirm_running(void) {}
+inline bool fw_running_on_trial(void) { return false; }   // TWIN_FW does not say; the board holds its own checks

@@ -9,7 +9,7 @@
 #define FW_PKG_ROOT      "/sdcard/crosspad/firmware"
 #define FW_PKG_NAME_LEN  48
 
-enum class FwPkgVerdict : uint8_t { Ok, NoImage, NotAnImage, WrongProject, WrongBoard, TooLarge, UnknownBuild };
+enum class FwPkgVerdict : uint8_t { Ok, NoImage, NotAnImage, WrongProject, WrongBoard, TooLarge, UnknownBuild, Downloading };
 
 struct FwPackage {
     char     name[FW_PKG_NAME_LEN];

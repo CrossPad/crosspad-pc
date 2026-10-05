@@ -491,7 +491,12 @@ endif()
 # ── Built-in apps (always present) ──────────────────────────────────────
 # A board has Settings and Firmware, no CITest. In the browser the board's own
 # two are built, their ESP half answered by src/wasm/board/ with the board's
-# data (TWIN_INFO, TWIN_FW); on the desktop the simulator's.
+# data (TWIN_INFO, TWIN_FW); on the desktop the simulator's. The board's own
+# headers (main/include) come after src/wasm/board/: those that reach no
+# ESP-IDF are used as they are, the others are the shims'. Settings' WiFi
+# category is the board's shared WiFi page (main/gui/wifi_page.cpp), on a link
+# that stays idle (src/wasm/twin_wifi.cpp); its Updates views run on an updater
+# that leaves the work to the board (src/wasm/twin_updater.cpp).
 if(CROSSPAD_FIRMWARE_DIR)
     set(_builtins settings update)
 else()
@@ -502,8 +507,22 @@ if(CROSSPAD_FIRMWARE_DIR AND EMSCRIPTEN)
     set(_board_builtin_sources
         "${CROSSPAD_FIRMWARE_DIR}/main/app/settings/settings_app.cpp"
         "${CROSSPAD_FIRMWARE_DIR}/main/app/update/update_app.cpp")
+    # What a later firmware's Settings and Firmware build on, each with what
+    # answers for its ESP half here: the WiFi page (Settings -> WiFi), the
+    # updater's views (Settings -> Updates, the Firmware app's Updates).
+    if(EXISTS "${CROSSPAD_FIRMWARE_DIR}/main/gui/wifi_page.cpp")
+        list(APPEND _board_builtin_sources
+            "${CROSSPAD_FIRMWARE_DIR}/main/gui/wifi_page.cpp"
+            "${PROJECT_SOURCE_DIR}/src/wasm/twin_wifi.cpp")
+    endif()
+    if(EXISTS "${CROSSPAD_FIRMWARE_DIR}/main/gui/fw_updates_view.cpp")
+        list(APPEND _board_builtin_sources
+            "${CROSSPAD_FIRMWARE_DIR}/main/gui/fw_updates_view.cpp"
+            "${CROSSPAD_FIRMWARE_DIR}/main/app/settings/settings_updates.cpp"
+            "${PROJECT_SOURCE_DIR}/src/wasm/twin_updater.cpp")
+    endif()
     set_source_files_properties(${_board_builtin_sources} PROPERTIES
-        INCLUDE_DIRECTORIES "${PROJECT_SOURCE_DIR}/src/wasm/board;${CROSSPAD_FIRMWARE_DIR}/main/app/update")
+        INCLUDE_DIRECTORIES "${PROJECT_SOURCE_DIR}/src/wasm/board;${CROSSPAD_FIRMWARE_DIR}/main/app/update;${CROSSPAD_FIRMWARE_DIR}/main/include")
     list(APPEND MAIN_SOURCES ${_board_builtin_sources})
     list(APPEND CP_BUILTIN_APP_DIRS "${CROSSPAD_FIRMWARE_DIR}/main/app/settings" "${CROSSPAD_FIRMWARE_DIR}/main/app/update")
 else()

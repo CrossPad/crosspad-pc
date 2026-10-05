@@ -99,6 +99,7 @@ const char* fw_pkg_verdict_text(FwPkgVerdict v)
         case FwPkgVerdict::WrongBoard:   return "built for another board revision";
         case FwPkgVerdict::TooLarge:     return "too large for the slot";
         case FwPkgVerdict::UnknownBuild: return "built before packages existed";
+        case FwPkgVerdict::Downloading:  return "downloading";
     }
     return "unknown";
 }
