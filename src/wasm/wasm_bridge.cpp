@@ -42,7 +42,7 @@
 
 #include "lvgl/lvgl.h"
 #include "hal/hal.h"
-#include "twin_state.h"
+#include <twin_state.h>   // generated/: the firmware's, or the fallback beside this file (CMakeLists.txt)
 #include "board/twin_board.h"
 #include "remote/RemoteControl.hpp"
 #include "stm32_emu/Stm32EmuWindow.hpp"

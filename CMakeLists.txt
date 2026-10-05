@@ -813,8 +813,15 @@ if(EMSCRIPTEN)
         "-sEXPORTED_RUNTIME_METHODS=['HEAPU8','HEAPF32','FS','IDBFS','callMain','addRunDependency','removeRunDependency','stringToNewUTF8','UTF8ToString']"
         --preload-file "${_web_assets}@/assets"
     )
-    # What the board and its twin both describe their screens with (TWIN_STATE).
-    configure_file("${CROSSPAD_FIRMWARE_DIR}/main/include/twin_state.h" "${CMAKE_BINARY_DIR}/generated/twin_state.h" COPYONLY)
+    # What the board and its twin both describe their screens with (TWIN_STATE):
+    # the firmware's, so both sides agree; a firmware without the board side of
+    # the twin (a release branch) has none, and then the copy kept here does.
+    set(_twin_state_h "${CROSSPAD_FIRMWARE_DIR}/main/include/twin_state.h")
+    if(NOT EXISTS "${_twin_state_h}")
+        set(_twin_state_h "${PROJECT_SOURCE_DIR}/src/wasm/twin_state.h")
+    endif()
+    message(STATUS "twin_state.h: ${_twin_state_h}")
+    configure_file("${_twin_state_h}" "${CMAKE_BINARY_DIR}/generated/twin_state.h" COPYONLY)
 endif()
 
 # Winsock + COM (folder picker dialog) for Windows
