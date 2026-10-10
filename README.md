@@ -125,4 +125,16 @@ Contributor notes on architecture and conventions are in [CLAUDE.md](CLAUDE.md).
 
 ## License
 
-See [licence.txt](licence.txt). Submodules carry their own licenses.
+CrossPad PC is free software under the **GNU General Public License v3.0 or
+later** (`GPL-3.0-or-later`) — see [LICENSE](LICENSE).
+
+Some parts carry their own, GPL-compatible terms:
+
+- Files marked `SPDX-License-Identifier: MIT`, and the code that came from
+  LVGL's `lv_port_pc_vscode` template this project started from: MIT —
+  [LICENSES/MIT-lv_port_pc_vscode.txt](LICENSES/MIT-lv_port_pc_vscode.txt)
+- `lib/ml_synth/` (ML_SynthTools, Marcel Licence): GPL-3.0-or-later
+- Submodules (LVGL, FreeRTOS, crosspad-core, crosspad-gui, the apps) and the
+  libraries CMake fetches (RtMidi, RtAudio, ArduinoJson, SimpleBLE, Catch2):
+  their own licenses. SimpleBLE is GPL-3.0, with a commercial license sold by
+  its authors.
