@@ -1,6 +1,3 @@
-[submodule "lv_drivers"]
-	path = lv_drivers
-	url = https://github.com/lvgl/lv_drivers.git
 [submodule "lvgl"]
 	path = lvgl
 	url = https://github.com/lvgl/lvgl.git
@@ -28,9 +25,6 @@
 [submodule "src/apps/crosspad-mixer"]
 	path = src/apps/crosspad-mixer
 	url = https://github.com/CrossPad/crosspad-mixer.git
-[submodule "src/apps/crosspad-fishtank"]
-	path = src/apps/crosspad-fishtank
-	url = https://github.com/matixan/crosspad-fishtank.git
 [submodule "src/apps/crosspad-sampler"]
 	path = src/apps/crosspad-sampler
 	url = https://github.com/CrossPad/crosspad-sampler.git
