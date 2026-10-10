@@ -242,7 +242,8 @@ list(FILTER CROSSPAD_CORE_SOURCES EXCLUDE REGEX "Stm32Manager\\.cpp$")
 # FreeRtosEventBus.cpp stays — used as the event bus implementation
 
 # ── crosspad-gui sources (auto-discover) ──
-file(GLOB_RECURSE CROSSPAD_GUI_SOURCES lib/crosspad-gui/src/*.cpp)
+file(GLOB_RECURSE CROSSPAD_GUI_SOURCES
+    lib/crosspad-gui/src/*.cpp lib/crosspad-gui/src/*.c)  # .c: fonts, icons
 
 # ── Auto-reconfigure when source files are added/removed ──
 # Ninja watches these directories and triggers cmake reconfigure on changes
