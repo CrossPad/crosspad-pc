@@ -6,8 +6,12 @@ bin/
 .*/
 !.github/
 
-# VSCode
-.vscode
+# VSCode — ignore all except shared config
+!.vscode/
+.vscode/*
+!.vscode/settings.template.json
+!.vscode/tasks.json
+!.vscode/extensions.json
 
 # MacOS file
 .DS_Store
@@ -23,3 +27,13 @@ _build_*.bat
 
 # Screenshots (dev/test artifacts)
 screenshots/
+app-registry.json
+apps.json
+
+# App manager working data (backups, generated build flags)
+.crosspad/
+crosspad.local.json
+hil_logs/*
+
+# CP Tools: the app manager scripts/app_manager.py downloads
+scripts/.cache/

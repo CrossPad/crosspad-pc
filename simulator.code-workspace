@@ -59,7 +59,7 @@
 			{
 				"label": "Build and Run",
 				"type": "shell",
-				"command": "${workspaceFolder}/bin/main",
+				"command": "${workspaceFolder}/bin/CrossPad",
 				"group": {
 					"kind": "test",
 					"isDefault": true
@@ -76,7 +76,7 @@
 				"name": "Debug LVGL demo with gdb",
 				"type": "cppdbg",
 				"request": "launch",
-		        "program": "${workspaceFolder}/bin/main",
+		        "program": "${workspaceFolder}/bin/CrossPad",
 				"args": [],
 				"cwd": "${workspaceFolder}",
 				"preLaunchTask": "Build",
@@ -97,7 +97,7 @@
 				"name": "Debug LVGL demo with LLVM",
 				"type": "cppdbg",
 				"request": "launch",
-		        "program": "${workspaceFolder}/bin/main",
+		        "program": "${workspaceFolder}/bin/CrossPad",
 				"args": [],
 				"cwd": "${workspaceFolder}",
 				"preLaunchTask": "Build",

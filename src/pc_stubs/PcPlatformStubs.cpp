@@ -9,11 +9,15 @@
 #include <cstdint>
 #include <cstdio>
 #include <chrono>
+#include "crosspad/app/AppVersions.hpp"
+
+#include <cstdarg>
 #include <string>
 #include <vector>
 #include <map>
 #include <fstream>
 #include <filesystem>
+#include <mutex>
 
 #ifdef USE_FREERTOS
 #include "FreeRTOS.h"
@@ -21,6 +25,16 @@
 #endif
 
 #include "lvgl.h"
+
+#ifndef CROSSPAD_CORE_REV
+#define CROSSPAD_CORE_REV "unknown"
+#endif
+#ifndef CROSSPAD_GUI_REV
+#define CROSSPAD_GUI_REV "unknown"
+#endif
+#ifndef CROSSPAD_PC_VERSION
+#define CROSSPAD_PC_VERSION "dev"
+#endif
 #include "src/misc/lv_timer_private.h"
 
 #include <ArduinoJson.h>
@@ -56,6 +70,7 @@
 
 // crosspad-gui interfaces
 #include "crosspad-gui/platform/IGuiPlatform.h"
+#include "hal/hal.h"
 #include "crosspad-gui/platform/IFileSystem.h"
 
 #include "crosspad/event/FreeRtosEventBus.hpp"
@@ -70,8 +85,9 @@ CrosspadSettings* settings = nullptr;
 CrosspadStatus status;
 lv_obj_t* status_c = nullptr;
 
-// Forward declaration — defined after anonymous namespace
+// Forward declarations — defined after anonymous namespace
 std::string pc_platform_resolve_sdcard_path(const std::string& virtualPath);
+std::string pc_platform_get_sdcard_path();
 
 // =============================================================================
 // PcClock — IClock via std::chrono
@@ -274,6 +290,10 @@ public:
         return assetPrefix_.c_str();
     }
 
+    lv_indev_t* getNavigationEncoder() override {
+        return sdl_hal_get_encoder();
+    }
+
     void delayMs(uint32_t ms) override {
 #ifdef _MSC_VER
         Sleep(ms);
@@ -332,9 +352,9 @@ private:
                     return;
                 }
             }
-            // Try exe-relative: exe_dir/../crosspad-gui/assets/ (dev layout)
+            // Try exe-relative: exe_dir/../lib/crosspad-gui/assets/ (dev layout)
             {
-                fs::path candidate = exeDir / ".." / "crosspad-gui" / "assets";
+                fs::path candidate = exeDir / ".." / "lib" / "crosspad-gui" / "assets";
                 std::error_code ec;
                 if (fs::exists(candidate, ec)) {
                     std::string resolved = fs::canonical(candidate, ec).string();
@@ -358,7 +378,7 @@ private:
         // Fallback: cwd-relative
         {
             std::error_code ec;
-            fs::path candidate = fs::current_path(ec) / "crosspad-gui" / "assets";
+            fs::path candidate = fs::current_path(ec) / "lib" / "crosspad-gui" / "assets";
             if (fs::exists(candidate, ec)) {
                 std::string resolved = fs::canonical(candidate, ec).string();
                 for (char& c : resolved) { if (c == '\\') c = '/'; }
@@ -443,6 +463,68 @@ public:
     const char* getPlatformName() override { return "PC Simulator"; }
     const char* getPlatformInfo() override {
         return s_kvStore.getProfileDir().c_str();
+    }
+
+    /// Backup lands in whatever directory is mounted as the emulated SD slot.
+    /// Unlike the device there is no fixed "/sdcard" — SettingsIo goes through
+    /// stdio, so the UI needs the real host path. No card mounted means no
+    /// backup actions, which is exactly what a device without an SD card does.
+    const char* getBackupDir() override {
+        const std::string& root = pc_platform_get_sdcard_path();
+        return root.empty() ? nullptr : root.c_str();
+    }
+
+    int getInfoRowCount() override { buildInfoRows(); return s_infoCount; }
+
+    bool getInfoRow(int idx, const char** label, const char** value) override {
+        buildInfoRows();
+        if (idx < 0 || idx >= s_infoCount) return false;
+        *label = s_infoRows[idx].label;
+        *value = s_infoRows[idx].value;
+        return true;
+    }
+
+private:
+    struct InfoRow { const char* label; char value[64]; };
+    static constexpr int kMaxInfoRows = 24;
+    static inline InfoRow s_infoRows[kMaxInfoRows] = {};
+    static inline int s_infoCount = 0;
+    static inline bool s_infoBuilt = false;
+
+    static void addRow(const char* label, const char* fmt, ...) {
+        if (s_infoCount >= kMaxInfoRows) return;
+        InfoRow& row = s_infoRows[s_infoCount];
+        row.label = label;
+        va_list ap;
+        va_start(ap, fmt);
+        vsnprintf(row.value, sizeof(row.value), fmt, ap);
+        va_end(ap);
+        s_infoCount++;
+    }
+
+    static void buildInfoRows() {
+        if (s_infoBuilt) return;
+        s_infoBuilt = true;
+        s_infoCount = 0;
+        addRow("Simulator", "%s", CROSSPAD_PC_VERSION);
+        addRow("Built", "%s %s", __DATE__, __TIME__);
+        addRow("crosspad-core", "%s", CROSSPAD_CORE_REV);
+        addRow("crosspad-gui", "%s", CROSSPAD_GUI_REV);
+        addRow("LVGL", "%d.%d.%d", LVGL_VERSION_MAJOR, LVGL_VERSION_MINOR,
+               LVGL_VERSION_PATCH);
+        // Installed apps with the commit and pin they were built from — same
+        // table the --versions flag prints and the firmware reports over CDC.
+        for (std::size_t i = 0; i < crosspad::appVersionCount(); ++i) {
+            const crosspad::AppVersion* v = crosspad::appVersionGet(i);
+            if (!v || !v->appId || !v->appId[0]) continue;  // core/gui above
+            addRow(v->component, "%s%s%s%s", v->commit,
+                   v->ref && v->ref[0] ? " @" : "",
+                   v->ref && v->ref[0] ? v->ref : "",
+                   v->dirty ? " *" : "");
+        }
+
+        const std::string& sd = pc_platform_get_sdcard_path();
+        addRow("SD slot", "%s", sd.empty() ? "not mounted" : sd.c_str());
     }
 };
 
@@ -571,8 +653,10 @@ void pc_platform_set_usb_autoconnect(bool enabled) {
 // =============================================================================
 
 static std::string s_sdcardRoot;
+static std::mutex s_sdcardMutex;   // the SD slot writes it on the UI thread; workers read it
 
 void pc_platform_set_sdcard_path(const std::string& path) {
+    std::unique_lock<std::mutex> lock(s_sdcardMutex);
     s_sdcardRoot = path;
 
     // Normalize backslashes
@@ -600,16 +684,18 @@ void pc_platform_set_sdcard_path(const std::string& path) {
     status.sdCardDetected   = !s_sdcardRoot.empty();
 }
 
-const std::string& pc_platform_get_sdcard_path() {
+std::string pc_platform_get_sdcard_path() {
+    std::lock_guard<std::mutex> lock(s_sdcardMutex);
     return s_sdcardRoot;
 }
 
 std::string pc_platform_resolve_sdcard_path(const std::string& virtualPath) {
-    if (s_sdcardRoot.empty()) return virtualPath;
+    const std::string root = pc_platform_get_sdcard_path();
+    if (root.empty()) return virtualPath;
 
     // Map "/crosspad/..." → "<sdcard_root>/crosspad/..."
     if (virtualPath.size() >= 9 && virtualPath.compare(0, 9, "/crosspad") == 0) {
-        return s_sdcardRoot + virtualPath;
+        return root + virtualPath;
     }
     return virtualPath;
 }

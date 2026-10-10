@@ -23,14 +23,47 @@
 #define STBI_WRITE_NO_STDIO
 #include "stb_image_write.h"
 
-// LVGL SDL driver internals — window/renderer access
+// LVGL SDL driver internals — window/renderer access; object class names for
+// the click hit report
 #include "lvgl/src/drivers/sdl/lv_sdl_window.h"
+#include "lvgl/src/core/lv_obj_class_private.h"
+
+// Where the LCD sits inside the window — one copy, shared with the layout
+#include "stm32_emu/Stm32EmuWindow.hpp"
 
 // crosspad-core
 #include "crosspad/pad/PadManager.hpp"
+#include "crosspad/pad/PadLedController.hpp"   // getPadLedController() — led_state
 #include "crosspad/settings/CrosspadSettings.hpp"
 #include "crosspad/platform/PlatformCapabilities.hpp"
 #include "crosspad/app/AppRegistry.hpp"
+#include "crosspad/kit/IKitManager.hpp"
+#include "crosspad/platform/PlatformServices.hpp"
+#include "crosspad/kit/KitInfo.hpp"
+#include "crosspad/audio/IAudioModule.hpp"
+#include "crosspad/synth/ISynthEngine.hpp"
+#include "apps/citest/CITestApi.hpp"
+#if __has_include("crosspad-mixer/AudioMixerEngine.hpp")
+#include "crosspad-mixer/AudioMixerEngine.hpp"   // getMixerEngine() — mixer app present
+#define REMOTE_HAS_MIXER 1
+#endif
+#if __has_include("audio/sampler/PcPitchedPort.hpp")
+#include "audio/sampler/PcPitchedPort.hpp"
+#include <crosspad/instrument/PitchedInstrument.hpp>
+#include <crosspad/instrument/SampleBank.hpp>
+#define REMOTE_HAS_PITCHED 1
+#endif
+#if __has_include(<crosspad-sampler/waveform/waveform_loader.hpp>)
+#include <crosspad-sampler/waveform/waveform_loader.hpp>
+#define REMOTE_HAS_WAVE 1
+#endif
+#if __has_include("audio/sampler/SampleStreamPlayer.hpp")
+#include "audio/sampler/SampleStreamPlayer.hpp"
+#define REMOTE_HAS_SMPL 1
+#endif
+#include "crosspad-gui/components/power_gesture.h"
+#include "crosspad-gui/components/status_bar.h"
+#include "crosspad-gui/components/app_orchestrator.h"   // AppOrchestrator — app_list
 
 // PC platform
 #include "pc_stubs/pc_platform.h"
@@ -88,6 +121,12 @@ static std::string json_bool(const std::string& key, bool val) {
 
 static std::string json_int(const std::string& key, int val) {
     return "\"" + key + "\":" + std::to_string(val);
+}
+
+static std::string json_float(const std::string& key, float val) {
+    char buf[32];
+    snprintf(buf, sizeof(buf), "%g", (double)val);
+    return "\"" + key + "\":" + buf;
 }
 
 /// Extract a string value for a key from a JSON-like string (very simple parser)
@@ -185,21 +224,27 @@ static std::string handle_screenshot(const std::string& json = "") {
     SDL_Rect* captureRect = nullptr;
     SDL_Rect lcdRect;
 
-    if (lcdOnly) {
-        // LCD position within the window (must match Stm32EmuWindow layout)
-        static constexpr int LCD_W = 320;
-        static constexpr int LCD_H = 240;
-        static constexpr int WIN_W = 490;
-        static constexpr int LCD_X = (WIN_W - LCD_W) / 2; // 85
-        static constexpr int LCD_Y = 40;
+    // The capture is in window pixels; the layout is in LVGL units. They differ
+    // by the SDL zoom (HiDPI), so the panel rectangle is scaled, and the reply
+    // says where the panel is in the returned image so a caller can convert a
+    // pixel it sees into an LCD coordinate without knowing the layout.
+    const float zoom = lv_sdl_window_get_zoom(s_disp);
+    lcdRect = { (int)(Stm32EmuWindow::LCD_X * zoom), (int)(Stm32EmuWindow::LCD_Y * zoom),
+                (int)(Stm32EmuWindow::LCD_W * zoom), (int)(Stm32EmuWindow::LCD_H * zoom) };
 
-        lcdRect = { LCD_X, LCD_Y, LCD_W, LCD_H };
+    if (lcdOnly) {
         captureRect = &lcdRect;
-        w = LCD_W;
-        h = LCD_H;
+        w = lcdRect.w;
+        h = lcdRect.h;
     } else {
         SDL_GetWindowSize(window, &w, &h);
     }
+
+    const std::string geometry =
+        "\"lcd_origin\":[" + std::to_string(lcdOnly ? 0 : lcdRect.x) + "," +
+                            std::to_string(lcdOnly ? 0 : lcdRect.y) + "]," +
+        "\"lcd_size\":[" + std::to_string(lcdRect.w) + "," + std::to_string(lcdRect.h) + "]," +
+        json_float("scale", zoom);
 
     // ARGB8888: on little-endian memory layout is [B, G, R, A] per pixel.
     std::vector<uint8_t> pixels(w * h * 4);
@@ -224,7 +269,8 @@ static std::string handle_screenshot(const std::string& json = "") {
                    json_int("height", h) + "," +
                    json_string("format", "png") + "," +
                    json_string("file", filePath) + "," +
-                   json_int("size", (int)png.size()) + "}";
+                   json_int("size", (int)png.size()) + "," +
+                   geometry + "}";
         } else {
             return "{" + json_bool("ok", false) + "," +
                    json_string("error", "cannot write file: " + filePath) + "}";
@@ -239,7 +285,17 @@ static std::string handle_screenshot(const std::string& json = "") {
            json_int("height", h) + "," +
            json_string("format", "png") + "," +
            json_string("encoding", "base64") + "," +
+           geometry + "," +
            json_string("data", b64) + "}";
+}
+
+/// Deferred half of a click: the button-up pushed once hold_ms have passed.
+/// The mouse indev is polled every ~30 ms and only samples the button state,
+/// so a down and an up pushed back to back are never seen as a press at all.
+static void click_release_cb(lv_timer_t* t) {
+    auto* ev = static_cast<SDL_Event*>(lv_timer_get_user_data(t));
+    SDL_PushEvent(ev);
+    delete ev;
 }
 
 static std::string handle_click(const std::string& json) {
@@ -249,17 +305,63 @@ static std::string handle_click(const std::string& json) {
         return "{" + json_bool("ok", false) + "," + json_string("error", "missing x/y") + "}";
     }
 
-    // Get window ID
+    // Which space the caller measured in. "lcd" is what screenshots of the
+    // panel, ENC_GROUP labels and the UI code use; "window" is the raw SDL
+    // window (the old behaviour, and the default on the wire so older
+    // clients keep clicking where they always did).
+    std::string space = json_get_string(json, "space");
+    if (space.empty()) space = "window";
+    if (space != "lcd" && space != "window") {
+        return "{" + json_bool("ok", false) + "," +
+               json_string("error", "space must be lcd or window") + "}";
+    }
+
+    int holdMs = json_get_int(json, "hold_ms", 120);
+    if (holdMs < 0) holdMs = 0;
+    if (holdMs > 5000) holdMs = 5000;
+
+    // LVGL coordinates are the layout's; SDL event coordinates are those times
+    // the window zoom, which is what lv_sdl_mouse divides by.
+    const float zoom = lv_sdl_window_get_zoom(s_disp);
+    int lx, ly;
+    if (space == "lcd") {
+        lx = x + Stm32EmuWindow::LCD_X;
+        ly = y + Stm32EmuWindow::LCD_Y;
+    } else {
+        lx = (int)(x / zoom);
+        ly = (int)(y / zoom);
+    }
+    const int wx = (int)(lx * zoom);
+    const int wy = (int)(ly * zoom);
+    const int lcdX = lx - Stm32EmuWindow::LCD_X;
+    const int lcdY = ly - Stm32EmuWindow::LCD_Y;
+    const bool inLcd = lcdX >= 0 && lcdX < Stm32EmuWindow::LCD_W &&
+                       lcdY >= 0 && lcdY < Stm32EmuWindow::LCD_H;
+
+    // What LVGL will deliver the press to — the same search the indev does —
+    // so a click on empty background is distinguishable from one on a widget.
+    lv_point_t p = { (lv_coord_t)lx, (lv_coord_t)ly };
+    lv_obj_t* hit = lv_indev_search_obj(lv_screen_active(), &p);
+    std::string hitJson = "null";
+    if (hit) {
+        const lv_obj_class_t* cls = lv_obj_get_class(hit);
+        lv_area_t a;
+        lv_obj_get_coords(hit, &a);
+        hitJson = "{" + json_string("class", (cls && cls->name) ? cls->name : "?") + "," +
+                  json_int("x", a.x1 - Stm32EmuWindow::LCD_X) + "," +
+                  json_int("y", a.y1 - Stm32EmuWindow::LCD_Y) + "," +
+                  json_int("w", lv_area_get_width(&a)) + "," +
+                  json_int("h", lv_area_get_height(&a)) + "}";
+    }
+
     SDL_Window* window = lv_sdl_window_get_window(s_disp);
     Uint32 windowId = SDL_GetWindowID(window);
 
-    // Inject mouse move + button down + button up
     SDL_Event ev = {};
-
     ev.type = SDL_MOUSEMOTION;
     ev.motion.windowID = windowId;
-    ev.motion.x = x;
-    ev.motion.y = y;
+    ev.motion.x = wx;
+    ev.motion.y = wy;
     SDL_PushEvent(&ev);
 
     ev = {};
@@ -267,22 +369,63 @@ static std::string handle_click(const std::string& json) {
     ev.button.windowID = windowId;
     ev.button.button = SDL_BUTTON_LEFT;
     ev.button.state = SDL_PRESSED;
-    ev.button.x = x;
-    ev.button.y = y;
+    ev.button.x = wx;
+    ev.button.y = wy;
     ev.button.clicks = 1;
     SDL_PushEvent(&ev);
 
-    ev = {};
-    ev.type = SDL_MOUSEBUTTONUP;
-    ev.button.windowID = windowId;
-    ev.button.button = SDL_BUTTON_LEFT;
-    ev.button.state = SDL_RELEASED;
-    ev.button.x = x;
-    ev.button.y = y;
-    ev.button.clicks = 1;
-    SDL_PushEvent(&ev);
+    auto* up = new SDL_Event{};
+    up->type = SDL_MOUSEBUTTONUP;
+    up->button.windowID = windowId;
+    up->button.button = SDL_BUTTON_LEFT;
+    up->button.state = SDL_RELEASED;
+    up->button.x = wx;
+    up->button.y = wy;
+    up->button.clicks = 1;
+    if (holdMs == 0) {
+        SDL_PushEvent(up);
+        delete up;
+    } else {
+        // We are on the LVGL thread (process_pending), so a timer is safe here.
+        lv_timer_t* t = lv_timer_create(click_release_cb, (uint32_t)holdMs, up);
+        lv_timer_set_repeat_count(t, 1);
+    }
 
-    return "{" + json_bool("ok", true) + "," + json_int("x", x) + "," + json_int("y", y) + "}";
+    return "{" + json_bool("ok", true) + "," +
+           json_int("x", x) + "," + json_int("y", y) + "," +
+           json_string("space", space) + "," +
+           "\"window\":{" + json_int("x", wx) + "," + json_int("y", wy) + "}," +
+           "\"lcd\":{" + json_int("x", lcdX) + "," + json_int("y", lcdY) + "}," +
+           json_bool("in_lcd", inLcd) + "," +
+           json_int("hold_ms", holdMs) + "," +
+           "\"hit\":" + hitJson + "}";
+}
+
+/* The power button. The firmware resolves both gestures in crosspad-gui, so
+ * these verbs exercise exactly the code the hardware button reaches — the
+ * device-side equivalent is the CDC verb PWR_GESTURE CLICK|HOLD. */
+static std::string handle_power_click() {
+    const crosspad_gui::BackResult r = crosspad_gui::powerBack();
+    return "{" + json_bool("ok", true) + "," +
+           json_string("gesture", "click") + "," +
+           json_string("context", crosspad_gui::backResultName(r)) + "}";
+}
+
+static std::string handle_power_hold() {
+    const bool acted = crosspad_gui::powerToggleQuickSettings();
+    return "{" + json_bool("ok", true) + "," +
+           json_string("gesture", "hold") + "," +
+           json_bool("toggled", acted) + "," +
+           json_bool("drawer_open", crosspad_gui::statusbar_drawer_is_open()) + "}";
+}
+
+/* Press / release halves, for a test that wants the real 0.5 s timing rather
+ * than the resolved action. */
+static std::string handle_power_press(bool down) {
+    if (down) crosspad_gui::powerButtonPress();
+    else      crosspad_gui::powerButtonRelease();
+    return "{" + json_bool("ok", true) + "," +
+           json_string("gesture", down ? "press" : "release") + "}";
 }
 
 static std::string handle_pad_press(const std::string& json) {
@@ -581,6 +724,10 @@ static std::string handle_settings_set(const std::string& json) {
     // System
     else if (key == "kit") { settings->Kit = (uint8_t)value; found = true; }
     else if (key == "audio_engine") { settings->AudioEngineEnabled = (value != 0); found = true; }
+    else if (key == "launcher_style") {   // 0 icon grid, 1 list; shown on the next launcher build
+        settings->launcherStyle = value ? crosspad::LauncherStyle::List : crosspad::LauncherStyle::Grid;
+        found = true;
+    }
     // Keypad
     else if (key == "keypad.enable") { settings->keypad.enableKeypad = (value != 0); found = true; }
     else if (key == "keypad.inactive_lights") { settings->keypad.inactiveLights = (value != 0); found = true; }
@@ -611,6 +758,374 @@ static std::string handle_settings_set(const std::string& json) {
     return "{" + json_bool("ok", true) + "," + json_string("key", key) + "," + json_int("value", value) + "}";
 }
 
+// ── Audio integration helpers (Tier 3 in-app driver) ──────────────────────
+
+static std::string handle_midi_note_on(const std::string& json) {
+    (void)json_get_int(json, "channel", 0);
+    int note     = json_get_int(json, "note",    -1);
+    int velocity = json_get_int(json, "velocity", 100);
+    if (note < 0 || note > 127) {
+        return "{" + json_bool("ok", false) + "," + json_string("error", "invalid note (0-127)") + "}";
+    }
+    // Drive the synth engine directly — the event bus path requires an active
+    // app handler to route NoteOn → synth, which the launcher doesn't have.
+    // Bypassing that gives a deterministic audio-pipeline smoke test.
+    crosspad::ISynthEngine* synth = pc_platform_get_synth_engine();
+    if (!synth) {
+        return "{" + json_bool("ok", false) + "," + json_string("error", "no synth engine") + "}";
+    }
+    synth->noteOn(static_cast<uint8_t>(note), static_cast<uint8_t>(velocity));
+    return "{" + json_bool("ok", true) + "," + json_int("note", note) + "}";
+}
+
+static std::string handle_midi_note_off(const std::string& json) {
+    (void)json_get_int(json, "channel", 0);
+    int note = json_get_int(json, "note", -1);
+    if (note < 0 || note > 127) {
+        return "{" + json_bool("ok", false) + "," + json_string("error", "invalid note (0-127)") + "}";
+    }
+    crosspad::ISynthEngine* synth = pc_platform_get_synth_engine();
+    if (!synth) {
+        return "{" + json_bool("ok", false) + "," + json_string("error", "no synth engine") + "}";
+    }
+    synth->noteOff(static_cast<uint8_t>(note));
+    return "{" + json_bool("ok", true) + "," + json_int("note", note) + "}";
+}
+
+static std::string handle_citest_run(const std::string& /*json*/) {
+    if (citest::isRunning()) {
+        return "{" + json_bool("ok", false) + "," + json_string("error", "already running") + "}";
+    }
+    if (!citest::start()) {
+        return "{" + json_bool("ok", false) + "," + json_string("error", "failed to start") + "}";
+    }
+    return "{" + json_bool("ok", true) + "}";
+}
+
+static std::string handle_citest_status(const std::string& /*json*/) {
+    const size_t n = citest::stageCount();
+    std::string body;
+    body.reserve(512);
+    body += "{";
+    body += json_bool("ok", true);
+    body += ",";
+    body += json_bool("running", citest::isRunning());
+    body += ",\"stages\":[";
+
+    int passCount = 0, failCount = 0;
+    for (size_t i = 0; i < n; ++i) {
+        const char* name = "";
+        const char* detail = "";
+        citest::Result r = citest::Result::Pending;
+        if (!citest::stageAt(i, name, r, detail)) continue;
+        const char* rs = "pending";
+        switch (r) {
+            case citest::Result::Pending: rs = "pending"; break;
+            case citest::Result::Running: rs = "running"; break;
+            case citest::Result::Pass:    rs = "pass"; ++passCount; break;
+            case citest::Result::Fail:    rs = "fail"; ++failCount; break;
+        }
+        if (i > 0) body += ",";
+        body += "{";
+        body += json_string("name",   name);
+        body += ",";
+        body += json_string("result", rs);
+        body += ",";
+        body += json_string("detail", detail);
+        body += "}";
+    }
+    body += "],";
+    body += json_int("pass", passCount);
+    body += ",";
+    body += json_int("fail", failCount);
+    body += "}";
+    return body;
+}
+
+static std::string handle_audio_level(const std::string& json) {
+    int stream = json_get_int(json, "stream", 0);
+    float l = 0.0f, r = 0.0f;
+    crosspad::getAudioModule().getOutputLevel(static_cast<uint8_t>(stream), l, r);
+    char buf[128];
+    std::snprintf(buf, sizeof(buf), "%.6f", static_cast<double>(l));
+    std::string ls = buf;
+    std::snprintf(buf, sizeof(buf), "%.6f", static_cast<double>(r));
+    std::string rs = buf;
+    // Custom JSON build because json_int helpers are int-only.
+    return std::string("{") + json_bool("ok", true) + "," +
+           json_int("stream", stream) + "," +
+           "\"left\":"  + ls + "," +
+           "\"right\":" + rs + "}";
+}
+
+/* ── Kit handlers ────────────────────────────────────────────────────── */
+//
+// The device answers KIT_LIST / KIT_LOAD / KIT_STATUS over CDC and the
+// simulator answered nothing, so every test that needed a kit had to click its
+// way through the browser — which is neither deterministic nor what the
+// hardware tests do.
+
+static void (*s_kitLoader)(int) = nullptr;
+static bool (*s_kitBusy)()      = nullptr;
+static remote::AudioDeviceCtl s_audioCtl;
+
+// Minimal JSON string escaping for device labels (PipeWire descriptions can
+// carry quotes). Only " and \ need escaping for a valid one-line value.
+static std::string json_quote(const std::string& s) {
+    std::string out = "\"";
+    for (char c : s) {
+        if (c == '"' || c == '\\') out += '\\';
+        out += c;
+    }
+    out += "\"";
+    return out;
+}
+
+static std::string audio_list_json(std::vector<std::string> (*fn)()) {
+    if (!fn) {
+        return "{" + json_bool("ok", false) + "," +
+               json_string("error", "no audio device control") + "}";
+    }
+    auto names = fn();
+    std::string out = "{" + json_bool("ok", true) + "," +
+                      json_int("count", (int)names.size()) + ",\"devices\":[";
+    for (size_t i = 0; i < names.size(); ++i) {
+        if (i) out += ",";
+        out += json_quote(names[i]);
+    }
+    return out + "]}";
+}
+
+static std::string audio_set_json(const std::string& json,
+                                  bool (*fn)(int, int, std::string&)) {
+    if (!fn) {
+        return "{" + json_bool("ok", false) + "," +
+               json_string("error", "no audio device control") + "}";
+    }
+    const int slot  = json_get_int(json, "slot", 0);
+    const int index = json_get_int(json, "index", -1);
+    if (slot < 0 || slot > 1 || index < 0) {
+        return "{" + json_bool("ok", false) + "," +
+               json_string("error", "slot 0/1 and index >= 0 required") + "}";
+    }
+    std::string label;
+    bool connected = fn(slot, index, label);
+    // ok = the command was applied; connected = a device is live on the slot.
+    // index 0 is "(None)", a deliberate disconnect, so ok stays true.
+    return "{" + json_bool("ok", true) + "," + json_int("slot", slot) + "," +
+           json_int("index", index) + "," + json_bool("connected", connected) +
+           "," + json_string("name", label) + "}";
+}
+
+static std::string handle_audio_out_list() { return audio_list_json(s_audioCtl.outList); }
+static std::string handle_audio_in_list()  { return audio_list_json(s_audioCtl.inList); }
+static std::string handle_audio_out_set(const std::string& j) {
+    return audio_set_json(j, s_audioCtl.outSelect);
+}
+static std::string handle_audio_in_set(const std::string& j) {
+    return audio_set_json(j, s_audioCtl.inSelect);
+}
+
+// Per-channel and per-output mixer peaks + routing — the sim's parallel to the
+// board's MIX_LVL CDC verb (shared crosspad-mixer AudioMixerEngine), so HIL can
+// read the mixer the same way on both.
+static std::string handle_mix_lvl() {
+#ifdef REMOTE_HAS_MIXER
+    auto& mx = getMixerEngine();
+    const uint8_t nout = mx.numOutputs();
+    std::string out = "{" + json_bool("ok", true) + "," +
+                      json_int("outputs", nout) + ",\"channels\":[";
+    bool first = true;
+    for (uint8_t ch = 0; ch < mx.maxChannels(); ++ch) {
+        if (!mx.isChannelActive(ch)) continue;
+        float cl = 0.0f, cr = 0.0f;
+        mx.getChannelLevel(ch, cl, cr);
+        std::string routes;
+        for (uint8_t o = 0; o < nout; ++o) routes += mx.isRouteEnabled(ch, o) ? '1' : '0';
+        const char* nm = mx.getChannelName(ch);
+        if (!first) out += ",";
+        first = false;
+        out += "{" + json_int("ch", ch) + "," +
+               json_string("name", nm ? nm : "") + "," +
+               json_float("pk_l", cl) + "," + json_float("pk_r", cr) + "," +
+               json_float("vol", mx.getChannelVolume(ch)) + "," +
+               json_bool("mute", mx.isChannelMuted(ch)) + "," +
+               json_string("route", routes) + "}";
+    }
+    out += "],\"out\":[";
+    for (uint8_t o = 0; o < nout; ++o) {
+        float ol = 0.0f, orr = 0.0f;
+        mx.getOutputLevel(o, ol, orr);
+        if (o) out += ",";
+        out += "{" + json_int("out", o) + "," +
+               json_float("pk_l", ol) + "," + json_float("pk_r", orr) + "," +
+               json_float("vol", mx.getOutputVolume(o)) + "," +
+               json_bool("mute", mx.isOutputMuted(o)) + "}";
+    }
+    return out + "]}";
+#else
+    return "{" + json_bool("ok", false) + "," +
+           json_string("error", "mixer not built") + "}";
+#endif
+}
+
+// Pitched-engine status — the sim's parallel to the board's PITCHED_STATUS
+// (shared crosspad-core PitchedInstrument): zones/roots, live voices, steals.
+static std::string handle_pitched_status() {
+#ifdef REMOTE_HAS_PITCHED
+    auto& inst = crosspad_pc::pitched_port_instrument();
+    const bool active = crosspad_pc::pitched_port_active();
+    crosspad::SampleBank* bank = inst.bank();
+    const uint8_t zones = bank ? bank->zoneCount() : 0;
+    std::string roots = "[";
+    for (uint8_t i = 0; i < zones; ++i) {
+        if (i) roots += ",";
+        char b[16];
+        snprintf(b, sizeof(b), "%.2f", (double)bank->zone(i).rootMidi);
+        roots += b;
+    }
+    roots += "]";
+    const size_t bytes = bank ? bank->bytes() : 0;
+    return "{" + json_bool("ok", true) + "," + json_bool("active", active) + "," +
+           json_int("zones", zones) + ",\"roots\":" + roots + "," +
+           json_int("active_voices", inst.activeVoices()) + "," +
+           json_int("sounding_voices", inst.soundingVoices()) + "," +
+           json_int("steals", (int)inst.stealCount()) + "," +
+           json_float("last_note_hz", inst.lastNoteHz()) + "," +
+           json_int("bank_kb", (int)(bytes / 1024)) + "}";
+#else
+    return "{" + json_bool("ok", false) + "," +
+           json_string("error", "pitched not built") + "}";
+#endif
+}
+
+// Waveform-cache loader counters — the sim's parallel to the board's
+// WAVE_STATUS (shared crosspad-sampler waveform loader): how many waveform
+// reads were requested, cached, retried, dropped or failed.
+static std::string handle_wave_status() {
+#ifdef REMOTE_HAS_WAVE
+    crosspad_sampler::WaveformLoaderStats st;
+    crosspad_sampler::waveform_loader_get_stats(&st);
+    return "{" + json_bool("ok", true) + "," +
+           json_bool("running", crosspad_sampler::waveform_loader_is_running()) + "," +
+           json_int("requested", (int)st.requested) + "," +
+           json_int("loaded", (int)st.loaded) + "," +
+           json_int("queued", (int)st.queued) + "," +
+           json_int("retried", (int)st.retried) + "," +
+           json_int("dropped", (int)st.dropped) + "," +
+           json_int("failed_info", (int)st.failedInfo) + "," +
+           json_int("failed_read", (int)st.failedRead) + "," +
+           json_int("alloc_fail", (int)st.allocFail) + "}";
+#else
+    return "{" + json_bool("ok", false) + "," +
+           json_string("error", "sampler not built") + "}";
+#endif
+}
+
+// Registered apps + the one currently running — the sim's parallel to the
+// board's APP_LIST (shared crosspad-gui AppOrchestrator).
+static std::string handle_app_list() {
+    auto& orch = crosspad_gui::AppOrchestrator::getInstance();
+    std::string out = "{" + json_bool("ok", true) + ",\"apps\":[";
+    bool first = true;
+    for (const auto& app : orch.getApps()) {
+        if (!app) continue;
+        const char* nm = app->getName();
+        if (!first) out += ",";
+        first = false;
+        out += json_quote(nm ? nm : "");
+    }
+    auto* running = orch.getRunningApp();
+    const char* rn = running ? running->getName() : nullptr;
+    out += "]," + json_string("running", rn ? rn : "-") + "}";
+    return out;
+}
+
+// Pad LED state — the sim's parallel to the board's LED_STATE (shared core
+// PadLedController): brightness, animation flags and the 16 pad colours.
+static std::string handle_led_state() {
+    auto& leds = crosspad::getPadLedController();
+    std::string colors = "[";
+    for (int i = 0; i < 16; ++i) {
+        crosspad::RgbColor c = leds.getPadColor((uint8_t)i);
+        char b[10];
+        snprintf(b, sizeof(b), "\"%02X%02X%02X\"", c.R, c.G, c.B);
+        if (i) colors += ",";
+        colors += b;
+    }
+    colors += "]";
+    return "{" + json_bool("ok", true) + "," +
+           json_int("brightness", (int)leds.getBrightness()) + "," +
+           json_bool("animating", leds.getAnimating()) + "," +
+           json_bool("coalesce", leds.getCoalescedRefresh()) + "," +
+           "\"colors\":" + colors + "}";
+}
+
+// Sample engine peak + free WAV slots and load — the sim's parallel to the
+// board's SMPL_PEAK (shared streaming SampleStreamPlayer).
+static std::string handle_smpl_peak() {
+#ifdef REMOTE_HAS_SMPL
+    return "{" + json_bool("ok", true) + "," +
+           json_float("peak", SampleStreamPly_GetPeak()) + "," +
+           json_int("free", SampleStreamPlayer_GetFreeWavCnt()) + "," +
+           json_int("active_voices", (int)SampleStreamPly_GetActiveVoices()) + "," +
+           json_int("underrun", (int)SampleStreamPly_GetUnderrunCount()) + "," +
+           json_int("dropped_notes", (int)SampleStreamPly_GetDroppedNoteCount()) + "," +
+           json_float("load_main", SampleStreamPly_GetLoadMain()) + "}";
+#else
+    return "{" + json_bool("ok", false) + "," +
+           json_string("error", "sampler not built") + "}";
+#endif
+}
+
+static std::string handle_kit_list() {
+    auto* mgr = crosspad::getKitManager();
+    if (!mgr) {
+        return "{" + json_bool("ok", false) + "," +
+               json_string("error", "no kit manager") + "}";
+    }
+    std::string out = "{" + json_bool("ok", true) + "," +
+                      json_int("count", mgr->getKitCount()) + "," +
+                      json_int("current", mgr->getCurrentKitId()) + ",\"kits\":[";
+    for (int i = 0; i < mgr->getKitCount(); ++i) {
+        auto* k = mgr->getKit(i);
+        if (i) out += ",";
+        out += "{" + json_int("id", i) + "," +
+               json_string("name", k ? k->name : std::string()) + "," +
+               json_bool("parsed", k && k->parsed) + "}";
+    }
+    return out + "]}";
+}
+
+static std::string handle_kit_status() {
+    auto* mgr = crosspad::getKitManager();
+    auto* cur = mgr ? mgr->getCurrentKit() : nullptr;
+    return std::string("{") + json_bool("ok", true) + "," +
+           json_int("count", mgr ? mgr->getKitCount() : 0) + "," +
+           json_int("current", mgr ? mgr->getCurrentKitId() : -1) + "," +
+           json_string("name", cur ? cur->name : std::string()) + "," +
+           json_bool("parsed", cur && cur->parsed) + "," +
+           json_bool("loading", s_kitBusy ? s_kitBusy() : false) + "}";
+}
+
+static std::string handle_kit_load(const std::string& json) {
+    if (!s_kitLoader) {
+        return "{" + json_bool("ok", false) + "," +
+               json_string("error", "no sampler installed") + "}";
+    }
+    auto* mgr = crosspad::getKitManager();
+    const int id = json_get_int(json, "kit", -1);
+    if (!mgr || id < 0 || id >= mgr->getKitCount()) {
+        return "{" + json_bool("ok", false) + "," +
+               json_string("error", "kit index out of range") + "}";
+    }
+    s_kitLoader(id);
+    // "OK" here means the load *started*. It is not an acknowledgement that the
+    // kit is playable — ask kit_status for that, exactly as on the device.
+    return "{" + json_bool("ok", true) + "," + json_int("kit", id) + "," +
+           json_bool("started", true) + "}";
+}
+
 static std::string dispatch_command(const std::string& json) {
     std::string cmd = json_get_string(json, "cmd");
 
@@ -628,6 +1143,18 @@ static std::string dispatch_command(const std::string& json) {
     }
     if (cmd == "pad_release") {
         return handle_pad_release(json);
+    }
+    if (cmd == "power_click") {
+        return handle_power_click();
+    }
+    if (cmd == "power_hold") {
+        return handle_power_hold();
+    }
+    if (cmd == "power_press") {
+        return handle_power_press(true);
+    }
+    if (cmd == "power_release") {
+        return handle_power_press(false);
     }
     if (cmd == "encoder_rotate") {
         return handle_encoder_rotate(json);
@@ -649,6 +1176,60 @@ static std::string dispatch_command(const std::string& json) {
     }
     if (cmd == "settings_set") {
         return handle_settings_set(json);
+    }
+    if (cmd == "midi_note_on") {
+        return handle_midi_note_on(json);
+    }
+    if (cmd == "midi_note_off") {
+        return handle_midi_note_off(json);
+    }
+    if (cmd == "audio_level") {
+        return handle_audio_level(json);
+    }
+    if (cmd == "kit_list") {
+        return handle_kit_list();
+    }
+    if (cmd == "kit_load") {
+        return handle_kit_load(json);
+    }
+    if (cmd == "kit_status") {
+        return handle_kit_status();
+    }
+    if (cmd == "audio_out_list") {
+        return handle_audio_out_list();
+    }
+    if (cmd == "audio_in_list") {
+        return handle_audio_in_list();
+    }
+    if (cmd == "audio_out_set") {
+        return handle_audio_out_set(json);
+    }
+    if (cmd == "audio_in_set") {
+        return handle_audio_in_set(json);
+    }
+    if (cmd == "mix_lvl") {
+        return handle_mix_lvl();
+    }
+    if (cmd == "pitched_status") {
+        return handle_pitched_status();
+    }
+    if (cmd == "wave_status") {
+        return handle_wave_status();
+    }
+    if (cmd == "app_list") {
+        return handle_app_list();
+    }
+    if (cmd == "smpl_peak") {
+        return handle_smpl_peak();
+    }
+    if (cmd == "led_state") {
+        return handle_led_state();
+    }
+    if (cmd == "citest_run") {
+        return handle_citest_run(json);
+    }
+    if (cmd == "citest_status") {
+        return handle_citest_status(json);
     }
 
     return "{" + json_bool("ok", false) + "," + json_string("error", "unknown command: " + cmd) + "}";
@@ -806,6 +1387,15 @@ void stop() {
         s_serverThread.join();
     }
     printf("[Remote] Control server stopped\n");
+}
+
+void set_kit_loader(void (*loader)(int), bool (*busy)()) {
+    s_kitLoader = loader;
+    s_kitBusy   = busy;
+}
+
+void set_audio_device_ctl(const AudioDeviceCtl& ctl) {
+    s_audioCtl = ctl;
 }
 
 void process_pending() {

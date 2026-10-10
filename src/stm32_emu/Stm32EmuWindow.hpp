@@ -24,6 +24,14 @@ public:
     static constexpr int32_t WIN_W = 490;
     static constexpr int32_t WIN_H = 714;
 
+    /// Where the 320x240 panel sits inside the window, in LVGL coordinates.
+    /// The one copy of this geometry: the layout below and the remote-control
+    /// server (screenshot crop, click coordinate spaces) both read it here.
+    static constexpr int32_t LCD_W = 320;
+    static constexpr int32_t LCD_H = 240;
+    static constexpr int32_t LCD_X = (WIN_W - LCD_W) / 2;
+    static constexpr int32_t LCD_Y = 58;
+
     /// Build device body on the active screen. Returns the 320x240 LCD container.
     /// Call after sdl_hal_init(WIN_W, WIN_H) and pc_platform_init().
     lv_obj_t* init();

@@ -138,19 +138,25 @@ bool KeyboardCapture::handleKey(int keycode, bool pressed, bool isRepeat)
     if (pressed && isRepeat) return false;
 
     // ── Navigation shortcuts — always active regardless of capture mode ──
-    if (pressed) {
-        switch (keycode) {
-            case SDLK_ESCAPE:
-                if (onEscape_) onEscape_();
-                return true;
-            case SDLK_SPACE:
-                if (onPower_) onPower_();
-                return true;
-            case SDLK_LCTRL:
-            case SDLK_RCTRL:
-                if (onPower_) onPower_();
-                return true;
-        }
+    if (pressed && keycode == SDLK_ESCAPE) {
+        if (onEscape_) onEscape_();
+        return true;
+    }
+
+    /* The power button, press and release both: holding the key past 0.5 s is
+     * the drawer gesture, tapping it is the contextual back — the same split
+     * the hardware button has. A key repeat is dropped above, so a held key
+     * still produces exactly one press and one release. */
+    if (keycode == SDLK_SPACE || keycode == SDLK_LCTRL || keycode == SDLK_RCTRL) {
+        if (pressed) { if (onPower_) onPower_(); }
+        else         { if (onPowerRelease_) onPowerRelease_(); }
+        return true;
+    }
+
+    // Volume overlay used to live on the power key; it keeps a key of its own.
+    if (pressed && keycode == SDLK_v) {
+        if (onVolume_) onVolume_();
+        return true;
     }
 
     // ── Pad keys (only when capture is enabled) ─────────────────

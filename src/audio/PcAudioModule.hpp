@@ -3,105 +3,99 @@
 
 /**
  * @file PcAudioModule.hpp
- * @brief PC implementation of IAudioModule using RtAudio streams.
+ * @brief PC IAudioModule built on AbstractAudioModule.
  *
- * Wraps dual PcAudioOutput devices as IAudioStreams and runs the
- * audio processing pipeline (pull inputs → DSP/mix → push outputs)
- * on a dedicated std::thread — the PC equivalent of Marcel's
- * audio_task on 2playerCrosspad (P4).
+ * Wraps RtAudio output devices (PcAudioOutput) as IAudioStream instances
+ * and runs the audio pipeline on a dedicated std::thread. DSP is done in
+ * float by the node chain inherited from AbstractAudioModule; conversion
+ * to the stream's native format happens only at push boundary.
+ *
+ * Optional AudioMixerEngine override: when set, process() bypasses the
+ * default node chain and hands rendering to mixer.render(out0, out1, frames),
+ * giving the mixer its full per-stream routing matrix in a single-writer
+ * topology. AbstractAudioModule.bus_ is unused in that mode; per-stream
+ * float buffers live here as mixerBus_.
  */
 
-#include <crosspad/audio/IAudioModule.hpp>
+#include <crosspad/audio/AbstractAudioModule.hpp>
 #include <atomic>
 #include <thread>
 #include <memory>
+#include <vector>
 
 class PcAudioOutput;
 class PcAudioInput;
+class AudioMixerEngine;
 
-namespace crosspad {
-class ISynthEngine;
-}
+namespace crosspad_pc {
 
 /**
- * @brief RtAudio-backed IAudioStream — adapts PcAudioOutput to the shared stream interface.
+ * @brief IAudioStream wrapping a PcAudioOutput device.
+ *
+ * PcAudioOutput::write takes int16 interleaved, so this stream reports
+ * Int16 as the only supported format. AbstractAudioModule converts from
+ * the float bus at the push boundary.
  */
-class PcOutputStream : public crosspad::IAudioStream {
+class PcRtAudioOutputStream : public crosspad::IAudioStream {
 public:
-    explicit PcOutputStream(PcAudioOutput* device = nullptr) : device_(device) {}
+    explicit PcRtAudioOutputStream(PcAudioOutput* device = nullptr) : device_(device) {}
 
     void setDevice(PcAudioOutput* device) { device_ = device; }
     PcAudioOutput* getDevice() const { return device_; }
 
-    uint32_t pushSamples(const int32_t* samples, uint32_t frames) override;
+    uint32_t supportedFormats() const override;
+    uint32_t pushSamples(const void* samples, crosspad::AudioFormat fmt, uint32_t frames) override;
     bool isOpen() const override;
+    uint32_t getSampleRate() const override;
 
 private:
     PcAudioOutput* device_ = nullptr;
 };
 
 /**
- * @brief RtAudio-backed input stream — adapts PcAudioInput to the shared stream interface.
- */
-class PcInputStream : public crosspad::IAudioStream {
-public:
-    explicit PcInputStream(PcAudioInput* device = nullptr) : device_(device) {}
-
-    void setDevice(PcAudioInput* device) { device_ = device; }
-    PcAudioInput* getDevice() const { return device_; }
-
-    uint32_t pushSamples(const int32_t*, uint32_t) override { return 0; }
-    uint32_t pullSamples(int32_t* samples, uint32_t frames) override;
-    bool isOpen() const override;
-
-private:
-    PcAudioInput* device_ = nullptr;
-};
-
-/**
  * @brief PC audio processing pipeline.
  *
- * Implements the same setup/process pattern as Marcel's audio_module on P4,
- * but uses RtAudio instead of I2S and std::thread instead of FreeRTOS task.
- *
- * Streams:
- *   Output 0 = OUT1 (main, also feeds VU meter)
- *   Output 1 = OUT2 (secondary)
- *   Input 0  = IN1
- *   Input 1  = IN2
+ * Inherits the float bus + node chain default pipeline from
+ * AbstractAudioModule. Owns two output streams (OUT1/OUT2). Runs
+ * process() on a dedicated thread paced to frame duration.
  */
-class PcAudioModule : public crosspad::IAudioModule {
+class PcAudioModule : public crosspad::AbstractAudioModule {
 public:
     static constexpr uint8_t NUM_OUTPUTS = 2;
-    static constexpr uint8_t NUM_INPUTS  = 2;
+    /// A third mixer bus nothing plays: the pads alone, what a song bounce
+    /// records (the board's "USB rec" bus).
+    static constexpr uint8_t CAPTURE_BUS = NUM_OUTPUTS;
+    static constexpr uint8_t NUM_BUSES = NUM_OUTPUTS + 1;
+    /// Called on the audio thread with the capture bus after every render.
+    using CaptureTap = void (*)(const float* bus, uint32_t frames);
 
     PcAudioModule() = default;
     ~PcAudioModule() override;
 
-    // ── IAudioModule ──────────────────────────────────────────────
-
     bool setup(const crosspad::AudioModuleConfig& config) override;
-    void process() override;
     void teardown() override;
-
-    const crosspad::AudioModuleConfig& getConfig() const override { return config_; }
+    void process() override;
 
     crosspad::IAudioStream* getOutputStream(uint8_t index) override;
-    crosspad::IAudioStream* getInputStream(uint8_t index) override;
-
-    void getOutputLevel(uint8_t stream, int16_t& left, int16_t& right) const override;
-    void getInputLevel(uint8_t stream, int16_t& left, int16_t& right) const override;
 
     // ── PC-specific ───────────────────────────────────────────────
 
     /// Set output device (call before or after setup)
-    void setOutputStream(uint8_t index, PcAudioOutput* device);
+    void setOutputDevice(uint8_t index, PcAudioOutput* device);
 
-    /// Set input device
-    void setInputStream(uint8_t index, PcAudioInput* device);
+    /// Install the mixer engine. When set, process() routes through
+    /// mixer.render(out0, out1, frames) instead of the default node chain.
+    /// Pass nullptr to fall back to the node chain.
+    void setMixerEngine(AudioMixerEngine* mixer) { mixer_ = mixer; }
 
-    /// Set synth engine (for DSP generate step)
-    void setSynthEngine(crosspad::ISynthEngine* synth) { synth_ = synth; }
+    /// Optional post-master tap of OUT1: every processMixer cycle the int16
+    /// conversion of bus 0 is also pushed here (e.g. a PipeWire virtual
+    /// source mirroring CrossPad's output as a "microphone"). Pass nullptr
+    /// to detach. Plain interface pointer — no PipeWire/backend headers
+    /// leak into this module; wiring happens at the app-init call site.
+    void setAuxStream(crosspad::IAudioStream* aux) { aux_.store(aux, std::memory_order_release); }
+
+    void setCaptureTap(CaptureTap tap) { captureTap_.store(tap, std::memory_order_release); }
 
     /// Start the audio processing thread
     void start();
@@ -112,35 +106,34 @@ public:
     bool isRunning() const { return running_.load(); }
 
 private:
-    crosspad::AudioModuleConfig config_{};
-
-    PcOutputStream outputs_[NUM_OUTPUTS];
-    PcInputStream  inputs_[NUM_INPUTS];
-
-    crosspad::ISynthEngine* synth_ = nullptr;
+    PcRtAudioOutputStream outputs_[NUM_OUTPUTS];
+    AudioMixerEngine* mixer_ = nullptr;
+    std::atomic<crosspad::IAudioStream*> aux_{nullptr};
+    std::atomic<CaptureTap> captureTap_{nullptr};
 
     std::atomic<bool> running_{false};
     std::unique_ptr<std::thread> thread_;
 
-    // DSP buffers (allocated in setup)
-    static constexpr uint32_t MAX_FRAMES = 512;
-    int32_t dspBuffer_[NUM_OUTPUTS][2][MAX_FRAMES]{}; // [stream][channel][frame]
-    int32_t i2sBuffer_[MAX_FRAMES][2]{};              // interleaved [frame][channel]
-    int16_t synthBuf_[MAX_FRAMES * 2]{};              // synth int16 interleaved
+public:
+    // Diagnostic counters for the paced loop (crackle hunt): written on the
+    // module thread, read from the GUI diag reporter.
+    std::atomic<uint32_t> diagCycles_{0};
+    std::atomic<uint64_t> diagPeriodUsSum_{0};   // sum of loop periods (us)
+    std::atomic<uint32_t> diagPeriodUsMax_{0};
+    std::atomic<uint64_t> diagProcessUsSum_{0};  // sum of process() durations (us)
+    std::atomic<uint32_t> diagProcessUsMax_{0};
 
-    // Peak metering (mutable: read-and-reset from const getLevel methods)
-    mutable std::atomic<int16_t> outPeakL_[NUM_OUTPUTS]{};
-    mutable std::atomic<int16_t> outPeakR_[NUM_OUTPUTS]{};
-    mutable std::atomic<int16_t> inPeakL_[NUM_INPUTS]{};
-    mutable std::atomic<int16_t> inPeakR_[NUM_INPUTS]{};
+private:
+    // Per-stream float buses for mixer-driven mode (sized in setup).
+    std::vector<float>   mixerBus_[NUM_BUSES];
+    std::vector<int16_t> pushScratchInt16_[NUM_OUTPUTS];
+
+    // Ring overflow tracking and rate-limited logging
+    uint32_t overflowCount_ = 0;
+    uint32_t overflowLogEvery_ = 400;  // ≈1-2 s depending on frameCount (128-256) at 48kHz
 
     void audioThreadFunc();
-
-    // Process sub-steps (mirrors Marcel's pattern)
-    void pullInputs();
-    void generate();
-    void control();
-    void pushOutputs();
-    void interleave(uint8_t stream);
-    void updatePeaks(uint8_t stream);
+    void processMixer();
 };
+
+} // namespace crosspad_pc

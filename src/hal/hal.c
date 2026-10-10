@@ -1,6 +1,13 @@
 #include "hal.h"
 
 
+static lv_indev_t * s_encoder = NULL;
+
+lv_indev_t * sdl_hal_get_encoder(void)
+{
+  return s_encoder;
+}
+
 lv_display_t * sdl_hal_init(int32_t w, int32_t h)
 {
 
@@ -22,9 +29,11 @@ lv_display_t * sdl_hal_init(int32_t w, int32_t h)
   /*Connect the image  object to the driver*/
   lv_indev_set_cursor(mouse, cursor_obj);             
 
-  lv_indev_t * mousewheel = lv_sdl_mousewheel_create();
-  lv_indev_set_display(mousewheel, disp);
-  lv_indev_set_group(mousewheel, lv_group_get_default());
+  /* The rotary encoder. Left without a group on purpose: crosspad-gui hands it
+   * one per screen (launcher, settings, the quick-settings drawer), the same
+   * way indev_encoderTop is wired on the board. */
+  s_encoder = lv_sdl_mousewheel_create();
+  lv_indev_set_display(s_encoder, disp);
 
   lv_indev_t * kb = lv_sdl_keyboard_create();
   lv_indev_set_display(kb, disp);
