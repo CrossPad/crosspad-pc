@@ -162,7 +162,7 @@ catch_discover_tests(crosspad_tests)
 
 # ── GUI integration tests (launches full simulator, talks via TCP) ──
 # Separate executable — no crosspad-core linkage, just TCP client + Catch2.
-# Requires bin/main.exe to be built first.
+# Requires bin/CrossPad.exe to be built first.
 
 add_executable(gui_tests test_gui_harness.cpp)
 # Hand the harness the simulator's absolute path. CTest runs gui_tests with a

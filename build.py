@@ -55,7 +55,7 @@ def main():
     print("[3/3] CMake build...")
     run("cmake --build build", env)
 
-    print("\nBuild OK -> bin/main.exe")
+    print("\nBuild OK -> bin/CrossPad.exe")
 
 if __name__ == "__main__":
     main()
