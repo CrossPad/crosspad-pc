@@ -130,8 +130,8 @@ later** (`GPL-3.0-or-later`) — see [LICENSE](LICENSE).
 
 Some parts carry their own, GPL-compatible terms:
 
-- Files marked `SPDX-License-Identifier: MIT`, and the code that came from
-  LVGL's `lv_port_pc_vscode` template this project started from: MIT —
+- The code that came from LVGL's `lv_port_pc_vscode` template this project
+  started from: MIT —
   [LICENSES/MIT-lv_port_pc_vscode.txt](LICENSES/MIT-lv_port_pc_vscode.txt)
 - `lib/ml_synth/` (ML_SynthTools, Marcel Licence): GPL-3.0-or-later
 - Submodules (LVGL, FreeRTOS, crosspad-core, crosspad-gui, the apps) and the

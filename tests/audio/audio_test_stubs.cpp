@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: MIT
+// SPDX-License-Identifier: GPL-3.0-or-later
 //
 // Test-only stubs for pc_platform globals consumed by AudioMixerEngine.cpp.
 // Real implementations live in src/pc_stubs/PcPlatformStubs.cpp, which we

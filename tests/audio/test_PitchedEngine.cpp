@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: MIT
+// SPDX-License-Identifier: GPL-3.0-or-later
 //
 // The pitched sample engine, end to end on the host: a generated two-zone kit
 // goes through core's loader into a PitchedInstrument, and what comes back out
