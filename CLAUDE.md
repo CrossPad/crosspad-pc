@@ -25,11 +25,11 @@ A change that breaks a docs page (command, output, path) opens an issue in Cross
 
 Day to day: `cmake -B build -G Ninja -DCMAKE_BUILD_TYPE=Debug && cmake --build build`, run `bin/CrossPad` (`bin\CrossPad.exe`), test with `ctest --test-dir build --output-on-failure -LE gui`. Gotchas the site does not need:
 
-- `scripts/run.sh` rebuilds (Linux/macOS, Ninja, Debug) when any source under `src/`, `lib/crosspad-core/src` or `lib/crosspad-gui/src` is newer than `bin/CrossPad`, then launches it. CMake also has a `run` target.
+- `scripts/run.sh` builds (Linux/macOS, Ninja, Debug) when `bin/CrossPad` or `build/` is missing or any source under `src/`, `lib/crosspad-core/src` or `lib/crosspad-gui/src` is newer than `bin/CrossPad`, then launches it. CMake also has a `run` target.
 - `bin/CrossPad --versions` prints one `APPVER: <component> id=… commit=… ref=… dirty=…` line per core / gui / app it was built with, then `APPVER: end count=N`, and exits — the simulator's answer to the firmware's APP_VERSIONS, used by the app manager.
 - Windows: `build.bat` calls Visual Studio 2022 **Community**'s `vcvarsall.bat x64`, **wipes `build/` every time**, then configures with the vcpkg toolchain (`C:/vcpkg/scripts/buildsystems/vcpkg.cmake`). For incremental builds run the two cmake lines by hand from an x64 Native Tools prompt. A post-build step copies `SDL2.dll` (from the vcpkg tree) next to the exe.
 - Linux: `libdbus-1-dev` is only needed for `USE_BLE` (SimpleBLE); without it configure with `-DUSE_BLE=OFF`. `libpipewire-0.3-dev` is optional: without it CMake prints "PipeWire dev headers not found" and the virtual sinks fall back to `pactl` at runtime.
-- macOS: the simulator runs, but CDC/MIDI/audio are not well tested. CMakeLists.txt has no `APPLE` branch; `docs/building-macos.md` lists the open items.
+- Platforms: the simulator runs on Linux, Windows and macOS. Serial ports (`src/uart/PcUart.cpp`: the virtual USB/UART jack, the serial monitor app, `Capability::Usb`) are Windows-only; Linux and macOS get an empty stub. On macOS, MIDI (CoreMIDI) and audio (CoreAudio) are not well tested; `docs/building-macos.md` lists what works there and what is missing.
 - `ctest -LE gui` skips the tests that need a display (`gui_integration`, and `gui_audio_citest`, which is also labelled `flaky`); `ctest -L gui -LE flaky` runs the stable GUI one.
 
 ### CMake Options
@@ -49,7 +49,7 @@ FreeRTOS is always on (there is no `USE_FREERTOS` option any more).
 | `LV_USE_LIBJPEG_TURBO` | OFF | JPEG decoding |
 | `LV_USE_FFMPEG` | OFF | Video playback |
 | `LV_USE_FREETYPE` | OFF | FreeType font rendering |
-| `ASAN` | OFF | AddressSanitizer (Debug, non-MSVC only; a plain cache variable, not an `option()`) |
+| `ASAN` | unset | AddressSanitizer (Debug, non-MSVC only). Not declared anywhere: only `if (ASAN)` reads it, so pass `-DASAN=ON` |
 
 ### Compile Defines
 
@@ -88,7 +88,7 @@ src/
                                   pipewire/ (Linux virtual-audio backend, see docs/virtual-audio.md), virtual/
   synth/MlPianoSynth.cpp        — ISynthEngine impl wrapping ML_SynthTools FM engine
   sequencer/, song/             — PC ports of the pattern sequencer and core's song engine
-  uart/, updater/               — PC stand-ins for the STM32 link and the updater
+  uart/, updater/               — PcUart (serial ports, Windows COM API; stub elsewhere) and the self-updater
   remote/RemoteControl.cpp      — TCP server (localhost:19840) for MCP integration
   pc_stubs/
     PcPlatformStubs.cpp         — PC impls: PcClock, PcLedStrip, PcKeyValueStore, PcGuiPlatform, etc.
@@ -121,7 +121,7 @@ docs/                           — design notes; instructions.md is the in-app 
 **Installable apps** (in `src/apps/crosspad-*/`, managed by app manager):
 
 - **crosspad-appstore**: the App Store (PC only). It hides itself from its own list, so it cannot remove itself, and release builds (`BUILD_TESTING=OFF`) leave it out
-- **crosspad-mixer**, **crosspad-piano**, **crosspad-instructions**, **crosspad-serial-monitor**, **crosspad-sampler**: Installable via `python3 scripts/app_manager.py install <name>` or via the App Store UI
+- **crosspad-mixer**, **crosspad-piano**, **crosspad-instructions**, **crosspad-serial-monitor** (needs serial ports, so Windows only), **crosspad-sampler**: Installable via `python3 scripts/app_manager.py install <name>` or via the App Store UI
 - **crosspad-sequencer**, **crosspad-song**, **crosspad-arrange**, **crosspad-pad-mixer**, **crosspad-dawcontrol**: the board's apps, with the platform services they need wired here -- the pattern sequencer and metronome (`src/sequencer/PcSequencer.cpp`, scenes in `<sdcard_path>/crosspad/sequences.json`), core's song engine (`src/song/PcSongEnginePort.cpp`, projects in `<sdcard_path>/SONGS`, bounces from the mixer's third "Rec (pads)" bus), per-pad levels (`PcPadMix` in `PcSamplerPort.cpp`) and `stm32MessageHandler` for DAW Control (no hub on PC, so no launch buttons)
 
 ### App Management
@@ -149,8 +149,8 @@ crosspad-core defines portable interfaces; this repo provides PC implementations
 | `IClock` | `PcClock` (std::chrono) | |
 | `IEventBus` | core's `FreeRtosEventBus` | `post*()` queued to a dispatch task, `send*()` synchronous |
 | `ILedStrip` | `PcLedStrip` | 16 virtual RGB pixels, readable via `pc_get_led_color()` |
-| `IMidiOutput` | `PcMidi` / core's `NullMidiOutput` | Swappable at runtime via `getPlatformServices().setMidiOutput()` |
-| `IAudioOutput` | `PcAudioOutput` / core's `NullAudioOutput` | Swappable via `getPlatformServices().setAudioOutput()`; OUT2 via `pc_platform_set_audio_output_2()` |
+| `IMidiOutput` | core's `MidiInputHandler` → `PcMidi` / `PcBleMidi` | `MidiInputHandler` is what `setMidiOutput()` registers; it fans out to `PcMidi` (`setUsbOutput`) and `PcBleMidi` (`setBleOutput`) |
+| `IAudioOutput` | `PcAudioOutput` behind `PcAudioModule` | The module is registered with `getPlatformServices().setAudioModule()`; its output streams wrap `PcAudioOutput` (OUT1, OUT2). `setAudioOutput()` is not used on PC; OUT2 via `pc_platform_set_audio_output_2()` |
 | `ISynthEngine` | `MlPianoSynth` | FM synth, swappable via `getPlatformServices().setSynthEngine()` |
 | `IKeyValueStore` | `PcKeyValueStore` | `~/.crosspad/preferences.json` (`%USERPROFILE%\.crosspad\` on Windows) |
 | `IGuiPlatform` | `PcGuiPlatform` | Display dimensions, update notifications |
@@ -169,13 +169,13 @@ crosspad-core provides a bitflag-based capability query system (`crosspad/platfo
 - `hasCapability(cap)` — true if ALL specified flags are present
 - `hasAnyCapability(caps)` — true if ANY specified flag is present
 
-**PC sets:** base caps (Pads, Leds, Encoder, Display, Persistence) in `pc_platform_init()`. Midi/AudioOut/AudioIn/Synth are added by core's `PlatformServices` setters as `crosspad_app_init()` registers those devices; `Usb` comes and goes with the serial link.
+**PC sets:** base caps (Pads, Leds, Encoder, Display, Persistence) in `pc_platform_init()`. Midi, Synth, AudioOut (via `setAudioModule`), Http and Bluetooth are added by core's `PlatformServices` setters as the devices register; `AudioIn` is not set on PC (`pc_platform_set_audio_input()` only stores the pointer); `Usb` follows the serial link (Windows only).
 
 ### App System
 
 Apps are registered via crosspad-core's `AppRegistry` using static `AppRegistrar` constructors. The PC `App` class (`src/pc_stubs/PcApp.hpp`) is a lightweight wrapper — no sequencer, CLI, or kit loader — supporting lifecycle (`start`/`pause`/`resume`/`destroyApp`) and launcher integration. Apps receive pad/MIDI events through the EventBus → AppManagerBase → IApp callback chain.
 
-**Adding a new app:** use `REGISTER_APP(Name, …)` (or define `void _register_<Name>_app()`) in a `.cpp` under `src/apps/`. At configure time `cmake/generate_registry.cmake` scans `src/apps/` for both and writes `build/app_registry_init.cpp`, whose `AppRegistry_InitAll()` `crosspad_app_init()` calls — no hand-written call needed. Reconfigure after adding the file.
+**Adding a new app:** use `REGISTER_APP(Name, …)`, `REGISTER_APP_PL(Name, …)` (with pad logic, as the app template does), or define `void _register_<Name>_app()` in a `.cpp` under `src/apps/`. At configure time `cmake/generate_registry.cmake` scans `src/apps/` for all three and writes `build/app_registry_init.cpp`, whose `AppRegistry_InitAll()` `crosspad_app_init()` calls — no hand-written call needed. Reconfigure after adding the file.
 
 ### Event & Input Flow
 
@@ -190,13 +190,13 @@ MIDI CC64 → encoder button press
 MIDI SysEx → Stm32MessageHandler → PadManager LED updates
 ```
 
-Host input (`src/stm32_emu/`): mouse click on a pad; mouse wheel turns the encoder, middle click presses it; Space or Ctrl is the power button (tap = back, hold 0.5 s = drawer); V toggles the volume overlay; Escape goes to the launcher. With keyboard capture on, `1234 / QWER / ASDF / ZXCV` are the pad rows top to bottom — V is taken by the volume overlay, so pad 4 has no key. GLOBAL capture hooks the keyboard on Windows only. `docs/instructions.md` (the in-app Help text) has the user-facing version.
+Host input (`src/stm32_emu/`): mouse click on a pad; mouse wheel turns the encoder, middle click presses it; Space or Ctrl is the power button (tap = back, hold 0.5 s = drawer); V toggles the volume overlay; Escape goes to the launcher. With keyboard capture on, `1234 / QWER / ASDF / ZXCV` are the pad rows top to bottom — V is taken by the volume overlay, so pad 4 has no key, except in GLOBAL mode (Windows only), where the low-level hook maps V to pad 4 and the volume key is unreachable. OFF turns only the pad keys off; the shortcuts still work. `docs/instructions.md` (the in-app Help text) has the user-facing version.
 
 ### Audio Pipeline
 
 ```
 App noteOn/noteOff → MlPianoSynth (ISynthEngine, registered via PlatformServices::setSynthEngine)
-  → PcAudioModule thread: process() → AudioMixerEngine (IN1, IN2, Synth, Sampler channels; routing to OUT1/OUT2)
+  → PcAudioModule thread: process() → AudioMixerEngine (IN1, IN2, Synth, Sampler, Pitched channels; buses OUT1, OUT2 and the "Rec (pads)" capture bus)
       (without the crosspad-mixer app: a plain node chain of synth, sampler and pitched nodes)
   → PcAudioOutput::write() (ring buffer)
   → RtAudio callback: ring buffer → output device (WASAPI on Windows)
