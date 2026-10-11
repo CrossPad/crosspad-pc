@@ -39,7 +39,7 @@ static inline Thread_t * prvGetThreadFromTask( TaskHandle_t xTask )
 }
 
 static emscripten_fiber_t xMainFiber;
-static char ucMainAsyncStack[ FIBER_ASYNC_STACK ];
+static char ucMainAsyncStack[ FIBER_ASYNC_STACK ] __attribute__( ( aligned( 16 ) ) );
 static emscripten_fiber_t * pxRunning = NULL;
 static volatile UBaseType_t uxCriticalNesting = 0;
 static BaseType_t xSchedulerRunning = pdFALSE;
@@ -81,8 +81,12 @@ StackType_t * pxPortInitialiseStack( StackType_t * pxTopOfStack,
     memset( thread, 0, sizeof( *thread ) );
     thread->code = pxCode;
     thread->params = pvParameters;
-    thread->cstack = malloc( FIBER_C_STACK );
-    thread->astack = malloc( FIBER_ASYNC_STACK );
+    /* 16-byte aligned: the wasm ABI's stack alignment, which the compiler
+     * relies on (musl's __stdio_write addresses its second iovec as
+     * (sp + 16) | 8). malloc() gives 8, and a fiber stack that ends at
+     * 8 mod 16 handed fwrite() an empty iovec to retry for ever. */
+    thread->cstack = aligned_alloc( 16, FIBER_C_STACK );
+    thread->astack = aligned_alloc( 16, FIBER_ASYNC_STACK );
     configASSERT( thread->cstack && thread->astack );
     emscripten_fiber_init( &thread->fiber, prvTaskEntry, thread,
                            thread->cstack, FIBER_C_STACK,
