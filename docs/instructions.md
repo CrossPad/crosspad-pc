@@ -10,7 +10,8 @@ of the device body to cycle capture modes:
 
 - OFF  - keyboard input disabled
 - FOCUS - capture when window is focused
-- GLOBAL - capture always (system-wide)
+- GLOBAL - capture always (system-wide,
+  Windows only)
 
 ## Pad Keys
 
@@ -21,13 +22,17 @@ The keyboard maps to the 4x4 pad grid:
 | A | S | D | F | Pads 5-8   |
 | Z | X | C | V | Pads 1-4   |
 
+V opens the volume overlay,
+so pad 4 has no key.
+
 ## Navigation
 
 | Key       | Action                  |
 | Escape    | Close app, go to launcher |
 | Enter     | Confirm / click         |
-| Space     | Volume overlay toggle   |
-| Ctrl      | Volume overlay toggle   |
+| Space     | Power: tap = back, hold = drawer |
+| Ctrl      | Power: tap = back, hold = drawer |
+| V         | Volume overlay toggle   |
 | PageUp    | Focus previous widget   |
 | PageDown  | Focus next widget       |
 | Arrows    | Navigate within widgets |
