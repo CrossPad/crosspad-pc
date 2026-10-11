@@ -16,6 +16,7 @@
 #include "crosspad/net/WifiTypes.hpp"
 #include "crosspad/settings/CrosspadSettings.hpp"
 #include "wifi_creds.h"
+#include "net_mode.h"
 #include "wifi_fallback.h"
 #include "wifi_link.h"
 #include "wifi_ping.h"
@@ -77,3 +78,6 @@ bool wifi_creds_forget(const char *) { return false; }
 
 /* wifi_fallback.h: no network mode to restart into. */
 void wifi_fallback_offer(net_tab_t, lv_group_t *) {}
+
+/* net_mode.h: the twin never boots into network mode (the board's screen shows it when it does). */
+bool net_mode_active(void) { return false; }

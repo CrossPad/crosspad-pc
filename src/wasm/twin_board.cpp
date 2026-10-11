@@ -17,9 +17,11 @@
 #include <vector>
 
 #include "board/CrosspadPlatform.hpp"
-#include "board/fw_flow_overlay.h"
+#include "board/esp_app_desc.h"
 #include "board/twin_board.h"
+#include "board/twin_fw.h"
 #include "board/usb_config_manager.h"
+#include "fw_flow_overlay.h"
 #include "crosspad/settings/ISettingsUI.hpp"
 
 void crosspad_app_go_home();
@@ -74,8 +76,58 @@ Stm32Manager& getStm32Manager() { static Stm32Manager m; return m; }
 
 TwinFw& twin_fw() { static TwinFw f; return f; }
 
+bool twin_fw_auto_accept() { return twin_fw().autoAccept; }
+const char* twin_fw_version() { return twin_fw().version; }
+
+/* ESP-IDF esp_app_desc.h: the running firmware's version, as the board reported it. */
+const esp_app_desc_t* esp_app_get_description(void)
+{
+    static esp_app_desc_t d;
+    snprintf(d.version, sizeof d.version, "%s", twin_fw().version);
+    return &d;
+}
+
+/* fw_slots.h: the board's slots as TWIN_FW reported them; installing,
+ * switching and confirming are the board's, so the twin refuses or does nothing. */
+void fw_slots_init(void) {}
 void fw_slots_get(FwSlotInfo out[2]) { out[0] = twin_fw().slots[0]; out[1] = twin_fw().slots[1]; }
+bool fw_slots_other_holds(const char* kit, const char* version)
+{
+    const TwinFw& f = twin_fw();
+    const FwSlotInfo& o = f.slots[f.slots[0].running ? 1 : 0];
+    if (o.state == FwSlotState::Empty || o.state == FwSlotState::RolledBack || !kit || !version) return false;
+    auto strip = [](const char* v) { return v[0] == 'v' ? v + 1 : v; };
+    return !strcmp(o.kit, kit) && !strcmp(strip(o.version), strip(version));
+}
+bool fw_install_start(const char*, bool, const char** error)
+{
+    if (error) *error = "twin";
+    return false;
+}
+FwInstallStatus fw_install_status(void) { return FwInstallStatus{FwInstallPhase::Idle, 0, ""}; }
+bool fw_install_stm_proto_older(void) { return false; }
+bool fw_switch_request(const char** error)
+{
+    if (error) *error = "twin";
+    return false;
+}
+void fw_switch_finish_boot(void) {}
+void fw_confirm_running(void) {}
+void fw_confirm_set_timer(esp_timer_handle_t) {}
+void fw_slot_clear_rollback(char) {}
 bool fw_rollback_supported(void) { return twin_fw().rollback; }
+void fw_trial_watchdog_arm(void) {}
+void fw_trial_watchdog_feed(void) {}
+bool fw_running_on_trial(void) { return false; }   // TWIN_FW does not say; the board holds its own checks
+bool fw_rollback_toast_pending(char*, size_t, char*, size_t) { return false; }   // the board raises its own
+bool fw_package_stm_proto_older(const FwPackage& pkg)
+{
+    const TwinFw& f = twin_fw();
+    for (size_t i = 0; i < f.count; ++i) if (!strcmp(f.pkgs[i].name, pkg.name)) return f.stmOlder[i];
+    return false;
+}
+
+/* fw_library.h: the board's card as TWIN_FW listed it; it is never written here. */
 size_t fw_library_scan(FwPackage* out, size_t capacity)
 {
     const TwinFw& f = twin_fw();
@@ -83,10 +135,14 @@ size_t fw_library_scan(FwPackage* out, size_t capacity)
     for (size_t i = 0; i < n; ++i) out[i] = f.pkgs[i];
     return n;
 }
-bool fw_package_stm_proto_older(const FwPackage& pkg)
+bool fw_library_find(const char* name, FwPackage* out)
 {
     const TwinFw& f = twin_fw();
-    for (size_t i = 0; i < f.count; ++i) if (!strcmp(f.pkgs[i].name, pkg.name)) return f.stmOlder[i];
+    for (size_t i = 0; name && i < f.count; ++i)
+        if (!strcmp(f.pkgs[i].name, name)) {
+            if (out) *out = f.pkgs[i];
+            return true;
+        }
     return false;
 }
 const char* fw_pkg_verdict_text(FwPkgVerdict v)
@@ -103,6 +159,29 @@ const char* fw_pkg_verdict_text(FwPkgVerdict v)
     }
     return "unknown";
 }
+void fw_library_path(const FwPackage& pkg, const char* file, char* buf, size_t len)
+{
+    snprintf(buf, len, "%s/%s/%s", FW_PKG_ROOT, pkg.name, file ? file : "");
+}
+void fw_library_package_name(const char* kit, const char* version, char* out, size_t n)
+{
+    snprintf(out, n, "%s-%s", kit ? kit : "", version ? version : "");
+}
+bool fw_library_is_complete(const char* name)
+{
+    FwPackage p;
+    return fw_library_find(name, &p) && p.verdict != FwPkgVerdict::Downloading;
+}
+bool fw_library_remove(const char*) { return false; }   // the board's card
+uint64_t fw_library_package_bytes(const char* name)
+{
+    FwPackage p;
+    return fw_library_find(name, &p) ? p.imageSize : 0;   // TWIN_FW gives the image's size, not the directory's
+}
+
+/* fw_flow_overlay.h: whether a flow runs is the board's (TWIN_FW); the twin starts none. */
+bool fw_flow_install_and_restart(const char*, bool) { return false; }
+bool fw_flow_switch_and_restart(bool) { return false; }
 bool fw_flow_active(void) { return twin_fw().flow; }
 usb_mode_t usb_config_manager_get_mode(void) { return twin_fw().usbDefault ? USB_MODE_DEFAULT : USB_MODE_AUDIO; }
 
@@ -210,6 +289,7 @@ EMSCRIPTEN_KEEPALIVE void wasm_twin_fw(const char* text) {
             }
         }
     }
+    f.gen = twin_fw().gen + 1;
     twin_fw() = f;
 }
 

@@ -7,30 +7,21 @@
  *        in src/wasm/twin_board.cpp). The headers beside this one stand in
  *        for the board's own (platform-idf main/include) so that its
  *        settings_app.cpp and update_app.cpp build unchanged; everything they
- *        would do to hardware does nothing here -- the twin follows.
+ *        would do to hardware does nothing here -- the twin follows. The
+ *        firmware's package and slot types are its own (fw_library.h,
+ *        fw_slots.h): TWIN_FW in those types is twin_fw.h.
  */
 #include <cstddef>
 #include <cstdint>
-
-#include "fw_library.h"
-#include "fw_slots.h"
-
-/** The Firmware app's view of the board (TWIN_FW). */
-struct TwinFw {
-    FwSlotInfo slots[2] = {{'A', false, FwSlotState::Empty, "", "", "", false},
-                           {'B', false, FwSlotState::Empty, "", "", "", false}};
-    FwPackage  pkgs[16] = {};
-    bool       stmOlder[16] = {};
-    size_t     count = 0;
-    bool       rollback = true, usbDefault = true, autoAccept = false, flow = false;
-    char       version[32] = "";
-};
-TwinFw &twin_fw();
 
 /** The board's radio and motion MIDI as TWIN_STATE reports them. */
 const char *twin_ble_state();
 const char *twin_ble_peer();      // "" when nobody is connected
 uint32_t    twin_imu_sent();
+
+/** What TWIN_FW's M line says: the OTA auto-accept preference, the running version. */
+bool        twin_fw_auto_accept();
+const char *twin_fw_version();
 
 /* Fed by wasm_bridge.cpp as TWIN_STATE comes in. */
 void twin_board_set_ble(const char *state, const char *peer);

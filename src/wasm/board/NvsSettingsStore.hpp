@@ -16,7 +16,7 @@ public:
     void saveI32(const char *, const char *, int32_t) override {}
     bool readBool(const char *, const char *, bool d) override { return d; }
     uint8_t readU8(const char *ns, const char *key, uint8_t d) override {
-        return !strcmp(ns, "ota_prefs") && !strcmp(key, "auto_accept") ? twin_fw().autoAccept : d;
+        return !strcmp(ns, "ota_prefs") && !strcmp(key, "auto_accept") ? twin_fw_auto_accept() : d;
     }
     int32_t readI32(const char *, const char *, int32_t d) override { return d; }
     void eraseAll() override {}

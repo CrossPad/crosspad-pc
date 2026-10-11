@@ -14,7 +14,7 @@
 #include <cstdio>
 #include <cstring>
 
-#include "board/twin_board.h"
+#include "board/twin_fw.h"
 #include "crosspad/status/CrosspadStatus.hpp"
 #include "fw_image_desc.h"
 #include "fw_updater.h"
@@ -51,6 +51,7 @@ void fw_updater_latest(char *out, size_t n) { put(out, n, status.fwUpdateAvailab
 int64_t fw_updater_last_check(void) { return 0; }
 bool fw_updater_checked(void) { return status.fwUpdateAvailable; }   // only a found update says a check ran
 void fw_updater_target(char *out, size_t n) { put(out, n, ""); }
+void fw_updater_target_kit(char *out, size_t n) { put(out, n, ""); }
 void fw_updater_ready_version(char *out, size_t n) { put(out, n, ""); }
 bool fw_updater_boot_check(void) { return true; }   // the board's default; its NVS stays its own
 void fw_updater_set_boot_check(bool) {}

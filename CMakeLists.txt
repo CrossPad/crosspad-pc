@@ -376,8 +376,7 @@ set(MAIN_SOURCES ${WIN_RESOURCES} src/mouse_cursor_icon.c src/hal/hal.c
 )
 if(EMSCRIPTEN)
     # The page's side door (LCD out, the board's inputs in), Web MIDI/Audio, Web Serial.
-    list(APPEND MAIN_SOURCES src/wasm/wasm_bridge.cpp src/wasm/web_io.cpp src/wasm/web_uart.cpp
-                             src/wasm/twin_board.cpp)
+    list(APPEND MAIN_SOURCES src/wasm/wasm_bridge.cpp src/wasm/web_io.cpp src/wasm/web_uart.cpp)
 else()
     list(APPEND MAIN_SOURCES src/uart/PcUart.cpp src/remote/RemoteControl.cpp)
 endif()
@@ -521,6 +520,18 @@ if(CROSSPAD_FIRMWARE_DIR AND EMSCRIPTEN)
             "${CROSSPAD_FIRMWARE_DIR}/main/app/settings/settings_updates.cpp"
             "${PROJECT_SOURCE_DIR}/src/wasm/twin_updater.cpp")
     endif()
+    # The Firmware app's tabs and kit card (Library, Store, Updates): the
+    # board's views as they are, their card work answered from TWIN_FW
+    # (src/wasm/twin_fw_views.cpp) instead of the SD card.
+    if(EXISTS "${CROSSPAD_FIRMWARE_DIR}/main/gui/fw_views_common.cpp")
+        foreach(_v gui/fw_actions.cpp gui/fw_kit_card.cpp gui/fw_library_view.cpp gui/fw_store_view.cpp
+                   gui/fw_views_common.cpp fw_icons.cpp fw_ui_state.cpp)
+            list(APPEND _board_builtin_sources "${CROSSPAD_FIRMWARE_DIR}/main/${_v}")
+        endforeach()
+        list(APPEND _board_builtin_sources "${PROJECT_SOURCE_DIR}/src/wasm/twin_fw_views.cpp")
+    endif()
+    # The board's data (TWIN_FW) in the firmware's own package and slot types.
+    list(APPEND _board_builtin_sources "${PROJECT_SOURCE_DIR}/src/wasm/twin_board.cpp")
     set_source_files_properties(${_board_builtin_sources} PROPERTIES
         INCLUDE_DIRECTORIES "${PROJECT_SOURCE_DIR}/src/wasm/board;${CROSSPAD_FIRMWARE_DIR}/main/app/update;${CROSSPAD_FIRMWARE_DIR}/main/include")
     list(APPEND MAIN_SOURCES ${_board_builtin_sources})

@@ -106,7 +106,8 @@
 
 extern lv_obj_t* status_c;
 
-static lv_obj_t* app_c = nullptr;
+/* The app container, by the name the board's gui.h gives it (its views open apps in it). */
+lv_obj_t* app_c = nullptr;
 static lv_obj_t* s_lcdContainer = nullptr;
 static Stm32EmuWindow stm32Emu;
 static bool s_lcdOnly = false;
