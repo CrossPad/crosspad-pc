@@ -8,10 +8,9 @@ This file is actually rendered in the "Help" app.
 Click the keyboard icon on the left side
 of the device body to cycle capture modes:
 
-- OFF  - keyboard input disabled
+- OFF  - pad keys off (shortcuts still work)
 - FOCUS - capture when window is focused
-- GLOBAL - capture always (system-wide,
-  Windows only)
+- GLOBAL - capture always (system-wide, Windows only)
 
 ## Pad Keys
 
@@ -22,8 +21,7 @@ The keyboard maps to the 4x4 pad grid:
 | A | S | D | F | Pads 5-8   |
 | Z | X | C | V | Pads 1-4   |
 
-V opens the volume overlay,
-so pad 4 has no key.
+V opens the volume overlay, so pad 4 has no key (in GLOBAL mode V plays pad 4).
 
 ## Navigation
 
