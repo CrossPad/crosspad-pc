@@ -70,7 +70,6 @@
 // crosspad-gui interfaces
 #include "crosspad-gui/platform/IGuiPlatform.h"
 #include "hal/hal.h"
-#include "crosspad-gui/platform/IFileSystem.h"
 
 #include "pc_stubs/FreeRtosEventBus.hpp"
 
@@ -288,6 +287,11 @@ public:
         return assetPrefix_.c_str();
     }
 
+    // The explorer's card paths, under the folder mounted as the SD card.
+    std::string storagePath(const std::string& path) override {
+        return pc_platform_resolve_sdcard_path(path);
+    }
+
     lv_indev_t* getNavigationEncoder() override {
         return sdl_hal_get_encoder();
     }
@@ -391,35 +395,6 @@ private:
 };
 
 // =============================================================================
-// PcFileSystem — IFileSystem using Win32 / POSIX
-// =============================================================================
-
-class PcFileSystem : public crosspad_gui::IFileSystem {
-public:
-    bool listDirectory(const std::string& path, std::vector<crosspad_gui::FileItem>& outEntries) override {
-        outEntries.clear();
-
-        // Resolve virtual SD card paths to real filesystem paths
-        std::string resolvedPath = pc_platform_resolve_sdcard_path(path);
-
-        std::error_code ec;
-        for (auto& entry : std::filesystem::directory_iterator(resolvedPath, ec)) {
-            if (ec) break;
-            crosspad_gui::FileItem item;
-            item.path = entry.path().string();
-            item.name = entry.path().filename().string();
-            item.isFolder = entry.is_directory(ec);
-            // Normalize backslashes to forward slashes for LVGL
-            for (char& c : item.path) {
-                if (c == '\\') c = '/';
-            }
-            outEntries.push_back(std::move(item));
-        }
-        return !outEntries.empty();
-    }
-};
-
-// =============================================================================
 // Static singletons
 // =============================================================================
 
@@ -428,7 +403,6 @@ static PcLedStrip       s_ledStrip;
 static FreeRtosEventBus s_eventBus;
 static PcKeyValueStore  s_kvStore;
 static PcGuiPlatform    s_guiPlatform;
-static PcFileSystem     s_fileSystem;
 
 static PadLedController s_padLedController;
 static PadAnimator      s_padAnimator;
@@ -548,7 +522,6 @@ extern "C" void pc_platform_init() {
 
     // Register GUI platform (crosspad-gui specific, not in crosspad-core)
     crosspad_gui::setGuiPlatform(&s_guiPlatform);
-    crosspad_gui::setFileSystem(&s_fileSystem);
 
     // Register settings UI callback
     crosspad::setSettingsUI(&s_pcSettingsUI);
