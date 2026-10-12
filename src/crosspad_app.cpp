@@ -70,6 +70,7 @@
 #include "audio/audio_platform.hpp"
 #include "audio/sampler/PcPitchedPort.hpp"
 #include "audio/sampler/PcSamplerPort.hpp"
+#include <crosspad-sampler/logic/kit_gate.hpp>
 #ifdef USE_VIRTUAL_AUDIO
 #include "audio/virtual/IVirtualSinkManager.hpp"
 #ifdef USE_PIPEWIRE
@@ -639,6 +640,19 @@ static const char* pc_icon_resolver(size_t /*index*/, const char* icon) {
     return s_resolvedIcons.back().c_str();
 }
 
+#ifdef USE_AUDIO
+/* What crosspad-sampler's kit gate asks of the simulator. The kit scan runs
+ * inside the mount, so there is no "still scanning" here. */
+static crosspad_sampler::KitGateHost kit_gate_host() {
+    crosspad_sampler::KitGateHost host;
+    host.appContainer = []() { return app_c; };
+    host.cardPresent  = []() { return !pc_platform_get_sdcard_path().empty(); };
+    host.log          = [](const char* line) { printf("[sampler] %s\n", line); };
+    host.selectorIcon = "notepick.png";
+    return host;
+}
+#endif
+
 static void InitializeOrchestrator() {
     crosspad_gui::OrchestratorConfig config;
     config.app_factory = crosspad_gui::defaultAppFactory<App>;
@@ -646,7 +660,7 @@ static void InitializeOrchestrator() {
 #ifdef USE_AUDIO
     // An app that needs a kit and has none gets the kit selector first — the
     // same gate the device puts in front of the sampler.
-    config.pre_launch = crosspad_pc::sampler_port_pre_launch;
+    config.pre_launch = crosspad_sampler::kit_gate_pre_launch;
 #endif
     crosspad_gui::AppOrchestrator::getInstance().init(config);
 }
@@ -666,6 +680,12 @@ static void LoadMainScreen(lv_obj_t* parent) {
     config.style          = crosspad::CrosspadSettings::getInstance()->launcherStyle;
     config.bg_color       = lv_color_black();
 
+#ifdef USE_AUDIO
+    // The rebuild below cleans the whole screen, kit-selector overlay
+    // included; a launch that was waiting behind that gate must not land on
+    // the launcher that replaces it.
+    crosspad_sampler::kit_gate_reset();
+#endif
     auto result = orch.loadMainScreen(parent, config);
 
     app_c    = result.app_container;
@@ -1152,7 +1172,7 @@ void crosspad_app_init()
     // MixerInput::IN1/IN2/SYNTH pin down. Registered before loadState() so a
     // saved routing for it is applied rather than dropped — loadState only
     // patches slots that already exist.
-    s_samplerNode = crosspad_pc::sampler_port_init();
+    s_samplerNode = crosspad_pc::sampler_port_init(kit_gate_host());
     if (s_samplerNode) {
         s_mixerEngine.addChannel(s_samplerNode, "Sampler");
         s_mixerEngine.setRouteEnabled(static_cast<MixerInput>(3), MixerOutput::OUT1, true);
@@ -1232,7 +1252,7 @@ void crosspad_app_init()
         s_audioModule.addNode(&s_synthNode);
         // Without the mixer component the sampler is a plain generator on the
         // node chain; it is brought up here because there is no addChannel().
-        s_samplerNode = crosspad_pc::sampler_port_init();
+        s_samplerNode = crosspad_pc::sampler_port_init(kit_gate_host());
         if (s_samplerNode) s_audioModule.addNode(s_samplerNode);
         s_pitchedNode = crosspad_pc::pitched_port_init(cfg.sampleRate);
         if (s_pitchedNode) s_audioModule.addNode(s_pitchedNode);

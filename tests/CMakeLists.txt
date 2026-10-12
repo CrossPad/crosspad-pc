@@ -53,6 +53,8 @@ set(CORE_TEST_SOURCES
 # ── Audio pipeline sources (Tier 2 & 3 tests) ──
 set(AUDIO_TEST_SOURCES
     ${PROJECT_SOURCE_DIR}/src/apps/crosspad-mixer/src/AudioMixerEngine.cpp
+    # The mixer's output EQ lives in core.
+    ${PROJECT_SOURCE_DIR}/lib/crosspad-core/src/audio/OutputEq.cpp
     ${PROJECT_SOURCE_DIR}/src/audio/PcAudio.cpp
     ${PROJECT_SOURCE_DIR}/src/audio/PcAudioModule.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/audio/audio_test_stubs.cpp
