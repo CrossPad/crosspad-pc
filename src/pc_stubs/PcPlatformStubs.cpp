@@ -9,9 +9,8 @@
 #include <cstdint>
 #include <cstdio>
 #include <chrono>
-#include "crosspad/app/AppVersions.hpp"
+#include "crosspad/settings/InfoRowTable.hpp"
 
-#include <cstdarg>
 #include <string>
 #include <vector>
 #include <map>
@@ -474,57 +473,30 @@ public:
         return root.empty() ? nullptr : root.c_str();
     }
 
-    int getInfoRowCount() override { buildInfoRows(); return s_infoCount; }
+    int getInfoRowCount() override { buildInfoRows(); return s_info.count(); }
 
     bool getInfoRow(int idx, const char** label, const char** value) override {
         buildInfoRows();
-        if (idx < 0 || idx >= s_infoCount) return false;
-        *label = s_infoRows[idx].label;
-        *value = s_infoRows[idx].value;
-        return true;
+        return s_info.get(idx, label, value);
     }
 
 private:
-    struct InfoRow { const char* label; char value[64]; };
-    static constexpr int kMaxInfoRows = 24;
-    static inline InfoRow s_infoRows[kMaxInfoRows] = {};
-    static inline int s_infoCount = 0;
-    static inline bool s_infoBuilt = false;
-
-    static void addRow(const char* label, const char* fmt, ...) {
-        if (s_infoCount >= kMaxInfoRows) return;
-        InfoRow& row = s_infoRows[s_infoCount];
-        row.label = label;
-        va_list ap;
-        va_start(ap, fmt);
-        vsnprintf(row.value, sizeof(row.value), fmt, ap);
-        va_end(ap);
-        s_infoCount++;
-    }
+    static inline crosspad::InfoRowTable s_info;
 
     static void buildInfoRows() {
-        if (s_infoBuilt) return;
-        s_infoBuilt = true;
-        s_infoCount = 0;
-        addRow("Simulator", "%s", CROSSPAD_PC_VERSION);
-        addRow("Built", "%s %s", __DATE__, __TIME__);
-        addRow("crosspad-core", "%s", CROSSPAD_CORE_REV);
-        addRow("crosspad-gui", "%s", CROSSPAD_GUI_REV);
-        addRow("LVGL", "%d.%d.%d", LVGL_VERSION_MAJOR, LVGL_VERSION_MINOR,
-               LVGL_VERSION_PATCH);
+        if (!s_info.beginBuild()) return;
+        s_info.add("Simulator", "%s", CROSSPAD_PC_VERSION);
+        s_info.add("Built", "%s %s", __DATE__, __TIME__);
+        s_info.add("crosspad-core", "%s", CROSSPAD_CORE_REV);
+        s_info.add("crosspad-gui", "%s", CROSSPAD_GUI_REV);
+        s_info.add("LVGL", "%d.%d.%d", LVGL_VERSION_MAJOR, LVGL_VERSION_MINOR,
+                   LVGL_VERSION_PATCH);
         // Installed apps with the commit and pin they were built from — same
         // table the --versions flag prints and the firmware reports over CDC.
-        for (std::size_t i = 0; i < crosspad::appVersionCount(); ++i) {
-            const crosspad::AppVersion* v = crosspad::appVersionGet(i);
-            if (!v || !v->appId || !v->appId[0]) continue;  // core/gui above
-            addRow(v->component, "%s%s%s%s", v->commit,
-                   v->ref && v->ref[0] ? " @" : "",
-                   v->ref && v->ref[0] ? v->ref : "",
-                   v->dirty ? " *" : "");
-        }
+        s_info.addAppVersions();
 
         const std::string& sd = pc_platform_get_sdcard_path();
-        addRow("SD slot", "%s", sd.empty() ? "not mounted" : sd.c_str());
+        s_info.add("SD slot", "%s", sd.empty() ? "not mounted" : sd.c_str());
     }
 };
 
