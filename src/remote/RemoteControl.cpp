@@ -64,6 +64,7 @@
 #include "crosspad-gui/components/power_gesture.h"
 #include "crosspad-gui/components/status_bar.h"
 #include "crosspad-gui/components/app_orchestrator.h"   // AppOrchestrator — app_list
+#include "crosspad_app.hpp"                              // crosspad_app_start() — app_start
 
 // PC platform
 #include "pc_stubs/pc_platform.h"
@@ -445,6 +446,52 @@ static std::string handle_pad_release(const std::string& json) {
     }
     crosspad::getPadManager().handlePadRelease(pad);
     return "{" + json_bool("ok", true) + "," + json_int("pad", pad) + "}";
+}
+
+// The board's PAD_PRESSURE: pressure on a pad, as the STM streams it, to the
+// active pad logic (or the LEDs' aftertouch without one).
+static std::string handle_pad_pressure(const std::string& json) {
+    int pad = json_get_int(json, "pad", -1);
+    int pressure = json_get_int(json, "pressure", -1);
+    if (pad < 0 || pad > 15) {
+        return "{" + json_bool("ok", false) + "," + json_string("error", "invalid pad (0-15)") + "}";
+    }
+    if (pressure < 0 || pressure > 255) {
+        return "{" + json_bool("ok", false) + "," + json_string("error", "invalid pressure (0-255)") + "}";
+    }
+    crosspad::getPadManager().handlePadPressure((uint8_t)pad, (uint8_t)pressure);
+    return "{" + json_bool("ok", true) + "," + json_int("pad", pad) + "," + json_int("pressure", pressure) + "}";
+}
+
+// The board's PAD_PAN: where on a held pad the press sits, as the STM's 7-bit
+// value (0 left .. 64 centred .. 127 right), to the active pad logic's
+// onPadPan() as value - 64. "pan" in the reply is what the logic got.
+static std::string handle_pad_pan(const std::string& json) {
+    int pad = json_get_int(json, "pad", -1);
+    int value = json_get_int(json, "value", -1);
+    if (pad < 0 || pad > 15) {
+        return "{" + json_bool("ok", false) + "," + json_string("error", "invalid pad (0-15)") + "}";
+    }
+    if (value < 0 || value > 127) {
+        return "{" + json_bool("ok", false) + "," + json_string("error", "invalid value (0-127)") + "}";
+    }
+    const int8_t pan = crosspad::IPadLogicHandler::panFromWire((uint8_t)value);
+    crosspad::getPadManager().notifyPadPan((uint8_t)pad, pan);
+    return "{" + json_bool("ok", true) + "," + json_int("pad", pad) + "," + json_int("value", value) +
+           "," + json_int("pan", pan) + "}";
+}
+
+// The board's APP_START: open an app by its launcher name, case-insensitive,
+// as a tap on its tile would (the kit-selector gate included).
+static std::string handle_app_start(const std::string& json) {
+    const std::string name = json_get_string(json, "name");
+    if (name.empty()) {
+        return "{" + json_bool("ok", false) + "," + json_string("error", "missing name") + "}";
+    }
+    if (!crosspad_app_start(name.c_str())) {
+        return "{" + json_bool("ok", false) + "," + json_string("error", "unknown app") + "}";
+    }
+    return "{" + json_bool("ok", true) + "," + json_string("name", name) + "}";
 }
 
 static std::string handle_encoder_rotate(const std::string& json) {
@@ -1143,6 +1190,15 @@ static std::string dispatch_command(const std::string& json) {
     }
     if (cmd == "pad_release") {
         return handle_pad_release(json);
+    }
+    if (cmd == "pad_pressure") {
+        return handle_pad_pressure(json);
+    }
+    if (cmd == "pad_pan") {
+        return handle_pad_pan(json);
+    }
+    if (cmd == "app_start") {
+        return handle_app_start(json);
     }
     if (cmd == "power_click") {
         return handle_power_click();

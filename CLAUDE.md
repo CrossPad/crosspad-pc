@@ -216,7 +216,7 @@ This simulator must stay compatible with the ESP32-S3 firmware ([platform-idf](h
 
 The simulator includes a built-in TCP server (`src/remote/RemoteControl.cpp`) on `localhost:19840` for external automation. Started automatically with the simulator. Protocol: newline-delimited JSON.
 
-Commands include `ping`, `screenshot`, `click`, `pad_press`/`pad_release`, `power_click`/`power_hold`/`power_press`/`power_release`, `encoder_rotate`/`encoder_press`/`encoder_release`, `key`, `stats`, `settings_get`/`settings_set`, `midi_note_on`/`midi_note_off`, `kit_list`/`kit_load`/`kit_status`, audio device and level commands — the dispatch in `RemoteControl.cpp` is the full list.
+Commands include `ping`, `screenshot`, `click`, `pad_press`/`pad_release`, `pad_pressure` (`pad`, `pressure` 0-255, the board's `PAD_PRESSURE`), `pad_pan` (`pad`, `value` 0 left .. 64 centred .. 127 right, the board's `PAD_PAN`; the reply's `pan` is what `onPadPan()` got, -64..63), `app_start` (`name`, case-insensitive, the board's `APP_START`), `app_list`, `power_click`/`power_hold`/`power_press`/`power_release`, `encoder_rotate`/`encoder_press`/`encoder_release`, `key`, `stats`, `settings_get`/`settings_set`, `midi_note_on`/`midi_note_off`, `kit_list`/`kit_load`/`kit_status`, audio device and level commands — the dispatch in `RemoteControl.cpp` is the full list.
 
 Used by the [crosspad-mcp](https://github.com/CrossPad/crosspad-mcp) simulator tools.
 
