@@ -72,6 +72,7 @@ The `CrossPad` target gets: `PLATFORM_PC=1`, `USE_LVGL=1`, `USE_FREERTOS=1`, `CP
 4. Audio setup — RtAudio init, FM synth thread, VU meter timer
 5. App registration — enumerate `AppRegistry`, create `App` wrappers
 6. `initStyles()` + `LoadMainScreen()` — crosspad-gui theme and launcher
+7. `boot_splash_start()` — crosspad-gui's cold-boot splash over the launcher (~2 s, the emulated pads go along); `CROSSPAD_NO_SPLASH=1` in the environment skips it, as the GUI test harness does
 
 ### Source Layout
 
