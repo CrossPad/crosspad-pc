@@ -62,7 +62,7 @@ std::string controlJsonLedState(const LedState& st) {
 
 std::string controlJsonMixChannel(const MixerChannelLevel& row) {
     std::string routes;
-    for (uint8_t o = 0; o < row.outputs; ++o) routes += (row.routes >> o) & 1u ? '1' : '0';
+    for (uint8_t o = 0; o < row.outputs && o < kMixerRouteBits; ++o) routes += (row.routes >> o) & 1u ? '1' : '0';
     return "{" + json_int("ch", row.ch) + "," +
            json_string("name", row.name ? row.name : "") + "," +
            json_float("pk_l", row.peakL) + "," + json_float("pk_r", row.peakR) + "," +
@@ -85,7 +85,7 @@ std::string controlJsonMixLevels(uint8_t outputs, const std::string& channels, c
 
 std::string controlJsonPitchedStatus(const PitchedStatus& st) {
     std::string roots = "[";
-    for (uint8_t i = 0; i < st.zones; ++i) {
+    for (uint8_t i = 0; i < st.zones && i < crosspad::SampleBank::kMaxZones; ++i) {
         if (i) roots += ",";
         char b[16];
         snprintf(b, sizeof(b), "%.2f", (double)st.roots[i]);

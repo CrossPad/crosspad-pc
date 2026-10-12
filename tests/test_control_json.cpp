@@ -152,3 +152,20 @@ TEST_CASE("control json: audio_level echoes the stream asked for", "[remote][con
     lv.right = 0.125f;
     CHECK(remote::controlJsonAudioLevel(1, lv) == R"({"ok":true,"stream":1,"left":0.500000,"right":0.125000})");
 }
+
+TEST_CASE("control json: counts past the arrays read no further than they go", "[remote][control]") {
+    PitchedStatus st;
+    st.zones = 255;   // past SampleBank::kMaxZones
+    const std::string pitched = remote::controlJsonPitchedStatus(st);
+    const size_t from = pitched.find("\"roots\":[");
+    const size_t to = pitched.find(']', from);
+    REQUIRE(to != std::string::npos);
+    size_t commas = 0;
+    for (size_t i = from; i < to; ++i) commas += pitched[i] == ',';
+    CHECK(commas + 1 == crosspad::SampleBank::kMaxZones);
+
+    MixerChannelLevel row;
+    row.outputs = 255;   // past the route mask's width
+    row.routes = 0xFFFFFFFFu;
+    CHECK(remote::controlJsonMixChannel(row).find(std::string(kMixerRouteBits, '1') + "\"") != std::string::npos);
+}
