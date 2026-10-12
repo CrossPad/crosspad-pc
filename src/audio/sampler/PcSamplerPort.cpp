@@ -7,7 +7,6 @@
 #include "SampleStreamEngine.hpp"
 
 #include "pc_stubs/pc_platform.h"
-#include "pc_stubs/PcApp.hpp"
 
 #include <crosspad/event/EventData.hpp>
 #include <crosspad/event/IEventBus.hpp>
@@ -20,7 +19,6 @@
 #include <crosspad/pad/PadManager.hpp>
 #include <crosspad/platform/PlatformServices.hpp>
 
-#include <crosspad-gui/components/app_orchestrator.h>
 #include <crosspad-gui/components/file_explorer.h>
 #include <crosspad-gui/components/status_bar.h>
 
@@ -29,13 +27,12 @@
 #include <crosspad-sampler/SamplerApp.hpp>
 #include <crosspad-sampler/SamplerConfig.hpp>
 #include <crosspad-sampler/SamplerPlatformCallbacks.hpp>
+#include <crosspad-sampler/logic/kit_gate.hpp>
 #include <crosspad-sampler/logic/kit_load_task.hpp>
-#include <crosspad-sampler/ui/kit_selector_app.hpp>
 #include <crosspad-sampler/waveform/waveform_cache.hpp>
 #include <crosspad-sampler/waveform/waveform_loader.hpp>
 
 #include <cstdio>
-#include <cstring>
 #include <filesystem>
 #include <string>
 
@@ -349,42 +346,6 @@ void onSamplePlaybackEvent(const void* data, crosspad::EventType, void*) {
     }
 }
 
-// ── Kit-selector gate ────────────────────────────────────────────────────
-
-App*      s_overlay       = nullptr;
-App*      s_pendingApp    = nullptr;
-lv_obj_t* s_pendingParent = nullptr;
-bool      s_shouldLaunch  = false;
-
-const char* kKitRequiredApps[] = {"Sampler", "Sequencer"};
-
-bool app_requires_kit(const char* name) {
-    if (!name) return false;
-    for (const char* n : kKitRequiredApps) {
-        if (std::strcmp(name, n) == 0) return true;
-    }
-    return false;
-}
-
-void on_kit_loaded() {
-    s_shouldLaunch = true;
-    crosspad_gui::statusbar_process_loader_status(100, true, false, "Kit loaded");
-}
-
-// The selector reports here once it has torn itself down — both when a kit
-// finished loading and when the user backed out. Only the first launches what
-// was waiting behind the gate.
-void on_selector_closed() {
-    auto& orch = crosspad_gui::AppOrchestrator::getInstance();
-    if (s_pendingApp && s_shouldLaunch && s_pendingParent) {
-        s_pendingApp->start(s_pendingParent);
-        s_pendingApp->resume();
-        orch.setRunningApp(s_pendingApp);
-    }
-    s_pendingApp   = nullptr;
-    s_shouldLaunch = false;
-}
-
 // ── Kit discovery ────────────────────────────────────────────────────────
 
 void rescanKits() {
@@ -402,7 +363,7 @@ void rescanKits() {
 
 // ── Public API ───────────────────────────────────────────────────────────
 
-crosspad::IAudioNode* sampler_port_init() {
+crosspad::IAudioNode* sampler_port_init(const crosspad_sampler::KitGateHost& gate) {
     if (!SampleStreamPlayer_Init()) {
         std::printf("[sampler] engine init failed — pads will not sound\n");
         return nullptr;
@@ -419,8 +380,7 @@ crosspad::IAudioNode* sampler_port_init() {
 
     crosspad_sampler::SamplerPlatformCallbacks cb{};
 
-    cb.kitSelector.onKitLoaded = on_kit_loaded;
-    cb.kitSelector.onClosed    = on_selector_closed;
+    crosspad_sampler::kit_gate_install(gate, cb.kitSelector);
 
     cb.audio.startLoadKit      = platform_startLoadKit;
     cb.audio.onKitLoadFinished = platform_onKitLoadFinished;
@@ -480,29 +440,6 @@ void sampler_port_set_sdcard(const std::string& root) {
 
     SampleStreamPlayer_SetRootPrefix(root.c_str());
     rescanKits();
-}
-
-bool sampler_port_pre_launch(crosspad_gui::ILvglApp* app, lv_obj_t* container) {
-    if (!app || !app_requires_kit(app->getName())) return true;
-
-    auto* mgr = crosspad::getKitManager();
-    if (mgr && mgr->getCurrentKit() != nullptr) return true;
-
-    s_pendingApp    = static_cast<App*>(app);
-    s_pendingParent = container;
-    s_shouldLaunch  = false;
-
-    // Built once and reused. The overlay is not owned by the app factory, so
-    // nothing would ever delete it — re-creating it per prompt leaked one App
-    // each time. destroyApp() clears its root, so start() rebuilds the UI on
-    // the same instance.
-    if (!s_overlay) {
-        s_overlay = new App(container, "Kit selector", "notepick.png",
-                            lv_CreateKitSelector, lv_KitSelector_destroy);
-    }
-    s_overlay->start(container);
-    s_overlay->resume();
-    return false;
 }
 
 } // namespace crosspad_pc
