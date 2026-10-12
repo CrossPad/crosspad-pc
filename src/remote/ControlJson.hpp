@@ -12,6 +12,8 @@
 #include <cstdint>
 #include <string>
 
+#include "crosspad/control/AudioLevel.hpp"
+#include "crosspad/control/KitList.hpp"
 #include "crosspad/control/KitStatus.hpp"
 #include "crosspad/control/LedState.hpp"
 #include "crosspad/control/MixerLevels.hpp"
@@ -22,6 +24,14 @@ namespace remote {
 
 /// kit_status: count, current, name, parsed, loading.
 std::string controlJsonKitStatus(const crosspad::control::KitStatus& st);
+
+/// One element of kit_list's "kits" array: id, name, parsed.
+std::string controlJsonKitRow(const crosspad::control::KitListRow& row);
+/// The whole kit_list reply around those rows, comma-joined.
+std::string controlJsonKitList(int count, int current, const std::string& kits);
+
+/// audio_level: @p stream as the request gave it, the level read for it.
+std::string controlJsonAudioLevel(int stream, const crosspad::control::AudioLevel& lv);
 
 /// led_state: brightness, animating, coalesce, colors.
 std::string controlJsonLedState(const crosspad::control::LedState& st);

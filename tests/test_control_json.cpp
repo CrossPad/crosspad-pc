@@ -126,3 +126,29 @@ TEST_CASE("control json: wave_status", "[remote][control]") {
           R"({"ok":true,"running":true,"requested":1,"loaded":3,"queued":10,"retried":4,"dropped":2,)"
           R"("failed_info":5,"failed_read":6,"alloc_fail":7})");
 }
+
+TEST_CASE("control json: kit_list lists removed slots too", "[remote][control]") {
+    KitListRow a;
+    a.id = 0;
+    a.name = "808 Kit";
+    a.parsed = true;
+    KitListRow gone;          // removed on the board's side: still a row here
+    gone.id = 1;
+    gone.name = "gone";
+    gone.removed = true;
+    KitListRow empty;         // no kit at the id
+    empty.id = 2;
+    const std::string rows = remote::controlJsonKitRow(a) + "," + remote::controlJsonKitRow(gone) + "," +
+                             remote::controlJsonKitRow(empty);
+    CHECK(remote::controlJsonKitList(3, 0, rows) ==
+          R"({"ok":true,"count":3,"current":0,"kits":[{"id":0,"name":"808 Kit","parsed":true},)"
+          R"({"id":1,"name":"gone","parsed":false},{"id":2,"name":"","parsed":false}]})");
+}
+
+TEST_CASE("control json: audio_level echoes the stream asked for", "[remote][control]") {
+    AudioLevel lv;
+    lv.stream = 1;
+    lv.left = 0.5f;
+    lv.right = 0.125f;
+    CHECK(remote::controlJsonAudioLevel(1, lv) == R"({"ok":true,"stream":1,"left":0.500000,"right":0.125000})");
+}

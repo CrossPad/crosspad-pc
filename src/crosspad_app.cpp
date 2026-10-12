@@ -33,6 +33,7 @@
 
 // crosspad-core
 #include "crosspad/app/AppRegistry.hpp"
+#include "crosspad/control/AppName.hpp"
 #include "crosspad/pad/PadManager.hpp"
 #include "crosspad/platform/PlatformServices.hpp"
 #include "crosspad/platform/PlatformCapabilities.hpp"
@@ -1758,15 +1759,8 @@ void crosspad_app_go_home()
 
 bool crosspad_app_start(const char* name)
 {
-    if (!name) return false;
-    const auto sameName = [](const char* a, const char* b) {
-        for (; *a && *b; ++a, ++b) {
-            if (std::tolower((unsigned char)*a) != std::tolower((unsigned char)*b)) return false;
-        }
-        return *a == *b;
-    };
     for (const auto& app : crosspad_gui::AppOrchestrator::getInstance().getApps()) {
-        if (app && app->getName() && sameName(app->getName(), name)) {
+        if (app && crosspad::control::appNameMatches(app->getName(), name)) {
             crosspad_gui::AppOrchestrator::onAppSelected(app.get(), app_c);
             return true;
         }
