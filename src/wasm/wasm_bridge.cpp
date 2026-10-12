@@ -68,6 +68,10 @@
 extern crosspad::CrosspadStatus status;
 
 #include "crosspad_app.hpp"
+#ifdef USE_AUDIO
+#include "sequencer/PcSequencer.hpp"
+#include "crosspad/sequencer/PatternSequencer.hpp"
+#endif
 #ifdef CP_UX2000
 #include "crosspad-gui/components/mode_overlay.h"
 #endif
@@ -82,6 +86,17 @@ extern "C" void wasm_io_service(void);
  * the group it rests on when no screen has handed it one. */
 extern "C" { lv_indev_t* indev_encoderTop = nullptr; }
 lv_group_t* encoderTop_group = nullptr;
+
+/* A pad let go, as the board's midiCallbacks.cpp has it: the sequencer hears
+ * the release first (how long a note was held is part of the take), then the
+ * pads. The press side is the pad manager's input tap (PcSequencer.cpp). */
+static void pad_release(uint8_t pad)
+{
+#ifdef USE_AUDIO
+    getSequencer().noteOut(pad);
+#endif
+    crosspad::getPadManager().handlePadRelease(pad);
+}
 
 namespace {
 
@@ -246,7 +261,7 @@ void apply_frame(const Frame& f) {
         ++s_st.pad; ++s_st.inputs;
         if (f.p[0] < 16) {
             if (f.p[1]) crosspad::getPadManager().handlePadPress(f.p[0], f.p[1]);
-            else        crosspad::getPadManager().handlePadRelease(f.p[0]);
+            else        pad_release(f.p[0]);
         }
         break;
     case F_POWER:
@@ -621,7 +636,7 @@ void apply_loose(const Input& in) {
     switch (in.kind) {
     case PAD:
         if (in.b > 0) crosspad::getPadManager().handlePadPress(in.a, in.b);
-        else          crosspad::getPadManager().handlePadRelease(in.a);
+        else          pad_release(in.a);
         break;
     case ENC:       s_looseDiff += in.a; break;
     case ENC_PRESS: s_looseBtn.push_back(in.a != 0); break;
