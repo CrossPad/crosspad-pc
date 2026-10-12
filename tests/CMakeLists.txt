@@ -48,6 +48,13 @@ set(CORE_TEST_SOURCES
     # PitchedKitLoader falls back to resolveKitSamplePath() when the env
     # supplies no resolver.
     ${PROJECT_SOURCE_DIR}/lib/crosspad-core/src/kit/KitPathUtils.cpp
+
+    # Device-control verbs: core's readers, the control port's JSON of them
+    ${PROJECT_SOURCE_DIR}/lib/crosspad-core/src/control/KitStatus.cpp
+    ${PROJECT_SOURCE_DIR}/lib/crosspad-core/src/control/LedState.cpp
+    ${PROJECT_SOURCE_DIR}/lib/crosspad-core/src/control/PitchedStatus.cpp
+    ${PROJECT_SOURCE_DIR}/lib/crosspad-core/src/control/WaveStatus.cpp
+    ${PROJECT_SOURCE_DIR}/src/remote/ControlJson.cpp
 )
 
 # ── Audio pipeline sources (Tier 2 & 3 tests) ──
@@ -69,6 +76,7 @@ set(TEST_SOURCES
     test_pad_manager.cpp
     test_settings.cpp
     test_e2e_scenarios.cpp
+    test_control_json.cpp
 )
 
 # ── Audio pipeline test sources (Tier 2 + Tier 3) ──
