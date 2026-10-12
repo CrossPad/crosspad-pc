@@ -258,7 +258,6 @@ set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS
 # ── PC platform stubs (event bus, singletons, interface impls) ──
 set(PC_STUB_SOURCES
     src/pc_stubs/PcPlatformStubs.cpp
-    src/pc_stubs/PcApp.cpp
     src/pc_stubs/PcHttpClient.cpp
 )
 
