@@ -67,6 +67,18 @@
       "ref": "main",
       "repo": "https://github.com/CrossPad/crosspad-dawcontrol.git",
       "installed_at": "2026-09-27T00:25:11.371222+00:00"
+    },
+    "recorder": {
+      "version": "a3b59453",
+      "ref": "main",
+      "repo": "https://github.com/CrossPad/crosspad-recorder.git",
+      "installed_at": "2026-10-13T00:45:00.000000+00:00"
+    },
+    "slicer": {
+      "version": "c5ed1e1a",
+      "ref": "main",
+      "repo": "https://github.com/CrossPad/crosspad-slicer.git",
+      "installed_at": "2026-10-13T00:45:00.000000+00:00"
     }
   }
 }

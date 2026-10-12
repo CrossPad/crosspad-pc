@@ -4,6 +4,9 @@
  */
 
 #include "RemoteControl.hpp"
+#include "ControlJson.hpp"
+#include "JsonText.hpp"
+#include "crosspad/control/PadInput.hpp"
 
 #include <cstdio>
 #include <cstring>
@@ -90,6 +93,8 @@
 #  define SOCKET_INVALID (-1)
 #endif
 
+using namespace remote::json;
+
 /* ── Base64 encoder ──────────────────────────────────────────────────── */
 
 static const char b64_table[] =
@@ -110,25 +115,7 @@ static std::string base64_encode(const uint8_t* data, size_t len) {
     return out;
 }
 
-/* ── Simple JSON helpers (no dependency) ─────────────────────────────── */
-
-static std::string json_string(const std::string& key, const std::string& val) {
-    return "\"" + key + "\":\"" + val + "\"";
-}
-
-static std::string json_bool(const std::string& key, bool val) {
-    return "\"" + key + "\":" + (val ? "true" : "false");
-}
-
-static std::string json_int(const std::string& key, int val) {
-    return "\"" + key + "\":" + std::to_string(val);
-}
-
-static std::string json_float(const std::string& key, float val) {
-    char buf[32];
-    snprintf(buf, sizeof(buf), "%g", (double)val);
-    return "\"" + key + "\":" + buf;
-}
+/* ── Simple JSON readers (the writers are in JsonText.hpp) ──────────── */
 
 /// Extract a string value for a key from a JSON-like string (very simple parser)
 static std::string json_get_string(const std::string& json, const std::string& key) {
@@ -435,7 +422,8 @@ static std::string handle_pad_press(const std::string& json) {
     if (pad < 0 || pad > 15) {
         return "{" + json_bool("ok", false) + "," + json_string("error", "invalid pad (0-15)") + "}";
     }
-    crosspad::getPadManager().handlePadPress(pad, vel);
+    crosspad::control::applyPadInput(crosspad::getPadManager(), crosspad::control::PadInput::Press,
+                                     (uint8_t)pad, (uint8_t)vel);
     return "{" + json_bool("ok", true) + "," + json_int("pad", pad) + "," + json_int("velocity", vel) + "}";
 }
 
@@ -444,7 +432,8 @@ static std::string handle_pad_release(const std::string& json) {
     if (pad < 0 || pad > 15) {
         return "{" + json_bool("ok", false) + "," + json_string("error", "invalid pad (0-15)") + "}";
     }
-    crosspad::getPadManager().handlePadRelease(pad);
+    crosspad::control::applyPadInput(crosspad::getPadManager(), crosspad::control::PadInput::Release,
+                                     (uint8_t)pad, 0);
     return "{" + json_bool("ok", true) + "," + json_int("pad", pad) + "}";
 }
 
@@ -459,7 +448,8 @@ static std::string handle_pad_pressure(const std::string& json) {
     if (pressure < 0 || pressure > 255) {
         return "{" + json_bool("ok", false) + "," + json_string("error", "invalid pressure (0-255)") + "}";
     }
-    crosspad::getPadManager().handlePadPressure((uint8_t)pad, (uint8_t)pressure);
+    crosspad::control::applyPadInput(crosspad::getPadManager(), crosspad::control::PadInput::Pressure,
+                                     (uint8_t)pad, (uint8_t)pressure);
     return "{" + json_bool("ok", true) + "," + json_int("pad", pad) + "," + json_int("pressure", pressure) + "}";
 }
 
@@ -476,7 +466,8 @@ static std::string handle_pad_pan(const std::string& json) {
         return "{" + json_bool("ok", false) + "," + json_string("error", "invalid value (0-127)") + "}";
     }
     const int8_t pan = crosspad::IPadLogicHandler::panFromWire((uint8_t)value);
-    crosspad::getPadManager().notifyPadPan((uint8_t)pad, pan);
+    crosspad::control::applyPadInput(crosspad::getPadManager(), crosspad::control::PadInput::Pan,
+                                     (uint8_t)pad, (uint8_t)value);
     return "{" + json_bool("ok", true) + "," + json_int("pad", pad) + "," + json_int("value", value) +
            "," + json_int("pan", pan) + "}";
 }
@@ -891,18 +882,7 @@ static std::string handle_citest_status(const std::string& /*json*/) {
 
 static std::string handle_audio_level(const std::string& json) {
     int stream = json_get_int(json, "stream", 0);
-    float l = 0.0f, r = 0.0f;
-    crosspad::getAudioModule().getOutputLevel(static_cast<uint8_t>(stream), l, r);
-    char buf[128];
-    std::snprintf(buf, sizeof(buf), "%.6f", static_cast<double>(l));
-    std::string ls = buf;
-    std::snprintf(buf, sizeof(buf), "%.6f", static_cast<double>(r));
-    std::string rs = buf;
-    // Custom JSON build because json_int helpers are int-only.
-    return std::string("{") + json_bool("ok", true) + "," +
-           json_int("stream", stream) + "," +
-           "\"left\":"  + ls + "," +
-           "\"right\":" + rs + "}";
+    return remote::controlJsonAudioLevel(stream, crosspad::control::readAudioLevel(static_cast<uint8_t>(stream)));
 }
 
 /* ── Kit handlers ────────────────────────────────────────────────────── */
@@ -915,18 +895,6 @@ static std::string handle_audio_level(const std::string& json) {
 static void (*s_kitLoader)(int) = nullptr;
 static bool (*s_kitBusy)()      = nullptr;
 static remote::AudioDeviceCtl s_audioCtl;
-
-// Minimal JSON string escaping for device labels (PipeWire descriptions can
-// carry quotes). Only " and \ need escaping for a valid one-line value.
-static std::string json_quote(const std::string& s) {
-    std::string out = "\"";
-    for (char c : s) {
-        if (c == '"' || c == '\\') out += '\\';
-        out += c;
-    }
-    out += "\"";
-    return out;
-}
 
 static std::string audio_list_json(std::vector<std::string> (*fn)()) {
     if (!fn) {
@@ -979,37 +947,17 @@ static std::string handle_audio_in_set(const std::string& j) {
 static std::string handle_mix_lvl() {
 #ifdef REMOTE_HAS_MIXER
     auto& mx = getMixerEngine();
-    const uint8_t nout = mx.numOutputs();
-    std::string out = "{" + json_bool("ok", true) + "," +
-                      json_int("outputs", nout) + ",\"channels\":[";
-    bool first = true;
-    for (uint8_t ch = 0; ch < mx.maxChannels(); ++ch) {
-        if (!mx.isChannelActive(ch)) continue;
-        float cl = 0.0f, cr = 0.0f;
-        mx.getChannelLevel(ch, cl, cr);
-        std::string routes;
-        for (uint8_t o = 0; o < nout; ++o) routes += mx.isRouteEnabled(ch, o) ? '1' : '0';
-        const char* nm = mx.getChannelName(ch);
-        if (!first) out += ",";
-        first = false;
-        out += "{" + json_int("ch", ch) + "," +
-               json_string("name", nm ? nm : "") + "," +
-               json_float("pk_l", cl) + "," + json_float("pk_r", cr) + "," +
-               json_float("vol", mx.getChannelVolume(ch)) + "," +
-               json_bool("mute", mx.isChannelMuted(ch)) + "," +
-               json_string("route", routes) + "}";
-    }
-    out += "],\"out\":[";
-    for (uint8_t o = 0; o < nout; ++o) {
-        float ol = 0.0f, orr = 0.0f;
-        mx.getOutputLevel(o, ol, orr);
-        if (o) out += ",";
-        out += "{" + json_int("out", o) + "," +
-               json_float("pk_l", ol) + "," + json_float("pk_r", orr) + "," +
-               json_float("vol", mx.getOutputVolume(o)) + "," +
-               json_bool("mute", mx.isOutputMuted(o)) + "}";
-    }
-    return out + "]}";
+    std::string chans, outs;
+    crosspad::control::readMixerLevels(mx,
+        [&](const crosspad::control::MixerChannelLevel& row) {
+            if (!chans.empty()) chans += ",";
+            chans += remote::controlJsonMixChannel(row);
+        },
+        [&](const crosspad::control::MixerOutputLevel& row) {
+            if (!outs.empty()) outs += ",";
+            outs += remote::controlJsonMixOutput(row);
+        });
+    return remote::controlJsonMixLevels(mx.numOutputs(), chans, outs);
 #else
     return "{" + json_bool("ok", false) + "," +
            json_string("error", "mixer not built") + "}";
@@ -1021,25 +969,11 @@ static std::string handle_mix_lvl() {
 static std::string handle_pitched_status() {
 #ifdef REMOTE_HAS_PITCHED
     auto& inst = crosspad_pc::pitched_port_instrument();
-    const bool active = crosspad_pc::pitched_port_active();
-    crosspad::SampleBank* bank = inst.bank();
-    const uint8_t zones = bank ? bank->zoneCount() : 0;
-    std::string roots = "[";
-    for (uint8_t i = 0; i < zones; ++i) {
-        if (i) roots += ",";
-        char b[16];
-        snprintf(b, sizeof(b), "%.2f", (double)bank->zone(i).rootMidi);
-        roots += b;
-    }
-    roots += "]";
-    const size_t bytes = bank ? bank->bytes() : 0;
-    return "{" + json_bool("ok", true) + "," + json_bool("active", active) + "," +
-           json_int("zones", zones) + ",\"roots\":" + roots + "," +
-           json_int("active_voices", inst.activeVoices()) + "," +
-           json_int("sounding_voices", inst.soundingVoices()) + "," +
-           json_int("steals", (int)inst.stealCount()) + "," +
-           json_float("last_note_hz", inst.lastNoteHz()) + "," +
-           json_int("bank_kb", (int)(bytes / 1024)) + "}";
+    crosspad::control::PitchedStatus st;
+    st.active = crosspad_pc::pitched_port_active();
+    crosspad::control::readPitchedBank(inst.bank(), st);
+    crosspad::control::readPitchedEngine(inst, st);
+    return remote::controlJsonPitchedStatus(st);
 #else
     return "{" + json_bool("ok", false) + "," +
            json_string("error", "pitched not built") + "}";
@@ -1051,18 +985,11 @@ static std::string handle_pitched_status() {
 // reads were requested, cached, retried, dropped or failed.
 static std::string handle_wave_status() {
 #ifdef REMOTE_HAS_WAVE
-    crosspad_sampler::WaveformLoaderStats st;
-    crosspad_sampler::waveform_loader_get_stats(&st);
-    return "{" + json_bool("ok", true) + "," +
-           json_bool("running", crosspad_sampler::waveform_loader_is_running()) + "," +
-           json_int("requested", (int)st.requested) + "," +
-           json_int("loaded", (int)st.loaded) + "," +
-           json_int("queued", (int)st.queued) + "," +
-           json_int("retried", (int)st.retried) + "," +
-           json_int("dropped", (int)st.dropped) + "," +
-           json_int("failed_info", (int)st.failedInfo) + "," +
-           json_int("failed_read", (int)st.failedRead) + "," +
-           json_int("alloc_fail", (int)st.allocFail) + "}";
+    crosspad_sampler::WaveformLoaderStats loader;
+    crosspad_sampler::waveform_loader_get_stats(&loader);
+    crosspad::control::WaveStatus st;
+    crosspad::control::setWaveLoader(st, loader, crosspad_sampler::waveform_loader_is_running());
+    return remote::controlJsonWaveStatus(st);
 #else
     return "{" + json_bool("ok", false) + "," +
            json_string("error", "sampler not built") + "}";
@@ -1091,21 +1018,7 @@ static std::string handle_app_list() {
 // Pad LED state — the sim's parallel to the board's LED_STATE (shared core
 // PadLedController): brightness, animation flags and the 16 pad colours.
 static std::string handle_led_state() {
-    auto& leds = crosspad::getPadLedController();
-    std::string colors = "[";
-    for (int i = 0; i < 16; ++i) {
-        crosspad::RgbColor c = leds.getPadColor((uint8_t)i);
-        char b[10];
-        snprintf(b, sizeof(b), "\"%02X%02X%02X\"", c.R, c.G, c.B);
-        if (i) colors += ",";
-        colors += b;
-    }
-    colors += "]";
-    return "{" + json_bool("ok", true) + "," +
-           json_int("brightness", (int)leds.getBrightness()) + "," +
-           json_bool("animating", leds.getAnimating()) + "," +
-           json_bool("coalesce", leds.getCoalescedRefresh()) + "," +
-           "\"colors\":" + colors + "}";
+    return remote::controlJsonLedState(crosspad::control::readLedState(crosspad::getPadLedController()));
 }
 
 // Sample engine peak + free WAV slots and load — the sim's parallel to the
@@ -1131,28 +1044,18 @@ static std::string handle_kit_list() {
         return "{" + json_bool("ok", false) + "," +
                json_string("error", "no kit manager") + "}";
     }
-    std::string out = "{" + json_bool("ok", true) + "," +
-                      json_int("count", mgr->getKitCount()) + "," +
-                      json_int("current", mgr->getCurrentKitId()) + ",\"kits\":[";
-    for (int i = 0; i < mgr->getKitCount(); ++i) {
-        auto* k = mgr->getKit(i);
-        if (i) out += ",";
-        out += "{" + json_int("id", i) + "," +
-               json_string("name", k ? k->name : std::string()) + "," +
-               json_bool("parsed", k && k->parsed) + "}";
-    }
-    return out + "]}";
+    const int count = mgr->getKitCount();
+    const int current = mgr->getCurrentKitId();
+    std::string kits;
+    crosspad::control::readKitList(*mgr, [&kits](const crosspad::control::KitListRow& row) {
+        if (row.id) kits += ",";
+        kits += remote::controlJsonKitRow(row);
+    });
+    return remote::controlJsonKitList(count, current, kits);
 }
 
 static std::string handle_kit_status() {
-    auto* mgr = crosspad::getKitManager();
-    auto* cur = mgr ? mgr->getCurrentKit() : nullptr;
-    return std::string("{") + json_bool("ok", true) + "," +
-           json_int("count", mgr ? mgr->getKitCount() : 0) + "," +
-           json_int("current", mgr ? mgr->getCurrentKitId() : -1) + "," +
-           json_string("name", cur ? cur->name : std::string()) + "," +
-           json_bool("parsed", cur && cur->parsed) + "," +
-           json_bool("loading", s_kitBusy ? s_kitBusy() : false) + "}";
+    return remote::controlJsonKitStatus(crosspad::control::readKitStatus(s_kitBusy ? s_kitBusy() : false, -1));
 }
 
 static std::string handle_kit_load(const std::string& json) {
@@ -1160,9 +1063,8 @@ static std::string handle_kit_load(const std::string& json) {
         return "{" + json_bool("ok", false) + "," +
                json_string("error", "no sampler installed") + "}";
     }
-    auto* mgr = crosspad::getKitManager();
     const int id = json_get_int(json, "kit", -1);
-    if (!mgr || id < 0 || id >= mgr->getKitCount()) {
+    if (!crosspad::control::kitIdLoadable(id)) {
         return "{" + json_bool("ok", false) + "," +
                json_string("error", "kit index out of range") + "}";
     }
