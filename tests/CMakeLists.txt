@@ -50,8 +50,12 @@ set(CORE_TEST_SOURCES
     ${PROJECT_SOURCE_DIR}/lib/crosspad-core/src/kit/KitPathUtils.cpp
 
     # Device-control verbs: core's readers, the control port's JSON of them
+    ${PROJECT_SOURCE_DIR}/lib/crosspad-core/src/control/AppName.cpp
+    ${PROJECT_SOURCE_DIR}/lib/crosspad-core/src/control/AudioLevel.cpp
+    ${PROJECT_SOURCE_DIR}/lib/crosspad-core/src/control/KitList.cpp
     ${PROJECT_SOURCE_DIR}/lib/crosspad-core/src/control/KitStatus.cpp
     ${PROJECT_SOURCE_DIR}/lib/crosspad-core/src/control/LedState.cpp
+    ${PROJECT_SOURCE_DIR}/lib/crosspad-core/src/control/PadInput.cpp
     ${PROJECT_SOURCE_DIR}/lib/crosspad-core/src/control/PitchedStatus.cpp
     ${PROJECT_SOURCE_DIR}/lib/crosspad-core/src/control/WaveStatus.cpp
     ${PROJECT_SOURCE_DIR}/src/remote/ControlJson.cpp

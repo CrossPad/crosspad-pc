@@ -8,6 +8,11 @@ using namespace crosspad::control;
 
 namespace remote {
 
+namespace {
+/// Room for "%.6f" of any float: 39 integer digits, sign, point, 6 decimals.
+constexpr size_t kFixedFloatChars = 48;
+}
+
 std::string controlJsonKitStatus(const KitStatus& st) {
     return std::string("{") + json_bool("ok", true) + "," +
            json_int("count", st.count) + "," +
@@ -15,6 +20,27 @@ std::string controlJsonKitStatus(const KitStatus& st) {
            json_string("name", st.name ? st.name : "") + "," +
            json_bool("parsed", st.parsed) + "," +
            json_bool("loading", st.loading) + "}";
+}
+
+std::string controlJsonKitRow(const KitListRow& row) {
+    return "{" + json_int("id", row.id) + "," +
+           json_string("name", row.name ? row.name : "") + "," +
+           json_bool("parsed", row.parsed) + "}";
+}
+
+std::string controlJsonKitList(int count, int current, const std::string& kits) {
+    return "{" + json_bool("ok", true) + "," + json_int("count", count) + "," +
+           json_int("current", current) + ",\"kits\":[" + kits + "]}";
+}
+
+std::string controlJsonAudioLevel(int stream, const AudioLevel& lv) {
+    char ls[kFixedFloatChars], rs[kFixedFloatChars];
+    snprintf(ls, sizeof(ls), "%.6f", static_cast<double>(lv.left));
+    snprintf(rs, sizeof(rs), "%.6f", static_cast<double>(lv.right));
+    return std::string("{") + json_bool("ok", true) + "," +
+           json_int("stream", stream) + "," +
+           "\"left\":" + ls + "," +
+           "\"right\":" + rs + "}";
 }
 
 std::string controlJsonLedState(const LedState& st) {
