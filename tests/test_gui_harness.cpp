@@ -246,6 +246,9 @@ static bool launchSimulator() {
     si.cb = sizeof(si);
     PROCESS_INFORMATION pi = {};
 
+    // The cases start at the launcher, not under the boot splash; inherited.
+    SetEnvironmentVariableA("CROSSPAD_NO_SPLASH", "1");
+
     // Try multiple paths — test may run from project root or from bin/
     const char* paths[] = { "bin\\CrossPad.exe", "CrossPad.exe", "..\\bin\\CrossPad.exe" };
     bool launched = false;
@@ -298,6 +301,8 @@ static bool launchSimulator() {
         // the remote-control port — making the test time out against a live binary.
         if (!freopen("gui_sim.log", "w", stdout)) { /* best-effort */ }
         if (!freopen("gui_sim.log", "a", stderr)) { /* best-effort */ }
+        // The cases start at the launcher, not under the boot splash.
+        setenv("CROSSPAD_NO_SPLASH", "1", 1);
         // Try multiple paths — Linux build drops "bin/CrossPad" (no .exe);
         // legacy ".exe" suffix kept for cross-platform parity.
         // CROSSPAD_SIM_BIN is the absolute path injected by CMake and is the only

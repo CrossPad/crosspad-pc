@@ -11,6 +11,7 @@
 #include <cstdio>
 #include <cstring>
 #include <cmath>
+#include <cstdlib>
 #include <vector>
 #include <atomic>
 #include <thread>
@@ -49,6 +50,7 @@
 #include "crosspad-gui/platform/IGuiPlatform.h"
 #include "crosspad-gui/components/volume_overlay.h"
 #include "crosspad-gui/components/power_gesture.h"
+#include "crosspad-gui/components/boot_splash.h"
 
 #ifdef USE_MIDI
 #include "midi/PcMidi.hpp"
@@ -1308,6 +1310,15 @@ void crosspad_app_init()
     InitializeOrchestrator();
     crosspad_gui::AppOrchestrator::getInstance().populateApps(app_c);
     LoadMainScreen(lcdContainer);
+
+    /* The board's cold-boot splash, over the launcher: with no backlight to
+     * build the launcher behind, it plays on top and leaves by itself.
+     * CROSSPAD_NO_SPLASH skips it (the GUI test harness starts at the
+     * launcher). */
+    if (!std::getenv("CROSSPAD_NO_SPLASH")) {
+        boot_splash_start(lcdContainer, crosspad::CrosspadSettings::getInstance()->LCDbrightness,
+                          nullptr, true);
+    }
 
     /* ── Auto-check for updates (background) ─────────────────────────── */
     if (pc_platform_get_auto_check_updates()) {
