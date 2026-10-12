@@ -78,12 +78,11 @@
 using namespace crosspad;
 
 // =============================================================================
-// Global variables required by crosspad-gui (extern in status_bar.cpp etc.)
+// The simulator's settings and status, handed to crosspad_platform_init()
 // =============================================================================
 
 CrosspadSettings* settings = nullptr;
 CrosspadStatus status;
-lv_obj_t* status_c = nullptr;
 
 // Forward declarations — defined after anonymous namespace
 std::string pc_platform_resolve_sdcard_path(const std::string& virtualPath);
