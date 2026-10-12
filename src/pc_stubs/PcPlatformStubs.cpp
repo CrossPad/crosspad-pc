@@ -73,7 +73,7 @@
 #include "hal/hal.h"
 #include "crosspad-gui/platform/IFileSystem.h"
 
-#include "crosspad/event/FreeRtosEventBus.hpp"
+#include "pc_stubs/FreeRtosEventBus.hpp"
 
 using namespace crosspad;
 

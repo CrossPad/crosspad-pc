@@ -1,6 +1,6 @@
 #include <catch2/catch_test_macros.hpp>
 #include "test_helpers.hpp"
-#include "crosspad/event/FreeRtosEventBus.hpp"
+#include "pc_stubs/FreeRtosEventBus.hpp"
 #include "crosspad/event/EventTypes.hpp"
 #include "crosspad/event/EventData.hpp"
 

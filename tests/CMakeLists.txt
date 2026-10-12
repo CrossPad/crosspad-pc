@@ -18,7 +18,7 @@ set(CORE_TEST_SOURCES
     ${PROJECT_SOURCE_DIR}/lib/crosspad-core/src/platform/PlatformServices.cpp
 
     # Event bus (FreeRTOS — same as main target)
-    ${PROJECT_SOURCE_DIR}/lib/crosspad-core/src/event/FreeRtosEventBus.cpp
+    ${PROJECT_SOURCE_DIR}/src/pc_stubs/FreeRtosEventBus.cpp
 
     # Pad system
     ${PROJECT_SOURCE_DIR}/lib/crosspad-core/src/pad/PadManager.cpp

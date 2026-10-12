@@ -236,10 +236,8 @@ endif()
 
 # ── crosspad-core portable sources (auto-discover, excluding platform-specific) ──
 file(GLOB_RECURSE CROSSPAD_CORE_SOURCES lib/crosspad-core/src/*.cpp)
-list(FILTER CROSSPAD_CORE_SOURCES EXCLUDE REGEX "EspEventBus\\.cpp$")
 list(FILTER CROSSPAD_CORE_SOURCES EXCLUDE REGEX "SyncEventBus\\.cpp$")
 list(FILTER CROSSPAD_CORE_SOURCES EXCLUDE REGEX "Stm32Manager\\.cpp$")
-# FreeRtosEventBus.cpp stays — used as the event bus implementation
 
 # ── crosspad-gui sources (auto-discover) ──
 file(GLOB_RECURSE CROSSPAD_GUI_SOURCES
@@ -257,6 +255,7 @@ set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS
 
 # ── PC platform stubs (event bus, singletons, interface impls) ──
 set(PC_STUB_SOURCES
+    src/pc_stubs/FreeRtosEventBus.cpp
     src/pc_stubs/PcPlatformStubs.cpp
     src/pc_stubs/PcApp.cpp
     src/pc_stubs/PcHttpClient.cpp

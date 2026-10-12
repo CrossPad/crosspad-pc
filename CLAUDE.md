@@ -147,7 +147,7 @@ crosspad-core defines portable interfaces; this repo provides PC implementations
 | Interface | PC Implementation | Notes |
 |---|---|---|
 | `IClock` | `PcClock` (std::chrono) | |
-| `IEventBus` | core's `FreeRtosEventBus` | `post*()` queued to a dispatch task, `send*()` synchronous |
+| `IEventBus` | `FreeRtosEventBus` (src/pc_stubs) | `post*()` queued to a dispatch task, `send*()` synchronous |
 | `ILedStrip` | `PcLedStrip` | 16 virtual RGB pixels, readable via `pc_get_led_color()` |
 | `IMidiOutput` | `PcMidi` / `NullMidiOutput` | Swappable at runtime via `pc_platform_set_midi_output()` |
 | `IAudioOutput` | `PcAudioOutput` / `NullAudioOutput` | Swappable via `pc_platform_set_audio_output()` |
