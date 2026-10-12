@@ -268,6 +268,7 @@ set(MAIN_SOURCES ${WIN_RESOURCES} src/mouse_cursor_icon.c src/hal/hal.c
     src/uart/PcUart.cpp
     src/crosspad_app.cpp
     src/remote/RemoteControl.cpp
+    src/remote/ControlJson.cpp
     ${CROSSPAD_CORE_SOURCES}
     ${CROSSPAD_GUI_SOURCES}
     ${PC_STUB_SOURCES}
