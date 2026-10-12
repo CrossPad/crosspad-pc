@@ -188,7 +188,7 @@ void lv_DestroySettings(lv_obj_t * obj) {
      * Without this the settings tree stayed on screen after any close that is
      * not the Exit button (which rebuilds the main screen and hid the leak):
      * the app was gone, its widgets were not. */
-    lv_obj_delete_async(obj);
+    if (obj) lv_obj_delete_async(obj);
 }
 
 // The shared asset set ships settings.png; "gear.png" never existed, which
