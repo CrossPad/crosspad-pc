@@ -367,12 +367,13 @@ if(USE_AUDIO)
 endif()
 
 # ── Built-in apps (always present) ──────────────────────────────────────
-foreach(_builtin settings citest update)
+foreach(_builtin settings citest update firmware)
     if(EXISTS "${CMAKE_SOURCE_DIR}/src/apps/${_builtin}/CMakeLists.txt")
         add_subdirectory(src/apps/${_builtin})
     endif()
 endforeach()
-list(APPEND MAIN_SOURCES ${SETTINGS_APP_SOURCES} ${CITEST_APP_SOURCES} ${UPDATE_APP_SOURCES})
+list(APPEND MAIN_SOURCES ${SETTINGS_APP_SOURCES} ${CITEST_APP_SOURCES} ${UPDATE_APP_SOURCES}
+     ${FIRMWARE_APP_SOURCES})
 
 # ── Installable apps (submodules in src/apps/crosspad-*) ────────────────
 file(GLOB _app_submodule_dirs "${CMAKE_SOURCE_DIR}/src/apps/crosspad-*/")
