@@ -337,7 +337,7 @@ list(FILTER CROSSPAD_CORE_SOURCES EXCLUDE REGEX "Stm32Manager\\.cpp$")
 # FreeRtosEventBus.cpp stays — used as the event bus implementation
 
 # ── crosspad-gui sources (auto-discover) ──
-file(GLOB_RECURSE CROSSPAD_GUI_SOURCES ${CP_GUI_DIR}/src/*.cpp)
+file(GLOB_RECURSE CROSSPAD_GUI_SOURCES ${CP_GUI_DIR}/src/*.cpp ${CP_GUI_DIR}/src/*.c)  # .c: fonts, icons (src/design)
 
 # ── Auto-reconfigure when source files are added/removed ──
 # Ninja watches these directories and triggers cmake reconfigure on changes
@@ -529,6 +529,11 @@ if(CROSSPAD_FIRMWARE_DIR AND EMSCRIPTEN)
             list(APPEND _board_builtin_sources "${CROSSPAD_FIRMWARE_DIR}/main/${_v}")
         endforeach()
         list(APPEND _board_builtin_sources "${PROJECT_SOURCE_DIR}/src/wasm/twin_fw_views.cpp")
+    endif()
+    # A firmware with a crosspad.app account (Settings -> Account, remote
+    # management on the WiFi page): a board never paired (src/wasm/twin_account.cpp).
+    if(EXISTS "${CROSSPAD_FIRMWARE_DIR}/main/include/cp_account.h")
+        list(APPEND _board_builtin_sources "${PROJECT_SOURCE_DIR}/src/wasm/twin_account.cpp")
     endif()
     # The board's data (TWIN_FW) in the firmware's own package and slot types.
     list(APPEND _board_builtin_sources "${PROJECT_SOURCE_DIR}/src/wasm/twin_board.cpp")

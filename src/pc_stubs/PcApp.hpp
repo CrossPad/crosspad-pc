@@ -10,6 +10,14 @@
  */
 
 #include "crosspad-gui/app/AppBase.hpp"
+/* Apps whose PC branch includes only this header still use the transport
+ * bar's height and the toast (crosspad-arrange's ArrangeApp.cpp). */
+#if __has_include("crosspad-gui/components/transport_bar.h")
+#include "crosspad-gui/components/transport_bar.h"
+#endif
+#if __has_include("crosspad-gui/components/ui_toast.h")
+#include "crosspad-gui/components/ui_toast.h"
+#endif
 
 // Forward declarations
 namespace crosspad {
