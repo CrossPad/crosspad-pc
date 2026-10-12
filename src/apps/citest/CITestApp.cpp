@@ -485,7 +485,7 @@ static void CITest_destroy(lv_obj_t* obj) {
     s_titleLabel = nullptr;
     s_summaryLabel = nullptr;
 
-    lv_obj_delete_async(obj);
+    if (obj) lv_obj_delete_async(obj);
     printf("[CITest] App destroyed\n");
 }
 
