@@ -90,6 +90,7 @@
 #include "crosspad-mixer/AudioMixerEngine.hpp"
 #include "sequencer/PcSequencer.hpp"
 #include "song/PcSongEnginePort.hpp"
+#include "sampletools/PcSampleToolsPort.hpp"
 #define HAS_MIXER 1
 #endif
 #include <RtAudio.h>
@@ -152,10 +153,16 @@ static std::string s_pendingPin[2];
 static AudioMixerEngine s_mixerEngine;
 // Adapters registered as mixer channels in IN1, IN2, SYNTH order so
 // MixerInput::IN1=0, IN2=1, SYNTH=2 stay valid against the dynamic API.
-// The indexed getter form picks up hot-swapped virtual inputs every cycle.
-static crosspad::AudioInputNode s_in1Node{&pc_platform_get_audio_input, 0, "Input 1"};
-static crosspad::AudioInputNode s_in2Node{&pc_platform_get_audio_input, 1, "Input 2"};
+// The indexed getter form picks up hot-swapped virtual inputs every cycle;
+// the sample tools' getter hands every block read to them as well.
+static crosspad::AudioInputNode s_in1Node{&crosspad_pc::sample_tools_input, 0, "Input 1"};
+static crosspad::AudioInputNode s_in2Node{&crosspad_pc::sample_tools_input, 1, "Input 2"};
 static crosspad::SynthEngineNode s_mixerSynthNode;
+/// The capture bus after every render: a bounce's, and a PADS take's.
+static void capture_tap(const float* bus, uint32_t frames) {
+    crosspad_pc::song_engine_rt_capture(bus, frames);
+    crosspad_pc::sample_tools_rt_bus(bus, frames);
+}
 #endif
 #ifdef USE_VIRTUAL_AUDIO
 static std::unique_ptr<crosspad_pc::IVirtualSinkManager> s_virtualSinkManager;
@@ -1204,6 +1211,8 @@ void crosspad_app_init()
     crosspad_pc::sequencer_init(s_mixerEngine, crosspad_pc::PcAudioModule::NUM_OUTPUTS);
     crosspad_pc::song_engine_init(s_mixerEngine, crosspad_pc::PcAudioModule::NUM_OUTPUTS,
                                   crosspad_pc::PcAudioModule::CAPTURE_BUS);
+    // The Recorder's and the Slicer's: takes, auditions, kits from a loop.
+    crosspad_pc::sample_tools_init(s_mixerEngine, crosspad_pc::PcAudioModule::NUM_OUTPUTS);
 
     // Load mixer state AFTER channel slots exist so saved per-channel routing
     // applies; loadState only patches existing slots, never creates them.
@@ -1257,7 +1266,7 @@ void crosspad_app_init()
         s_audioModule.setup(cfg);
 #ifdef HAS_MIXER
         s_audioModule.setMixerEngine(&s_mixerEngine);
-        s_audioModule.setCaptureTap(crosspad_pc::song_engine_rt_capture);
+        s_audioModule.setCaptureTap(capture_tap);
 #else
         s_synthNode.setEngine(&fmSynth);
         s_audioModule.addNode(&s_synthNode);

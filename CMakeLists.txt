@@ -328,6 +328,7 @@ if(USE_AUDIO)
         src/audio/sampler/PcPitchedPort.cpp
         src/sequencer/PcSequencer.cpp
         src/song/PcSongEnginePort.cpp
+        src/sampletools/PcSampleToolsPort.cpp
     )
 
     if(USE_VIRTUAL_AUDIO)
