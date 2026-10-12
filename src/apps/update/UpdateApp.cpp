@@ -684,7 +684,7 @@ void Update_destroy(lv_obj_t* app_obj)
     s_releaseNotesBox = nullptr;
     s_versionListBox = nullptr;
 
-    lv_obj_delete_async(app_obj);
+    if (app_obj) lv_obj_delete_async(app_obj);
     printf("[Update] App destroyed\n");
 }
 
