@@ -12,6 +12,8 @@
 #ifdef USE_BLE
 #include "midi/PcBleMidi.hpp"
 #include "crosspad-gui/components/midi_ble_panel.h"
+#include "crosspad/settings/ISettingsUI.hpp"
+#include <cstring>
 #include <thread>
 #include <atomic>
 #include <mutex>
@@ -71,7 +73,9 @@ static void cat_build_usb(lv_obj_t* parent, lv_group_t* group) {
  * blocks until the link is up, so it runs on a thread of its own and the
  * State row says "connecting" meanwhile. The stack runs from start-up
  * whatever wireless.enableBLE says, so the page has no Enabled switch here;
- * PcBleMidi does not apply the send transpose, so no Send transpose either. */
+ * PcBleMidi does not apply the send transpose, so no Send transpose either.
+ * Below the shared rows the simulator adds its own: a receive transpose and
+ * a monitor of the last raw message each way. */
 
 #ifdef USE_BLE
 
@@ -115,27 +119,72 @@ static void ble_connect(const std::string& address) {
     }).detach();
 }
 
-static void ble_last_messages(char* in, size_t inLen, char* out, size_t outLen) {
+/// Receive transpose, whole octaves either way.
+static constexpr int8_t kBleRxOffsets[] = {-48, -36, -24, -12, 0, 12, 24, 36, 48};
+static constexpr uint8_t kBleRxOffsetCount = sizeof(kBleRxOffsets) / sizeof(kBleRxOffsets[0]);
+static constexpr uint8_t kBleRxNoOffset = 4;
+static uint8_t s_bleRxIndex = kBleRxNoOffset;
+
+static constexpr uint32_t kBleMonitorMs = 300;
+static lv_obj_t* s_bleMidiIn = nullptr;
+static lv_obj_t* s_bleMidiOut = nullptr;
+static lv_timer_t* s_bleMonitorTimer = nullptr;
+
+static void ble_rx_offset_cb(lv_event_t*) {
+    if (s_bleRxIndex >= kBleRxOffsetCount) return;
+    auto* s = crosspad::CrosspadSettings::getInstance();
+    s->wireless.bleMidiNoteOffset = kBleRxOffsets[s_bleRxIndex];
+    bleMidi.setNoteOffset(s->wireless.bleMidiNoteOffset);
+    if (auto* ui = crosspad::getSettingsUI()) ui->saveSettings();
+}
+
+static void ble_set_if_changed(lv_obj_t* label, const char* text) {
+    if (strcmp(lv_label_get_text(label), text) != 0) lv_label_set_text(label, text);
+}
+
+static void ble_monitor_cb(lv_timer_t*) {
     std::lock_guard<std::mutex> lock(s_midiRawMutex);
-    snprintf(in, inLen, "%s", s_lastMidiIn);
-    snprintf(out, outLen, "%s", s_lastMidiOut);
+    ble_set_if_changed(s_bleMidiIn, s_lastMidiIn);
+    ble_set_if_changed(s_bleMidiOut, s_lastMidiOut);
+}
+
+static void ble_monitor_deleted_cb(lv_event_t*) {
+    if (s_bleMonitorTimer) lv_timer_delete(s_bleMonitorTimer);
+    s_bleMonitorTimer = nullptr;
+    s_bleMidiIn = s_bleMidiOut = nullptr;
+}
+
+/// The shared page, then the simulator's rows.
+static void ble_build(lv_obj_t* parent, lv_group_t* group) {
+    crosspad_gui::midi_ble_settings_build(parent, group);
+
+    const int8_t rx = crosspad::CrosspadSettings::getInstance()->wireless.bleMidiNoteOffset;
+    s_bleRxIndex = kBleRxNoOffset;
+    for (uint8_t i = 0; i < kBleRxOffsetCount; i++) {
+        if (kBleRxOffsets[i] == rx) s_bleRxIndex = i;
+    }
+    crosspad_gui::settings_row_dropdown(parent, group, "Receive transpose",
+        "-48\n-36\n-24\n-12\n0\n+12\n+24\n+36\n+48", &s_bleRxIndex, ble_rx_offset_cb);
+
+    crosspad_gui::settings_section_header(parent, "MIDI monitor");
+    s_bleMidiIn = lv_obj_get_child(crosspad_gui::settings_row_info(parent, "In", ""), -1);
+    s_bleMidiOut = lv_obj_get_child(crosspad_gui::settings_row_info(parent, "Out", ""), -1);
+    lv_obj_add_event_cb(s_bleMidiIn, ble_monitor_deleted_cb, LV_EVENT_DELETE, nullptr);
+    ble_monitor_cb(nullptr);
+    s_bleMonitorTimer = lv_timer_create(ble_monitor_cb, kBleMonitorMs, nullptr);
 }
 
 static void register_ble_category() {
     crosspad_gui::MidiBleCallbacks cb;
     cb.setMode         = ble_set_mode;
-    cb.applyRxOffset   = [] {
-        bleMidi.setNoteOffset(crosspad::CrosspadSettings::getInstance()->wireless.bleMidiNoteOffset);
-    };
     cb.stateName       = ble_state_name;
     cb.connectedDevice = [] { return bleMidi.getConnectedDevice(); };
     cb.scanResults     = [] { return bleMidi.getScanResults(); };
-    cb.lastMessages    = ble_last_messages;
     cb.startScan       = [] { bleMidi.startScan(5000); };
     cb.connect         = ble_connect;
     cb.disconnect      = [] { bleMidi.disconnect(); };
     crosspad_gui::midi_ble_set_callbacks(cb);
-    crosspad_gui::settings_ui_add_category({"BLE MIDI", LV_SYMBOL_BLUETOOTH, crosspad_gui::midi_ble_settings_build});
+    crosspad_gui::settings_ui_add_category({"BLE MIDI", LV_SYMBOL_BLUETOOTH, ble_build});
 }
 
 #endif // USE_BLE
