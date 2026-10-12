@@ -11,6 +11,7 @@
 #include "updater/PcUpdater.hpp"
 
 #include <crosspad/app/AppRegistrar.hpp>
+#include <crosspad/fw/Semver.hpp>
 #include <crosspad/platform/PlatformCapabilities.hpp>
 #include <crosspad/platform/PlatformServices.hpp>
 #include "crosspad-gui/platform/IGuiPlatform.h"
@@ -348,7 +349,7 @@ static void on_check_update_clicked(lv_event_t*)
                 cur.isCached = s_updater.isCached(cur.version);
                 // Insert sorted by version (descending)
                 auto it = releases.begin();
-                while (it != releases.end() && compareSemver(it->version, cur.version) > 0)
+                while (it != releases.end() && crosspad::compareVersionText(it->version.c_str(), cur.version.c_str()) > 0)
                     ++it;
                 releases.insert(it, cur);
             }
