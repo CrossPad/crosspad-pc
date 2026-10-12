@@ -9,6 +9,7 @@
 #include "crosspad_app.hpp"
 
 #include <cstdio>
+#include <cctype>
 #include <cstring>
 #include <cmath>
 #include <cstdlib>
@@ -103,6 +104,9 @@
 
 #define APP_BUTTON_SIZE 64
 #define APP_BUTTON_NAME_VISIBLE true
+
+/// Pad animation tick, the board's pad_anim worker period.
+static constexpr uint32_t kPadAnimTickMs = 10;
 
 /* ── State ────────────────────────────────────────────────────────────── */
 
@@ -714,6 +718,13 @@ void crosspad_app_init()
 
     /* Platform stubs (event bus, settings, pad manager, GUI) */
     pc_platform_init();
+
+    /* The pads' animations (progress bars, showFrame) and the LED controller
+     * advance on this tick, as on the board's pad_anim worker. On the LVGL
+     * thread: the pad clicks and the marshalled MIDI input that also drive the
+     * LEDs run here too. */
+    lv_timer_create([](lv_timer_t*) { crosspad::getPadManager().update(); },
+                    kPadAnimTickMs, nullptr);
 
     /* Register go-home callback for shared Settings UI */
     pc_platform_set_go_home([]() { LoadMainScreen(s_lcdContainer); });
@@ -1734,6 +1745,24 @@ void crosspad_app_init()
 void crosspad_app_go_home()
 {
     LoadMainScreen(s_lcdContainer);
+}
+
+bool crosspad_app_start(const char* name)
+{
+    if (!name) return false;
+    const auto sameName = [](const char* a, const char* b) {
+        for (; *a && *b; ++a, ++b) {
+            if (std::tolower((unsigned char)*a) != std::tolower((unsigned char)*b)) return false;
+        }
+        return *a == *b;
+    };
+    for (const auto& app : crosspad_gui::AppOrchestrator::getInstance().getApps()) {
+        if (app && app->getName() && sameName(app->getName(), name)) {
+            crosspad_gui::AppOrchestrator::onAppSelected(app.get(), app_c);
+            return true;
+        }
+    }
+    return false;
 }
 
 void crosspad_app_update_pad_icon()
