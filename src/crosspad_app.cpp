@@ -103,8 +103,6 @@
 
 /* ── State ────────────────────────────────────────────────────────────── */
 
-extern lv_obj_t* status_c;
-
 static lv_obj_t* app_c = nullptr;
 static lv_obj_t* s_lcdContainer = nullptr;
 static Stm32EmuWindow stm32Emu;
@@ -670,7 +668,6 @@ static void LoadMainScreen(lv_obj_t* parent) {
 
     auto result = orch.loadMainScreen(parent, config);
 
-    status_c = result.status_bar;
     app_c    = result.app_container;
 
     crosspad_app_update_pad_icon();
