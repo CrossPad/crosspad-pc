@@ -12,6 +12,7 @@
 #include "updater/PcUpdater.hpp"
 #include "crosspad_pc_version.h"
 
+#include <crosspad/fw/Semver.hpp>
 #include <crosspad/net/IHttpClient.hpp>
 #include <crosspad/platform/PlatformServices.hpp>
 #include "crosspad-gui/platform/IGuiPlatform.h"
@@ -20,48 +21,6 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
-
-/* ── Semver compare ──────────────────────────────────────────────────── */
-
-/// Parse pre-release suffix: "" → (false, 0), "-RC" → (true, 0), "-RC3" → (true, 3)
-static void parsePreRelease(const std::string& ver, bool& isPreRelease, int& preNum)
-{
-    isPreRelease = false;
-    preNum = 0;
-    auto dash = ver.find('-');
-    if (dash == std::string::npos) return;
-    isPreRelease = true;
-    std::string suffix = ver.substr(dash + 1);
-    // Extract trailing number: "RC3" → 3, "RC" → 0, "alpha2" → 2
-    size_t i = suffix.size();
-    while (i > 0 && suffix[i - 1] >= '0' && suffix[i - 1] <= '9') --i;
-    if (i < suffix.size())
-        preNum = atoi(suffix.c_str() + i);
-}
-
-int compareSemver(const std::string& a, const std::string& b)
-{
-    int aMaj = 0, aMin = 0, aPat = 0;
-    int bMaj = 0, bMin = 0, bPat = 0;
-    sscanf(a.c_str(), "%d.%d.%d", &aMaj, &aMin, &aPat);
-    sscanf(b.c_str(), "%d.%d.%d", &bMaj, &bMin, &bPat);
-
-    if (aMaj != bMaj) return aMaj - bMaj;
-    if (aMin != bMin) return aMin - bMin;
-    if (aPat != bPat) return aPat - bPat;
-
-    // Pre-release comparison: release (no suffix) > pre-release (has suffix)
-    // e.g. 0.3.1 > 0.3.1-RC2 > 0.3.1-RC1 > 0.3.1-RC
-    bool aPre, bPre;
-    int aPreNum, bPreNum;
-    parsePreRelease(a, aPre, aPreNum);
-    parsePreRelease(b, bPre, bPreNum);
-
-    if (!aPre && !bPre) return 0;    // both release
-    if (!aPre &&  bPre) return 1;    // a is release, b is pre → a > b
-    if ( aPre && !bPre) return -1;   // a is pre, b is release → a < b
-    return aPreNum - bPreNum;         // both pre → compare numbers
-}
 
 /* ── Global auto-check result cache ──────────────────────────────────── */
 
@@ -222,7 +181,8 @@ UpdateInfo PcUpdater::checkForUpdate(bool includePrereleases)
         return info;
     }
 
-    info.updateAvailable = compareSemver(info.latestVersion, info.currentVersion) > 0;
+    info.updateAvailable =
+        crosspad::compareVersionText(info.latestVersion.c_str(), info.currentVersion.c_str()) > 0;
 
     printf("[Updater] Current: %s, Latest: %s, Update: %s\n",
            info.currentVersion.c_str(), info.latestVersion.c_str(),
