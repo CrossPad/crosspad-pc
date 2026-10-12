@@ -44,6 +44,9 @@
 #include "crosspad-gui/styles/styles.h"
 #include "crosspad-gui/components/status_bar.h"
 #include "crosspad-gui/components/app_launcher.h"
+#ifdef CP_UX2000
+#include "crosspad-gui/components/mode_overlay.h"
+#endif
 #include "crosspad-gui/components/main_screen.h"
 #include "crosspad-gui/components/app_orchestrator.h"
 #include "crosspad-gui/platform/IGuiPlatform.h"
@@ -650,6 +653,10 @@ static int findMidiPortByName(const std::string& name, bool isOutput) {
 /* ── App Orchestrator setup ───────────────────────────────────────────── */
 
 static void LoadMainScreen(lv_obj_t* parent);
+#ifdef CP_UX2000
+/* A home the last LoadMainScreen() has still to put up (crosspad_app_settle_home()). */
+static bool s_homePending = false;
+#endif
 
 /// Resolve short icon names (e.g. "info.png") to full asset paths.
 /// Icons that already contain a path separator are left unchanged.
@@ -693,6 +700,10 @@ static void LoadMainScreen(lv_obj_t* parent) {
     config.show_names     = APP_BUTTON_NAME_VISIBLE;
     config.style          = crosspad::CrosspadSettings::getInstance()->launcherStyle;
     config.bg_color       = lv_color_black();
+#ifdef CP_UX2000
+    config.transport_bar  = true;
+    config.launcher       = false;   // as the board's gui.cpp: home is the MODE map
+#endif
 
     auto result = orch.loadMainScreen(parent, config);
 
@@ -701,7 +712,24 @@ static void LoadMainScreen(lv_obj_t* parent) {
 
     crosspad_app_update_pad_icon();
     printf("[GUI] Main screen loaded with %zu apps\n", orch.getAppInfos().size());
+#ifdef CP_UX2000
+    /* Home is the MODE map, with nothing under it -- later, as the board does
+     * it: this runs from whatever destroyed the last screen. */
+    s_homePending = true;
+    lv_async_call([](void*) { crosspad_app_settle_home(); }, nullptr);
+#endif
 }
+
+#ifdef CP_UX2000
+void crosspad_app_settle_home()
+{
+    if (!s_homePending) return;
+    s_homePending = false;
+    crosspad_gui::mode_overlay_go_home();
+}
+#else
+void crosspad_app_settle_home() {}
+#endif
 
 /* ── Public API ───────────────────────────────────────────────────────── */
 

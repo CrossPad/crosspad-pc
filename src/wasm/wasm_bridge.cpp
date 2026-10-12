@@ -68,6 +68,9 @@
 extern crosspad::CrosspadStatus status;
 
 #include "crosspad_app.hpp"
+#ifdef CP_UX2000
+#include "crosspad-gui/components/mode_overlay.h"
+#endif
 
 // The asset loader resolves its folder in a static constructor, long before
 // main(): point it at the preloaded /assets (CrossPad.data) ahead of those.
@@ -599,9 +602,19 @@ void sync_to(const std::string& app, int launcher) {
     for (const auto& a : orch.getApps())
         if (a && !strcasecmp(a->getName(), app.c_str())) want = a.get();
     if (!want) { printf("[twin] no app '%s' here\n", app.c_str()); return; }
-    if (open || rebuild) crosspad_app_go_home();
     printf("[twin] following the board into %s\n", want->getName());
+#ifdef CP_UX2000
+    /* As a pad on the MODE map: the app takes the screen from the one on it
+     * (a home still to come would close it again; a kit list before an app
+     * goes with the rest of the screen). */
+    crosspad_app_settle_home();
+    if (open && !open->isStarted()) crosspad_gui::mode_overlay_go_home();
+    crosspad_gui::mode_overlay_close();
+    crosspad_gui::mode_overlay_open_app(want->getName());
+#else
+    if (open || rebuild) crosspad_app_go_home();
     crosspad_gui::AppOrchestrator::onAppSelected(want, crosspad_app_container());
+#endif
 }
 
 void apply_loose(const Input& in) {

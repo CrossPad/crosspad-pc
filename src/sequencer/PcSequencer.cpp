@@ -16,6 +16,9 @@
 
 #include "FreeRTOS.h"
 #include "task.h"
+#if __has_include("crosspad-gui/components/mode_overlay.h")
+#include "crosspad-gui/components/mode_overlay.h"
+#endif
 
 #include <string>
 
@@ -98,6 +101,10 @@ void sequencer_init(AudioMixerEngine& mixer, uint8_t audibleOutputs)
      * pads have more ways in (mouse grid, keyboard, MIDI, remote), so the
      * pad manager's input tap stamps them all. */
     crosspad::getPadManager().setInputTap([](void*, uint8_t pad, uint8_t vel) {
+#if __has_include("crosspad-gui/components/mode_overlay.h")
+        /* A pad hit on the MODE map picks an app; it is not played (the board's midiCallbacks.cpp). */
+        if (crosspad_gui::mode_overlay_is_open()) return;
+#endif
         s_sequencer.noteIn(pad, vel);
     }, nullptr);
     s_controller.setSeqLength(crosspad::SequencerLimits::MAX_SEQ_LENGTH);

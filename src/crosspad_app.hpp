@@ -11,6 +11,13 @@
 
 #include "lvgl/lvgl.h"
 
+/* UX 2000 (a board firmware whose crosspad-gui has the MODE map): no launcher,
+ * the transport bar over every app and the MODE map as home, as the board's
+ * gui.cpp builds it. The desktop simulator keeps its launcher. */
+#if defined(CROSSPAD_BOARD_FIRMWARE) && __has_include("crosspad-gui/components/mode_overlay.h")
+#define CP_UX2000 1
+#endif
+
 class PcUart;
 
 void crosspad_app_init();
@@ -34,8 +41,14 @@ lv_obj_t* crosspad_app_container();
 /// signal handlers and atexit; idempotent.
 void crosspad_app_shutdown();
 
-/// Return to the launcher main screen (destroys running app, reloads launcher)
+/// Return to the launcher main screen (destroys running app, reloads launcher).
+/// UX 2000: the screen is rebuilt now and the MODE map comes up as home on the
+/// next LVGL pass, as on the board.
 void crosspad_app_go_home();
+
+/// UX 2000: put up now the home the last go-home left for the next LVGL pass
+/// (before opening an app, which that pass would otherwise close). No-op else.
+void crosspad_app_settle_home();
 
 /// Update the status bar icon showing which pad logic is currently active
 void crosspad_app_update_pad_icon();
