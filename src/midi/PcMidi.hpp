@@ -63,16 +63,17 @@ public:
     /// Close all ports and release resources
     void end();
 
-    // ── Output (Arduino MIDI Library signature) ──────────────────────────
+    // ── crosspad::IMidiOutput overrides (channel 0-based) ────────────────
 
-    void sendNoteOn(uint8_t note, uint8_t velocity, uint8_t channel);
-    void sendNoteOff(uint8_t note, uint8_t velocity, uint8_t channel);
-    void sendControlChange(uint8_t cc, uint8_t value, uint8_t channel);
-
-    // ── crosspad::IMidiOutput overrides ──────────────────────────────────
-
+    void sendNoteOn(uint8_t note, uint8_t velocity, uint8_t channel) override;
+    void sendNoteOff(uint8_t note, uint8_t velocity, uint8_t channel) override;
     void sendNoteOn(uint8_t note, uint8_t channel) override;   // velocity = 127
     void sendNoteOff(uint8_t note, uint8_t channel) override;  // velocity = 0
+    void sendControlChange(uint8_t cc, uint8_t value, uint8_t channel) override;
+    void sendAftertouch(uint8_t note, uint8_t pressure, uint8_t channel) override;   // polyphonic
+    void sendProgramChange(uint8_t program, uint8_t channel) override;
+    void sendPitchBend(int16_t value, uint8_t channel) override;   // -8192..8191, 0 centred
+    void sendSysEx(const uint8_t* frame, size_t len) override;     // whole frame, F0..F7
 
     // ── Input callbacks (Arduino-style setHandle*) ───────────────────────
 
@@ -119,6 +120,10 @@ private:
 
     // Thread safety for output
     std::mutex outMutex_;
+
+    // One message to the output port, under outMutex_; false (and the port
+    // marked closed for the reconnect timer) when RtMidi refuses it.
+    bool sendMessage(const std::vector<unsigned char>& msg);
 
     // RtMidi static callback (dispatches to instance)
     static void rtMidiCallback(double timestamp, std::vector<unsigned char>* message, void* userData);
