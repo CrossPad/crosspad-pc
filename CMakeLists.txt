@@ -462,35 +462,23 @@ endif()
 message(STATUS "CrossPad version: ${CP_VERSION}")
 configure_file(cmake/version.h.in "${CMAKE_BINARY_DIR}/generated/crosspad_pc_version.h" @ONLY)
 
-# Submodule revisions for Settings -> Info, mirroring platform-idf. Best effort:
-# a source tree without git (release tarball) simply reports "unknown".
-function(crosspad_git_rev out_var dir)
-    set(rev "unknown")
-    execute_process(
-        COMMAND git rev-parse --short HEAD
-        WORKING_DIRECTORY "${dir}"
-        OUTPUT_VARIABLE rev_out
-        OUTPUT_STRIP_TRAILING_WHITESPACE
-        ERROR_QUIET
-        RESULT_VARIABLE rev_res)
-    if(rev_res EQUAL 0 AND rev_out)
-        set(rev "${rev_out}")
-    endif()
-    set(${out_var} "${rev}" PARENT_SCOPE)
-endfunction()
-
+# Submodule revisions for Settings -> Info, mirroring platform-idf.
+include(${CMAKE_CURRENT_LIST_DIR}/lib/crosspad-core/cmake/crosspad_git_rev.cmake)
 crosspad_git_rev(CROSSPAD_CORE_REV "${PROJECT_SOURCE_DIR}/lib/crosspad-core")
 crosspad_git_rev(CROSSPAD_GUI_REV  "${PROJECT_SOURCE_DIR}/lib/crosspad-gui")
 
 
 # Auto-generate app registry initialization
-include(cmake/generate_registry.cmake)
+include(${CMAKE_CURRENT_LIST_DIR}/lib/crosspad-core/cmake/crosspad_app_registry.cmake)
 set(APP_REGISTRY_FILE "${CMAKE_BINARY_DIR}/app_registry_init.cpp")
 set(_registry_excludes "")
 if(NOT BUILD_TESTING)
     list(APPEND _registry_excludes "crosspad-appstore")
 endif()
-generate_app_registry("${APP_REGISTRY_FILE}" "${PROJECT_SOURCE_DIR}/src/apps" ${_registry_excludes})
+crosspad_generate_app_registry(
+    OUTPUT  "${APP_REGISTRY_FILE}"
+    DIRS    "${PROJECT_SOURCE_DIR}/src/apps"
+    EXCLUDE ${_registry_excludes})
 list(APPEND MAIN_SOURCES "${APP_REGISTRY_FILE}")
 
 # Custom target to run the executable
