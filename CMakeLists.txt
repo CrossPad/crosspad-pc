@@ -286,7 +286,7 @@ set(MAIN_LIBS lvgl lvgl::examples lvgl::demos lvgl::thorvg ${SDL2_LIBRARIES} Ard
 if(MSVC OR MINGW)
     list(APPEND MAIN_SOURCES src/freertos_main.cpp src/freertos/freertos_win32_port.c ${FREERTOS_SOURCES})
 else()
-    list(APPEND MAIN_SOURCES src/freertos_main.cpp src/freertos/freertos_posix_port.c ${FREERTOS_SOURCES})
+    list(APPEND MAIN_SOURCES src/freertos_main.cpp ${FREERTOS_PORT_DIR}/utils/wait_for_event.c ${FREERTOS_SOURCES})
 endif()
 list(APPEND MAIN_LIBS freertos_config freertos_kernel)
 

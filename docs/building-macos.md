@@ -18,8 +18,8 @@ Apple hardware.
 - **The virtual-sink manager already stubs on non-Linux** (`VirtualSinkFactory`
   returns `NullSinkManager`), so the system-wide-mixer feature is simply absent
   on macOS until a CoreAudio/BlackHole backend is added — the app still runs.
-- FreeRTOS uses the **POSIX port** (`freertos_posix_port.c`), which builds on
-  macOS via pthreads.
+- FreeRTOS uses the kernel's **POSIX port** (`port.c` + `utils/wait_for_event.c`),
+  which builds on macOS via pthreads.
 
 ## What is missing (the actual work, on a Mac)
 

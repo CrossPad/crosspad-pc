@@ -149,7 +149,7 @@ if(MSVC OR MINGW)
     )
 else()
     target_sources(crosspad_tests PRIVATE
-        ${PROJECT_SOURCE_DIR}/src/freertos/freertos_posix_port.c
+        ${PROJECT_SOURCE_DIR}/FreeRTOS/portable/ThirdParty/GCC/Posix/utils/wait_for_event.c
     )
     target_include_directories(crosspad_tests PRIVATE
         ${PROJECT_SOURCE_DIR}/FreeRTOS/portable/ThirdParty/GCC/Posix
