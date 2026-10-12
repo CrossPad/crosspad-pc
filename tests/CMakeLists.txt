@@ -16,6 +16,8 @@ set(CORE_TEST_SOURCES
     ${PROJECT_SOURCE_DIR}/lib/crosspad-core/src/platform/CrosspadPlatformInit.cpp
     ${PROJECT_SOURCE_DIR}/lib/crosspad-core/src/platform/PlatformCapabilities.cpp
     ${PROJECT_SOURCE_DIR}/lib/crosspad-core/src/platform/PlatformServices.cpp
+    # The default PlatformServices::fileSystem.
+    ${PROJECT_SOURCE_DIR}/lib/crosspad-core/src/platform/PosixFileSystem.cpp
 
     # Event bus (FreeRTOS — same as main target)
     ${PROJECT_SOURCE_DIR}/src/pc_stubs/FreeRtosEventBus.cpp
