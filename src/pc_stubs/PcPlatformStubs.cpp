@@ -567,6 +567,13 @@ extern "C" void pc_platform_init() {
 
     crosspad::crosspad_platform_init(config);
 
+    // While an animation owns the pads the LED controller stands aside, and
+    // repaints them when it ends -- the board's wiring (CrosspadPlatform.cpp).
+    s_padAnimator.setAnimationStateCallback([](bool active) {
+        if (active) s_padLedController.setAnimating(true);
+        else        s_padLedController.stopAnimation();
+    });
+
     // Register GUI platform (crosspad-gui specific, not in crosspad-core)
     crosspad_gui::setGuiPlatform(&s_guiPlatform);
     crosspad_gui::setFileSystem(&s_fileSystem);
