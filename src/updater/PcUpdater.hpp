@@ -103,9 +103,6 @@ private:
     std::string extractDir_;
 };
 
-/// Compare two semver strings. Returns >0 if a > b, <0 if a < b, 0 if equal.
-int compareSemver(const std::string& a, const std::string& b);
-
 /* ── Global auto-check result cache ──────────────────────────────────── */
 
 /// Store the result of a background update check (thread-safe)

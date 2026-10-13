@@ -2,59 +2,29 @@
 
 #include "WavReader.hpp"
 
-#include <cstring>
+#include <crosspad/instrument/WavPcm.hpp>
 
 namespace crosspad_pc {
 
 namespace {
 
-bool read_u16(FILE* f, uint16_t& v) { return fread(&v, 2, 1, f) == 1; }
-bool read_u32(FILE* f, uint32_t& v) { return fread(&v, 4, 1, f) == 1; }
-
-// Walk the RIFF chunk list for "fmt " and "data". Chunks are word-aligned, so
-// a chunk of odd size is followed by one pad byte that is not counted in its
-// size field — skipping it is what keeps a file with an odd-length LIST chunk
-// (which several sample packs ship) from parsing as garbage.
+// The chunk walk is core's (LIST chunks, odd-size padding, chunks in any
+// order, every declared size clamped to the file); what is decided here is
+// which of the files it understands the engine takes.
 bool parse_header(FILE* f, WavInfo& out) {
-    char riff[4], wave[4];
-    uint32_t riffSize;
-    if (fseek(f, 0, SEEK_SET) != 0) return false;
-    if (fread(riff, 1, 4, f) != 4 || !read_u32(f, riffSize) || fread(wave, 1, 4, f) != 4) return false;
-    if (memcmp(riff, "RIFF", 4) != 0 || memcmp(wave, "WAVE", 4) != 0) return false;
+    crosspad::WavLayout l;
+    if (!crosspad::wavReadLayout(f, l, /*clampToFile=*/true)) return false;
 
-    bool haveFmt = false, haveData = false;
-    while (!haveData) {
-        char id[4];
-        uint32_t size;
-        if (fread(id, 1, 4, f) != 4 || !read_u32(f, size)) break;
-        const long body = ftell(f);
-        if (body < 0) break;
-
-        if (memcmp(id, "fmt ", 4) == 0 && size >= 16) {
-            uint16_t fmtTag, blockAlign, bits, channels;
-            uint32_t rate, byteRate;
-            if (!read_u16(f, fmtTag) || !read_u16(f, channels) || !read_u32(f, rate) ||
-                !read_u32(f, byteRate) || !read_u16(f, blockAlign) || !read_u16(f, bits)) {
-                break;
-            }
-            // WAVE_FORMAT_EXTENSIBLE (0xFFFE) carries the real tag in its
-            // subformat GUID; for our purposes the sample layout in the common
-            // fields is already what matters, so it is accepted like PCM.
-            if (fmtTag != 1 && fmtTag != 0xFFFE) return false;
-            out.channels      = channels;
-            out.sampleRate    = rate;
-            out.blockAlign    = blockAlign;
-            out.bitsPerSample = bits;
-            haveFmt = true;
-        } else if (memcmp(id, "data", 4) == 0) {
-            out.dataOffset = static_cast<uint32_t>(body);
-            out.dataBytes  = size;
-            haveData = true;
-            break;
-        }
-        if (fseek(f, body + static_cast<long>(size) + static_cast<long>(size & 1), SEEK_SET) != 0) break;
-    }
-    if (!haveFmt || !haveData) return false;
+    // WAVE_FORMAT_EXTENSIBLE (0xFFFE) carries the real tag in its subformat
+    // GUID; for our purposes the sample layout in the common fields is
+    // already what matters, so it is accepted like PCM.
+    if (l.audioFormat != 1 && l.audioFormat != 0xFFFE) return false;
+    out.channels      = l.channels;
+    out.sampleRate    = l.sampleRate;
+    out.blockAlign    = l.blockAlign;
+    out.bitsPerSample = l.bits;
+    out.dataOffset    = l.dataOffset;
+    out.dataBytes     = l.dataBytes;
 
     // A blockAlign of zero is legal in the struct and fatal in every consumer
     // of it — derive one rather than divide by it.
@@ -63,15 +33,6 @@ bool parse_header(FILE* f, WavInfo& out) {
     }
     if (out.blockAlign == 0) return false;
 
-    // Some writers put a data size larger than the file. Clamp to what is
-    // actually there so seeks past the end cannot happen.
-    if (fseek(f, 0, SEEK_END) == 0) {
-        const long fileEnd = ftell(f);
-        if (fileEnd > 0 && out.dataOffset < static_cast<uint32_t>(fileEnd)) {
-            const uint32_t avail = static_cast<uint32_t>(fileEnd) - out.dataOffset;
-            if (out.dataBytes > avail) out.dataBytes = avail;
-        }
-    }
     out.frameCount = out.dataBytes / out.blockAlign;
     return out.frameCount > 0;
 }

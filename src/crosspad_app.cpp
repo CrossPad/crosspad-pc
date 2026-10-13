@@ -9,8 +9,10 @@
 #include "crosspad_app.hpp"
 
 #include <cstdio>
+#include <cctype>
 #include <cstring>
 #include <cmath>
+#include <cstdlib>
 #include <vector>
 #include <atomic>
 #include <thread>
@@ -31,6 +33,7 @@
 
 // crosspad-core
 #include "crosspad/app/AppRegistry.hpp"
+#include "crosspad/control/AppName.hpp"
 #include "crosspad/pad/PadManager.hpp"
 #include "crosspad/platform/PlatformServices.hpp"
 #include "crosspad/platform/PlatformCapabilities.hpp"
@@ -49,6 +52,7 @@
 #include "crosspad-gui/platform/IGuiPlatform.h"
 #include "crosspad-gui/components/volume_overlay.h"
 #include "crosspad-gui/components/power_gesture.h"
+#include "crosspad-gui/components/boot_splash.h"
 
 #ifdef USE_MIDI
 #include "midi/PcMidi.hpp"
@@ -70,6 +74,7 @@
 #include "audio/audio_platform.hpp"
 #include "audio/sampler/PcPitchedPort.hpp"
 #include "audio/sampler/PcSamplerPort.hpp"
+#include <crosspad-sampler/logic/kit_gate.hpp>
 #ifdef USE_VIRTUAL_AUDIO
 #include "audio/virtual/IVirtualSinkManager.hpp"
 #ifdef USE_PIPEWIRE
@@ -88,6 +93,7 @@
 #include "crosspad-mixer/AudioMixerEngine.hpp"
 #include "sequencer/PcSequencer.hpp"
 #include "song/PcSongEnginePort.hpp"
+#include "sampletools/PcSampleToolsPort.hpp"
 #define HAS_MIXER 1
 #endif
 #include <RtAudio.h>
@@ -101,9 +107,10 @@
 #define APP_BUTTON_SIZE 64
 #define APP_BUTTON_NAME_VISIBLE true
 
-/* ── State ────────────────────────────────────────────────────────────── */
+/// Pad animation tick, the board's pad_anim worker period.
+static constexpr uint32_t kPadAnimTickMs = 10;
 
-extern lv_obj_t* status_c;
+/* ── State ────────────────────────────────────────────────────────────── */
 
 static lv_obj_t* app_c = nullptr;
 static lv_obj_t* s_lcdContainer = nullptr;
@@ -149,10 +156,16 @@ static std::string s_pendingPin[2];
 static AudioMixerEngine s_mixerEngine;
 // Adapters registered as mixer channels in IN1, IN2, SYNTH order so
 // MixerInput::IN1=0, IN2=1, SYNTH=2 stay valid against the dynamic API.
-// The indexed getter form picks up hot-swapped virtual inputs every cycle.
-static crosspad::AudioInputNode s_in1Node{&pc_platform_get_audio_input, 0, "Input 1"};
-static crosspad::AudioInputNode s_in2Node{&pc_platform_get_audio_input, 1, "Input 2"};
+// The indexed getter form picks up hot-swapped virtual inputs every cycle;
+// the sample tools' getter hands every block read to them as well.
+static crosspad::AudioInputNode s_in1Node{&crosspad_pc::sample_tools_input, 0, "Input 1"};
+static crosspad::AudioInputNode s_in2Node{&crosspad_pc::sample_tools_input, 1, "Input 2"};
 static crosspad::SynthEngineNode s_mixerSynthNode;
+/// The capture bus after every render: a bounce's, and a PADS take's.
+static void capture_tap(const float* bus, uint32_t frames) {
+    crosspad_pc::song_engine_rt_capture(bus, frames);
+    crosspad_pc::sample_tools_rt_bus(bus, frames);
+}
 #endif
 #ifdef USE_VIRTUAL_AUDIO
 static std::unique_ptr<crosspad_pc::IVirtualSinkManager> s_virtualSinkManager;
@@ -641,6 +654,19 @@ static const char* pc_icon_resolver(size_t /*index*/, const char* icon) {
     return s_resolvedIcons.back().c_str();
 }
 
+#ifdef USE_AUDIO
+/* What crosspad-sampler's kit gate asks of the simulator. The kit scan runs
+ * inside the mount, so there is no "still scanning" here. */
+static crosspad_sampler::KitGateHost kit_gate_host() {
+    crosspad_sampler::KitGateHost host;
+    host.appContainer = []() { return app_c; };
+    host.cardPresent  = []() { return !pc_platform_get_sdcard_path().empty(); };
+    host.log          = [](const char* line) { printf("[sampler] %s\n", line); };
+    host.selectorIcon = "notepick.png";
+    return host;
+}
+#endif
+
 static void InitializeOrchestrator() {
     crosspad_gui::OrchestratorConfig config;
     config.app_factory = crosspad_gui::defaultAppFactory<App>;
@@ -648,7 +674,7 @@ static void InitializeOrchestrator() {
 #ifdef USE_AUDIO
     // An app that needs a kit and has none gets the kit selector first — the
     // same gate the device puts in front of the sampler.
-    config.pre_launch = crosspad_pc::sampler_port_pre_launch;
+    config.pre_launch = crosspad_sampler::kit_gate_pre_launch;
 #endif
     crosspad_gui::AppOrchestrator::getInstance().init(config);
 }
@@ -668,9 +694,14 @@ static void LoadMainScreen(lv_obj_t* parent) {
     config.style          = crosspad::CrosspadSettings::getInstance()->launcherStyle;
     config.bg_color       = lv_color_black();
 
+#ifdef USE_AUDIO
+    // The rebuild below cleans the whole screen, kit-selector overlay
+    // included; a launch that was waiting behind that gate must not land on
+    // the launcher that replaces it.
+    crosspad_sampler::kit_gate_reset();
+#endif
     auto result = orch.loadMainScreen(parent, config);
 
-    status_c = result.status_bar;
     app_c    = result.app_container;
 
     crosspad_app_update_pad_icon();
@@ -695,6 +726,13 @@ void crosspad_app_init()
 
     /* Platform stubs (event bus, settings, pad manager, GUI) */
     pc_platform_init();
+
+    /* The pads' animations (progress bars, showFrame) and the LED controller
+     * advance on this tick, as on the board's pad_anim worker. On the LVGL
+     * thread: the pad clicks and the marshalled MIDI input that also drive the
+     * LEDs run here too. */
+    lv_timer_create([](lv_timer_t*) { crosspad::getPadManager().update(); },
+                    kPadAnimTickMs, nullptr);
 
     /* Register go-home callback for shared Settings UI */
     pc_platform_set_go_home([]() { LoadMainScreen(s_lcdContainer); });
@@ -1155,7 +1193,7 @@ void crosspad_app_init()
     // MixerInput::IN1/IN2/SYNTH pin down. Registered before loadState() so a
     // saved routing for it is applied rather than dropped — loadState only
     // patches slots that already exist.
-    s_samplerNode = crosspad_pc::sampler_port_init();
+    s_samplerNode = crosspad_pc::sampler_port_init(kit_gate_host());
     if (s_samplerNode) {
         s_mixerEngine.addChannel(s_samplerNode, "Sampler");
         s_mixerEngine.setRouteEnabled(static_cast<MixerInput>(3), MixerOutput::OUT1, true);
@@ -1176,6 +1214,8 @@ void crosspad_app_init()
     crosspad_pc::sequencer_init(s_mixerEngine, crosspad_pc::PcAudioModule::NUM_OUTPUTS);
     crosspad_pc::song_engine_init(s_mixerEngine, crosspad_pc::PcAudioModule::NUM_OUTPUTS,
                                   crosspad_pc::PcAudioModule::CAPTURE_BUS);
+    // The Recorder's and the Slicer's: takes, auditions, kits from a loop.
+    crosspad_pc::sample_tools_init(s_mixerEngine, crosspad_pc::PcAudioModule::NUM_OUTPUTS);
 
     // Load mixer state AFTER channel slots exist so saved per-channel routing
     // applies; loadState only patches existing slots, never creates them.
@@ -1229,13 +1269,13 @@ void crosspad_app_init()
         s_audioModule.setup(cfg);
 #ifdef HAS_MIXER
         s_audioModule.setMixerEngine(&s_mixerEngine);
-        s_audioModule.setCaptureTap(crosspad_pc::song_engine_rt_capture);
+        s_audioModule.setCaptureTap(capture_tap);
 #else
         s_synthNode.setEngine(&fmSynth);
         s_audioModule.addNode(&s_synthNode);
         // Without the mixer component the sampler is a plain generator on the
         // node chain; it is brought up here because there is no addChannel().
-        s_samplerNode = crosspad_pc::sampler_port_init();
+        s_samplerNode = crosspad_pc::sampler_port_init(kit_gate_host());
         if (s_samplerNode) s_audioModule.addNode(s_samplerNode);
         s_pitchedNode = crosspad_pc::pitched_port_init(cfg.sampleRate);
         if (s_pitchedNode) s_audioModule.addNode(s_pitchedNode);
@@ -1291,6 +1331,15 @@ void crosspad_app_init()
     InitializeOrchestrator();
     crosspad_gui::AppOrchestrator::getInstance().populateApps(app_c);
     LoadMainScreen(lcdContainer);
+
+    /* The board's cold-boot splash, over the launcher: with no backlight to
+     * build the launcher behind, it plays on top and leaves by itself.
+     * CROSSPAD_NO_SPLASH skips it (the GUI test harness starts at the
+     * launcher). */
+    if (!std::getenv("CROSSPAD_NO_SPLASH")) {
+        boot_splash_start(lcdContainer, crosspad::CrosspadSettings::getInstance()->LCDbrightness,
+                          nullptr, true);
+    }
 
     /* ── Auto-check for updates (background) ─────────────────────────── */
     if (pc_platform_get_auto_check_updates()) {
@@ -1706,6 +1755,17 @@ void crosspad_app_init()
 void crosspad_app_go_home()
 {
     LoadMainScreen(s_lcdContainer);
+}
+
+bool crosspad_app_start(const char* name)
+{
+    for (const auto& app : crosspad_gui::AppOrchestrator::getInstance().getApps()) {
+        if (app && crosspad::control::appNameMatches(app->getName(), name)) {
+            crosspad_gui::AppOrchestrator::onAppSelected(app.get(), app_c);
+            return true;
+        }
+    }
+    return false;
 }
 
 void crosspad_app_update_pad_icon()
