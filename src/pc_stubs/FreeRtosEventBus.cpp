@@ -10,6 +10,16 @@
 
 namespace crosspad {
 
+namespace {
+// The buses the calling task is dispatching, innermost first: an unsubscribe
+// from inside one of their handlers must not wait for a handler to return.
+struct DispatchFrame {
+    const FreeRtosEventBus* bus;
+    const DispatchFrame* outer;
+};
+thread_local const DispatchFrame* t_dispatching = nullptr;
+} // namespace
+
 FreeRtosEventBus::~FreeRtosEventBus() {
     if (dispatchTask_) {
         vTaskDelete(dispatchTask_);
@@ -21,7 +31,6 @@ FreeRtosEventBus::~FreeRtosEventBus() {
     }
     if (mutex_) {
         xSemaphoreTake(mutex_, portMAX_DELAY);
-        for (auto* sub : subs_) delete sub;
         subs_.clear();
         xSemaphoreGive(mutex_);
         vSemaphoreDelete(mutex_);
@@ -71,38 +80,77 @@ SubscriptionHandle FreeRtosEventBus::subscribe(EventType type, EventHandler hand
         if (!init()) return nullptr;
     }
 
-    auto* sub = new Subscription{type, handler, user_ctx};
+    SemaphoreHandle_t idle = xSemaphoreCreateBinary();
+    if (!idle) return nullptr;
+    auto sub = std::make_shared<Subscription>();
+    sub->type = type;
+    sub->handler = handler;
+    sub->userCtx = user_ctx;
+    sub->idle = idle;
+
     xSemaphoreTake(mutex_, portMAX_DELAY);
     subs_.push_back(sub);
     xSemaphoreGive(mutex_);
-    return static_cast<SubscriptionHandle>(sub);
+    return static_cast<SubscriptionHandle>(sub.get());
+}
+
+bool FreeRtosEventBus::dispatchingOnThisTask() const {
+    for (const DispatchFrame* f = t_dispatching; f; f = f->outer) {
+        if (f->bus == this) return true;
+    }
+    return false;
 }
 
 void FreeRtosEventBus::unsubscribe(SubscriptionHandle handle) {
-    if (!handle) return;
+    if (!handle || !mutex_) return;
 
-    auto* sub = static_cast<Subscription*>(handle);
     xSemaphoreTake(mutex_, portMAX_DELAY);
-    subs_.erase(std::remove(subs_.begin(), subs_.end(), sub), subs_.end());
+    auto it = std::find_if(subs_.begin(), subs_.end(),
+                           [handle](const std::shared_ptr<Subscription>& s) { return s.get() == handle; });
+    if (it == subs_.end()) {
+        xSemaphoreGive(mutex_);
+        return;
+    }
+    std::shared_ptr<Subscription> sub = std::move(*it);
+    subs_.erase(it);
+    sub->active = false;
+    const bool wait = sub->running > 0 && !dispatchingOnThisTask();
     xSemaphoreGive(mutex_);
-    delete sub;
+
+    if (wait) xSemaphoreTake(sub->idle, portMAX_DELAY);
 }
 
-// ── Direct dispatch (synchronous, under mutex) ──────────────────────────────
+// ── Direct dispatch (handlers called outside the mutex) ─────────────────────
 
 void FreeRtosEventBus::dispatch(EventType type, const void* data, size_t dataSize) {
     (void)dataSize;
 
-    // Copy subs under mutex, then iterate outside to avoid holding lock during callbacks
+    std::vector<std::shared_ptr<Subscription>> snapshot;
     xSemaphoreTake(mutex_, portMAX_DELAY);
-    std::vector<Subscription*> snapshot(subs_);
-    xSemaphoreGive(mutex_);
-
-    for (auto* sub : snapshot) {
-        if (sub->type == type) {
-            sub->handler(data, type, sub->userCtx);
-        }
+    for (const auto& sub : subs_) {
+        if (sub->type == type) snapshot.push_back(sub);
     }
+    xSemaphoreGive(mutex_);
+    if (snapshot.empty()) return;
+
+    const DispatchFrame frame{this, t_dispatching};
+    t_dispatching = &frame;
+
+    for (const auto& sub : snapshot) {
+        xSemaphoreTake(mutex_, portMAX_DELAY);
+        const bool active = sub->active;
+        if (active) ++sub->running;
+        xSemaphoreGive(mutex_);
+        if (!active) continue;
+
+        sub->handler(data, type, sub->userCtx);
+
+        xSemaphoreTake(mutex_, portMAX_DELAY);
+        if (--sub->running == 0 && !sub->active) xSemaphoreGive(sub->idle);
+        xSemaphoreGive(mutex_);
+    }
+
+    t_dispatching = frame.outer;
 }
 
 // ── Queue-based async post ──────────────────────────────────────────────────

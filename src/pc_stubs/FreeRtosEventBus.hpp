@@ -7,6 +7,11 @@
  * Runs on the simulator's FreeRTOS port (POSIX / MSVC-MingW).
  * post*() methods enqueue events for async dispatch on a dedicated task.
  * send*() methods dispatch synchronously on the calling thread.
+ *
+ * Keeps IEventBus's unsubscribe contract with FreeRTOS primitives, not
+ * crosspad::SubscriptionTable: a std::mutex or condition variable blocks a
+ * simulator task outside the scheduler, which then keeps running it and
+ * never the task that would wake it.
  */
 
 #include "FreeRTOS.h"
@@ -15,6 +20,7 @@
 #include "task.h"
 
 #include "crosspad/event/IEventBus.hpp"
+#include <memory>
 #include <vector>
 
 namespace crosspad {
@@ -56,19 +62,27 @@ private:
         size_t dataSize;
     };
 
+    // active and running are guarded by mutex_. idle is given when running
+    // drops to zero after the subscription was removed.
     struct Subscription {
         EventType type;
         EventHandler handler;
         void* userCtx;
+        SemaphoreHandle_t idle;
+        bool active = true;
+        int running = 0;
+
+        ~Subscription() { vSemaphoreDelete(idle); }
     };
 
     void dispatch(EventType type, const void* data, size_t dataSize);
+    bool dispatchingOnThisTask() const;
     bool enqueue(EventType type, const void* data, size_t dataSize);
 
     static void dispatchTaskEntry(void* param);
     void dispatchLoop();
 
-    std::vector<Subscription*> subs_;
+    std::vector<std::shared_ptr<Subscription>> subs_;
     SemaphoreHandle_t mutex_ = nullptr;
     QueueHandle_t queue_ = nullptr;
     TaskHandle_t dispatchTask_ = nullptr;
