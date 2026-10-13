@@ -61,6 +61,12 @@ set(CORE_TEST_SOURCES
     ${PROJECT_SOURCE_DIR}/lib/crosspad-core/src/control/PitchedStatus.cpp
     ${PROJECT_SOURCE_DIR}/lib/crosspad-core/src/control/WaveStatus.cpp
     ${PROJECT_SOURCE_DIR}/src/remote/ControlJson.cpp
+
+    # The sampler's waveform cache and loader (test_waveform_loader)
+    ${PROJECT_SOURCE_DIR}/src/apps/crosspad-sampler/src/SamplerPlatformCallbacks.cpp
+    ${PROJECT_SOURCE_DIR}/src/apps/crosspad-sampler/src/port/SamplerRtos.cpp
+    ${PROJECT_SOURCE_DIR}/src/apps/crosspad-sampler/src/waveform/waveform_cache.cpp
+    ${PROJECT_SOURCE_DIR}/src/apps/crosspad-sampler/src/waveform/waveform_loader.cpp
 )
 
 # ── Audio pipeline sources (Tier 2 & 3 tests) ──
@@ -83,6 +89,7 @@ set(TEST_SOURCES
     test_settings.cpp
     test_e2e_scenarios.cpp
     test_control_json.cpp
+    test_waveform_loader.cpp
 )
 
 # ── Audio pipeline test sources (Tier 2 + Tier 3) ──
@@ -127,6 +134,7 @@ target_include_directories(crosspad_tests PRIVATE
     ${PROJECT_SOURCE_DIR}/lib/crosspad-gui/include
     ${PROJECT_SOURCE_DIR}/src/apps/crosspad-mixer/include
     ${PROJECT_SOURCE_DIR}/src/apps/crosspad-mixer/include/crosspad-mixer
+    ${PROJECT_SOURCE_DIR}/src/apps/crosspad-sampler/include
     ${CMAKE_CURRENT_SOURCE_DIR}
     ${CMAKE_CURRENT_SOURCE_DIR}/audio
 )
