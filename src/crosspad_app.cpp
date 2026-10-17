@@ -695,6 +695,9 @@ static void LoadMainScreen(lv_obj_t* parent) {
     config.show_names     = APP_BUTTON_NAME_VISIBLE;
     config.style          = crosspad::CrosspadSettings::getInstance()->launcherStyle;
     config.bg_color       = lv_color_black();
+    // REC/DUB/PLAY/STOP live on the transport bar since the mini-daw merge;
+    // without it the Sequencer and Arrange cannot take or play anything here.
+    config.transport_bar  = true;
 
 #ifdef USE_AUDIO
     // The rebuild below cleans the whole screen, kit-selector overlay
