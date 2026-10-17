@@ -7,6 +7,8 @@
  */
 
 #include "PcMidi.hpp"
+
+#include <cstdlib>
 #include <cstdio>
 #include <algorithm>
 #include <cctype>
@@ -24,6 +26,15 @@ PcMidi::~PcMidi()
 
 bool PcMidi::begin(unsigned int outPort, unsigned int inPort)
 {
+    /* A scripted run (Mucha, a HIL workflow) must not open any MIDI port:
+     * the keyword finds a real CrossPad on USB, whose pads then play every
+     * note the script sends, mid-test on a bench; and an empty keyword (the
+     * port watcher's reconnect) takes Midi Through, which feeds every note
+     * straight back in. */
+    if (std::getenv("CROSSPAD_NO_MIDI")) {
+        printf("[MIDI] off (CROSSPAD_NO_MIDI)\n");
+        return false;
+    }
     bool anyOpen = false;
 
     // --- Output ---
@@ -113,6 +124,15 @@ bool PcMidi::begin(unsigned int outPort, unsigned int inPort)
 
 bool PcMidi::beginAutoConnect(const std::string& keyword)
 {
+    /* A scripted run (Mucha, a HIL workflow) must not open any MIDI port:
+     * the keyword finds a real CrossPad on USB, whose pads then play every
+     * note the script sends, mid-test on a bench; and an empty keyword (the
+     * port watcher's reconnect) takes Midi Through, which feeds every note
+     * straight back in. */
+    if (std::getenv("CROSSPAD_NO_MIDI")) {
+        printf("[MIDI] off (CROSSPAD_NO_MIDI)\n");
+        return false;
+    }
     autoConnectKeyword_ = keyword;
     autoConnectFound_   = false;
 
