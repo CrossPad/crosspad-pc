@@ -6,12 +6,21 @@
  *
  * Initializes platform stubs, STM32 emulator window, MIDI, audio,
  * styles, app registry, and loads the launcher screen.
- * Call after lv_init() + sdl_hal_init().
  */
 
 class PcUart;
 
+/// Start the boot on the LVGL task, after lv_init() + sdl_hal_init(): the
+/// device body and the boot splash at once, the devices on a worker task
+/// behind it. Returns without waiting for them; crosspad_app_tick() does
+/// the rest.
 void crosspad_app_init();
+
+/// One pass of the LVGL task's loop: lv_timer_handler(), and the boot's
+/// remaining steps as they come due (the launcher once the devices are up,
+/// the splash's exit once it has played). True on the one pass that built
+/// the launcher -- from then on the simulator is up.
+bool crosspad_app_tick();
 
 /// Release platform resources that must be cleaned up before exit
 /// (virtual audio sinks, RtAudio streams, etc.). Safe to call from
