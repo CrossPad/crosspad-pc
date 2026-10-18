@@ -35,9 +35,11 @@ bool PcMidi::begin(unsigned int outPort, unsigned int inPort)
         printf("[MIDI] off (CROSSPAD_NO_MIDI)\n");
         return false;
     }
+    std::lock_guard<std::recursive_mutex> life(lifeMutex_);
     bool anyOpen = false;
 
     // --- Output ---
+    std::unique_lock<std::mutex> out(outMutex_);
     try {
         midiOut_ = std::make_unique<RtMidiOut>();
     } catch (RtMidiError& e) {
@@ -71,6 +73,7 @@ bool PcMidi::begin(unsigned int outPort, unsigned int inPort)
             printf("[MIDI] No output ports available.\n");
         }
     }
+    out.unlock();
 
     // --- Input ---
     try {
@@ -133,6 +136,7 @@ bool PcMidi::beginAutoConnect(const std::string& keyword)
         printf("[MIDI] off (CROSSPAD_NO_MIDI)\n");
         return false;
     }
+    std::lock_guard<std::recursive_mutex> life(lifeMutex_);
     autoConnectKeyword_ = keyword;
     autoConnectFound_   = false;
 
@@ -214,6 +218,7 @@ bool PcMidi::reconnect()
     auto currentOut = probeOutputs();
     auto currentIn  = probeInputs();
 
+    std::lock_guard<std::recursive_mutex> life(lifeMutex_);
     bool portsChanged = (currentOut != lastOutputPorts_) || (currentIn != lastInputPorts_);
     bool outputLost   = !outputOpen_;
 
@@ -232,6 +237,7 @@ bool PcMidi::reconnect()
 
 void PcMidi::end()
 {
+    std::lock_guard<std::recursive_mutex> life(lifeMutex_);
     if (midiIn_) {
         if (inputOpen_) {
             midiIn_->cancelCallback();
@@ -241,6 +247,7 @@ void PcMidi::end()
         inputOpen_ = false;
     }
 
+    std::lock_guard<std::mutex> out(outMutex_);
     if (midiOut_) {
         if (outputOpen_) {
             midiOut_->closePort();
@@ -255,9 +262,8 @@ void PcMidi::end()
 
 bool PcMidi::sendMessage(const std::vector<unsigned char>& msg)
 {
-    if (!outputOpen_ || !midiOut_) return false;
-
     std::lock_guard<std::mutex> lock(outMutex_);
+    if (!outputOpen_ || !midiOut_) return false;
     try {
         midiOut_->sendMessage(&msg);
         return true;
@@ -371,6 +377,7 @@ void PcMidi::setHandleSystemExclusive(SysExCallback cb)
 {
     sysExCb_ = std::move(cb);
     // Enable SysEx reception when a handler is set
+    std::lock_guard<std::recursive_mutex> life(lifeMutex_);
     if (midiIn_ && inputOpen_) {
         midiIn_->ignoreTypes(false, true, true);
     }
@@ -380,21 +387,25 @@ void PcMidi::setHandleSystemExclusive(SysExCallback cb)
 
 unsigned int PcMidi::getOutputPortCount() const
 {
+    std::lock_guard<std::recursive_mutex> life(lifeMutex_);
     return midiOut_ ? midiOut_->getPortCount() : 0;
 }
 
 unsigned int PcMidi::getInputPortCount() const
 {
+    std::lock_guard<std::recursive_mutex> life(lifeMutex_);
     return midiIn_ ? midiIn_->getPortCount() : 0;
 }
 
 std::string PcMidi::getOutputPortName(unsigned int index) const
 {
+    std::lock_guard<std::recursive_mutex> life(lifeMutex_);
     return midiOut_ ? midiOut_->getPortName(index) : "";
 }
 
 std::string PcMidi::getInputPortName(unsigned int index) const
 {
+    std::lock_guard<std::recursive_mutex> life(lifeMutex_);
     return midiIn_ ? midiIn_->getPortName(index) : "";
 }
 
@@ -410,6 +421,7 @@ bool PcMidi::isInputOpen() const
 
 void PcMidi::setAutoConnectKeyword(const std::string& keyword)
 {
+    std::lock_guard<std::recursive_mutex> life(lifeMutex_);
     autoConnectKeyword_ = keyword;
     // Mark as found if already connected (e.g. connected via saved prefs)
     autoConnectFound_ = (outputOpen_ || inputOpen_);
