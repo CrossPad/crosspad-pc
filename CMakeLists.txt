@@ -319,8 +319,10 @@ if(USE_AUDIO)
         src/audio/sampler/PcSampleNode.cpp
         src/audio/sampler/PcSamplerPort.cpp
         src/audio/sampler/PcPitchedPort.cpp
+        src/audio/sampler/PcInstrumentHost.cpp
         src/sequencer/PcSequencer.cpp
         src/song/PcSongEnginePort.cpp
+        src/song/PcSongSounds.cpp
         src/sampletools/PcSampleToolsPort.cpp
     )
 

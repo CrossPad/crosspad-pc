@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
 #include "PcSamplerPort.hpp"
+#include "PcInstrumentHost.hpp"
 #include "PcPitchedPort.hpp"
 #include "PcSampleNode.hpp"
 #include "SampleStreamPlayer.hpp"
@@ -23,12 +24,15 @@
 #include <crosspad-gui/components/status_bar.h>
 
 #include "remote/RemoteControl.hpp"
+#include "song/PcSongSounds.hpp"
 
 #include <crosspad-sampler/SamplerApp.hpp>
 #include <crosspad-sampler/SamplerConfig.hpp>
 #include <crosspad-sampler/SamplerPlatformCallbacks.hpp>
 #include <crosspad-sampler/logic/kit_gate.hpp>
 #include <crosspad-sampler/logic/kit_load_task.hpp>
+#include <crosspad-sampler/logic/pad_color_manager.hpp>
+#include <crosspad-sampler/ui/sampler_panel.hpp>
 #include <crosspad-sampler/waveform/waveform_cache.hpp>
 #include <crosspad-sampler/waveform/waveform_loader.hpp>
 
@@ -146,17 +150,20 @@ void platform_reloadPad(uint8_t padIdx) {
 
     SampleStreamPlayer_WipeOut(padIdx);
 
+    // While an app holds the pitched engine (PcInstrumentHost) the bank is
+    // its own: a kit load leaves it alone, and release() reloads the kit.
+    const bool appBank = instrument_host_owns_engine();
     if (kit->engine == crosspad::KitEngine::Pitched) {
         // The WipeOut above is all the streaming engine has to do for a pitched
         // kit. The whole bank is built once, on pad 0; the other fifteen pads
         // carry no per-engine state (their volume/pan come from the bank swap).
-        if (padIdx == 0) pitched_port_load(*kit);
+        if (padIdx == 0 && !appBank) pitched_port_load(*kit);
         return;
     }
 
     // Back on a sampler kit: the pitched bank goes first, so the two engines
     // never hold their sample memory at once.
-    if (padIdx == 0 && pitched_port_active()) pitched_port_unload();
+    if (padIdx == 0 && !appBank && pitched_port_active()) pitched_port_unload();
 
     auto& pad = kit->pads[padIdx];
     int ok = 0;
@@ -249,6 +256,8 @@ void platform_onKitLoadFinished(bool success) {
         }
         return;
     }
+    // The open song is made with this kit from now on.
+    song_sounds_kit_loaded();
     auto* kit = crosspad::getKitManager() ? crosspad::getKitManager()->getCurrentKit() : nullptr;
     std::printf("[sampler] kit ready: '%s' — %d pads, %d layers in the engine%s\n",
                 kit ? kit->name.c_str() : "?", s_padsLoaded, s_layersLoaded,
@@ -317,6 +326,8 @@ void onSamplePlaybackEvent(const void* data, crosspad::EventType, void*) {
     // streaming engine is not involved and need not be ready.
     auto* kit = crosspad::getKitManager() ? crosspad::getKitManager()->getCurrentKit() : nullptr;
     if (kit && kit->engine == crosspad::KitEngine::Pitched) {
+        // The bank is an app's (PcInstrumentHost), not this kit's.
+        if (instrument_host_owns_engine()) return;
         // No bank: the load failed, or a failed load dropped the previous one.
         // Falling through to the streaming engine is not a fallback —
         // reloadPad() wiped every slot for this kit and put nothing back, so it
@@ -431,6 +442,17 @@ crosspad::IAudioNode* sampler_port_init(const crosspad_sampler::KitGateHost& gat
     if (!s_sdRoot.empty()) sampler_port_set_sdcard(s_sdRoot);
 
     return &s_node;
+}
+
+void sampler_port_load_kit(int kitId) {
+    platform_startLoadKit(kitId, /*onlyModified=*/false);
+}
+
+void sampler_port_unload_kit() {
+    for (uint8_t pad = 0; pad < KIT_PADS; ++pad) SampleStreamPlayer_WipeOut(pad);
+    if (!instrument_host_owns_engine() && pitched_port_active()) pitched_port_unload();
+    s_kitLoader.clearCurrentKit();
+    crosspad_sampler::getPadColorManager().loadColorsFromKit(crosspad::KitInfo{});
 }
 
 void sampler_port_set_sdcard(const std::string& root) {

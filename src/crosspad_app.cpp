@@ -72,6 +72,7 @@
 #include "audio/PcAudioInput.hpp"
 #include "audio/PcAudioModule.hpp"
 #include "audio/audio_platform.hpp"
+#include "audio/sampler/PcInstrumentHost.hpp"
 #include "audio/sampler/PcPitchedPort.hpp"
 #include "audio/sampler/PcSamplerPort.hpp"
 #include <crosspad-sampler/logic/kit_gate.hpp>
@@ -93,6 +94,7 @@
 #include "crosspad-mixer/AudioMixerEngine.hpp"
 #include "sequencer/PcSequencer.hpp"
 #include "song/PcSongEnginePort.hpp"
+#include "song/PcSongSounds.hpp"
 #include "sampletools/PcSampleToolsPort.hpp"
 #define HAS_MIXER 1
 #endif
@@ -1281,6 +1283,9 @@ void crosspad_app_init()
         if (s_pitchedNode) s_audioModule.addNode(s_pitchedNode);
 #endif
         crosspad::getPlatformServices().setAudioModule(&s_audioModule);
+        // Apps borrow the pitched engine through it (an Arrange Pitch track, a
+        // song's instrument): after the sampler and the pitched engine.
+        crosspad_pc::instrument_host_init();
         s_audioModule.start();
 
 #if defined(USE_VIRTUAL_AUDIO) && defined(__linux__)
@@ -1330,6 +1335,11 @@ void crosspad_app_init()
     initStyles();
     InitializeOrchestrator();
     crosspad_gui::AppOrchestrator::getInstance().populateApps(app_c);
+#ifdef HAS_MIXER
+    // The open song's kit and instrument, now that the orchestrator can say
+    // which app is in front.
+    crosspad_pc::song_sounds_start();
+#endif
     LoadMainScreen(lcdContainer);
 
     /* The board's cold-boot splash, over the launcher: with no backlight to

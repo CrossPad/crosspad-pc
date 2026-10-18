@@ -16,6 +16,7 @@
 #include "semphr.h"
 #include "task.h"
 
+#include <atomic>
 #include <chrono>
 #include <cstdio>
 #include <cstdlib>
@@ -87,6 +88,13 @@ public:
         mixer_.setOutputMute(bus_, muted_);
     }
 
+    void songOpened(const crosspad::AudioSong& song) override {
+        if (auto* fn = openHandler_.load(std::memory_order_acquire)) fn(song);
+    }
+    void setOpenHandler(void (*fn)(const crosspad::AudioSong&)) {
+        openHandler_.store(fn, std::memory_order_release);
+    }
+
     void log(bool warning, const char* msg) override {
         std::fprintf(stderr, "[Song]%s %s\n", warning ? " warning:" : "", msg);
     }
@@ -99,9 +107,11 @@ private:
     std::string root_;
     float gain_ = 1.0f;
     bool muted_ = false;
+    std::atomic<void (*)(const crosspad::AudioSong&)> openHandler_{nullptr};
 };
 
 crosspad::SongEngine* s_engine = nullptr;
+PcSongPlatform* s_platform = nullptr;
 
 } // namespace
 
@@ -112,6 +122,7 @@ void song_engine_init(AudioMixerEngine& mixer, uint8_t audibleOutputs, uint8_t c
     /* For the life of the process, which ends with _Exit(): the audio thread
      * may call rtCapture() until the very end. */
     static PcSongPlatform platform(mixer, captureBus);
+    s_platform = &platform;
     static crosspad::SongEngine engine(platform, getMetronome(), getSequencer());
     s_engine = &engine;
     const auto ch = mixer.addChannel(&engine, "Song");
@@ -125,6 +136,11 @@ void song_engine_init(AudioMixerEngine& mixer, uint8_t audibleOutputs, uint8_t c
 void song_engine_rt_capture(const float* bus, uint32_t frames)
 {
     if (s_engine) s_engine->rtCapture(bus, frames);
+}
+
+void song_engine_set_open_handler(void (*fn)(const crosspad::AudioSong& song))
+{
+    if (s_platform) s_platform->setOpenHandler(fn);
 }
 
 } // namespace crosspad_pc

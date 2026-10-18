@@ -32,4 +32,11 @@ crosspad::IAudioNode* sampler_port_init(const crosspad_sampler::KitGateHost& gat
 /// the path is remembered and applied when the engine comes up.
 void sampler_port_set_sdcard(const std::string& root);
 
+/// Load kit @p kitId of the kit list on the kit loader's worker.
+void sampler_port_load_kit(int kitId);
+
+/// No kit current: every pad's samples wiped, its pitched bank gone (unless an
+/// app holds the pitched engine) and the pads' colours cleared.
+void sampler_port_unload_kit();
+
 } // namespace crosspad_pc
