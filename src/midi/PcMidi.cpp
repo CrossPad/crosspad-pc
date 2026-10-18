@@ -32,7 +32,8 @@ bool PcMidi::begin(unsigned int outPort, unsigned int inPort)
      * port watcher's reconnect) takes Midi Through, which feeds every note
      * straight back in. */
     if (std::getenv("CROSSPAD_NO_MIDI")) {
-        printf("[MIDI] off (CROSSPAD_NO_MIDI)\n");
+        static bool said = false;
+        if (!said) { said = true; printf("[MIDI] off (CROSSPAD_NO_MIDI)\n"); }
         return false;
     }
     bool anyOpen = false;
@@ -130,7 +131,8 @@ bool PcMidi::beginAutoConnect(const std::string& keyword)
      * port watcher's reconnect) takes Midi Through, which feeds every note
      * straight back in. */
     if (std::getenv("CROSSPAD_NO_MIDI")) {
-        printf("[MIDI] off (CROSSPAD_NO_MIDI)\n");
+        static bool said = false;
+        if (!said) { said = true; printf("[MIDI] off (CROSSPAD_NO_MIDI)\n"); }
         return false;
     }
     autoConnectKeyword_ = keyword;
@@ -190,6 +192,11 @@ bool PcMidi::beginAutoConnect(const std::string& keyword)
 
 bool PcMidi::reconnect()
 {
+    // begin() never opens a port under CROSSPAD_NO_MIDI, so the port lists it
+    // would compare against are never recorded: every poll saw "changed" and
+    // tore down nothing, once a second, forever.
+    if (std::getenv("CROSSPAD_NO_MIDI")) return false;
+
     // Check if port list changed since last connect — if not, skip the
     // expensive teardown/reopen cycle to avoid spamming logs.
     auto probeOutputs = [&]() {

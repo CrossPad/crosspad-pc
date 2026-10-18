@@ -18,6 +18,10 @@
 #include <thread>
 #include <atomic>
 #include <functional>
+#include <memory>
+#include <condition_variable>
+#include <chrono>
+#include <cerrno>
 
 // SDL2 for framebuffer capture and event injection
 #include <SDL2/SDL.h>
@@ -190,21 +194,69 @@ static std::thread s_serverThread;
 static std::atomic<bool> s_running{false};
 static socket_t s_listenSocket = SOCKET_INVALID;
 
-// Command queue: commands are received on TCP thread, executed on LVGL thread
-struct PendingCommand {
-    std::string request;
-    std::function<void(const std::string&)> respond;
+// Commands are read on a client's thread and executed on the LVGL thread.
+// Each carries its own reply slot, so several clients never share one and a
+// client that gave up (timeout) leaves a request the LVGL thread skips.
+struct Request {
+    std::string line;
+    std::mutex mutex;
+    std::condition_variable cv;
+    bool done = false;
+    bool abandoned = false;
+    std::string response;
 };
 
 static std::mutex s_queueMutex;
-static std::queue<PendingCommand> s_commandQueue;
+static std::queue<std::shared_ptr<Request>> s_commandQueue;
 
-// Response storage for synchronous command processing
-static std::mutex s_responseMutex;
-static std::string s_pendingResponse;
-static bool s_responseReady = false;
+static std::atomic<int> s_clients{0};
 
 /* ── Command handlers (run on LVGL thread) ───────────────────────────── */
+
+/* The picture comes from LVGL's own framebuffer, not from the SDL renderer.
+ * The simulator draws into a texture and presents it; what
+ * SDL_RenderReadPixels returns after SDL_RenderPresent is the back buffer,
+ * which is undefined once it has been swapped -- all black now and then, and
+ * the crop made it likelier. LVGL's DIRECT-mode buffer always holds the whole
+ * latest frame. The capture is in window pixels (the layout times the SDL
+ * zoom), so the framebuffer is sampled nearest-neighbour at that scale. */
+static bool read_framebuffer(float zoom, const SDL_Rect* rect, int w, int h, uint8_t* bgra) {
+    if (zoom <= 0.f) return false;
+    lv_refr_now(s_disp);
+    const lv_draw_buf_t* buf = lv_display_get_buf_active(s_disp);
+    const lv_color_format_t cf = lv_display_get_color_format(s_disp);
+    if (!buf || !buf->data) return false;
+    const int32_t hres = lv_display_get_horizontal_resolution(s_disp);
+    const int32_t vres = lv_display_get_vertical_resolution(s_disp);
+    if (cf != LV_COLOR_FORMAT_ARGB8888 && cf != LV_COLOR_FORMAT_XRGB8888 &&
+        cf != LV_COLOR_FORMAT_RGB888 && cf != LV_COLOR_FORMAT_RGB565) return false;
+    const uint32_t bpp = lv_color_format_get_size(cf);
+    const uint32_t stride = lv_draw_buf_width_to_stride(hres, cf);
+    if ((size_t)stride * vres > buf->data_size) return false;
+    const int ox = rect ? rect->x : 0;
+    const int oy = rect ? rect->y : 0;
+    for (int y = 0; y < h; y++) {
+        int sy = (int)((oy + y) / zoom);
+        if (sy >= vres) sy = vres - 1;
+        const uint8_t* row = buf->data + (size_t)sy * stride;
+        for (int x = 0; x < w; x++) {
+            int sx = (int)((ox + x) / zoom);
+            if (sx >= hres) sx = hres - 1;
+            const uint8_t* px = row + (size_t)sx * bpp;
+            uint8_t* o = bgra + ((size_t)y * w + x) * 4;
+            if (cf == LV_COLOR_FORMAT_RGB565) {
+                const uint16_t v = (uint16_t)(px[0] | (px[1] << 8));
+                o[2] = (uint8_t)(((v >> 11) & 0x1f) * 255 / 31);
+                o[1] = (uint8_t)(((v >> 5) & 0x3f) * 255 / 63);
+                o[0] = (uint8_t)((v & 0x1f) * 255 / 31);
+            } else {
+                o[0] = px[0]; o[1] = px[1]; o[2] = px[2];
+            }
+            o[3] = 255;
+        }
+    }
+    return true;
+}
 
 static std::string handle_screenshot(const std::string& json = "") {
     if (!s_disp) {
@@ -247,12 +299,15 @@ static std::string handle_screenshot(const std::string& json = "") {
         "\"lcd_size\":[" + std::to_string(lcdRect.w) + "," + std::to_string(lcdRect.h) + "]," +
         json_float("scale", zoom);
 
-    // ARGB8888: on little-endian memory layout is [B, G, R, A] per pixel.
-    std::vector<uint8_t> pixels(w * h * 4);
-    if (SDL_RenderReadPixels(renderer, captureRect, SDL_PIXELFORMAT_ARGB8888,
-                             pixels.data(), w * 4) != 0) {
-        return "{" + json_bool("ok", false) + "," +
-               json_string("error", SDL_GetError()) + "}";
+    // BGRA, the byte order the PNG conversion below expects.
+    std::vector<uint8_t> pixels((size_t)w * h * 4);
+    if (!read_framebuffer(zoom, captureRect, w, h, pixels.data())) {
+        // The LVGL buffer is not in a format we read; fall back to the window.
+        if (SDL_RenderReadPixels(renderer, captureRect, SDL_PIXELFORMAT_ARGB8888,
+                                 pixels.data(), w * 4) != 0) {
+            return "{" + json_bool("ok", false) + "," +
+                   json_string("error", SDL_GetError()) + "}";
+        }
     }
 
     // Encode to PNG
@@ -1343,156 +1398,221 @@ static std::string dispatch_command(const std::string& json) {
     return "{" + json_bool("ok", false) + "," + json_string("error", "unknown command: " + cmd) + "}";
 }
 
-/* ── TCP server thread ───────────────────────────────────────────────── */
+/* ── TCP server ──────────────────────────────────────────────────────── */
+
+static constexpr size_t MAX_LINE_BYTES   = 1u << 20;   // a request is a line of JSON, never megabytes
+static constexpr int    MAX_CLIENTS      = 8;
+static constexpr int    COMMAND_WAIT_MS  = 10000;      // LVGL thread has this long to answer
+static constexpr int    SEND_TIMEOUT_MS  = 10000;      // a reader that stalls longer is dropped
+static constexpr int    IDLE_LIMIT_MS    = 10 * 60 * 1000;
+
+static void set_socket_timeout(socket_t s, int optname, int ms) {
+#ifdef _WIN32
+    DWORD t = (DWORD)ms;
+    setsockopt(s, SOL_SOCKET, optname, (const char*)&t, sizeof(t));
+#else
+    struct timeval tv;
+    tv.tv_sec = ms / 1000;
+    tv.tv_usec = (ms % 1000) * 1000;
+    setsockopt(s, SOL_SOCKET, optname, (const char*)&tv, sizeof(tv));
+#endif
+}
+
+static bool recv_timed_out() {
+#ifdef _WIN32
+    return WSAGetLastError() == WSAETIMEDOUT;
+#else
+    return errno == EAGAIN || errno == EWOULDBLOCK || errno == EINTR;
+#endif
+}
+
+/// Whole buffer or false: send() may take part of it (a base64 screenshot is
+/// hundreds of kB), and a dead peer must neither raise SIGPIPE nor hold the
+/// thread past SEND_TIMEOUT_MS.
+static bool send_all(socket_t s, const std::string& data) {
+#ifdef MSG_NOSIGNAL
+    const int flags = MSG_NOSIGNAL;
+#else
+    const int flags = 0;
+#endif
+    size_t off = 0;
+    while (off < data.size()) {
+        const int n = (int)send(s, data.data() + off, (int)(data.size() - off), flags);
+        if (n <= 0) {
+            if (n < 0 && recv_timed_out() && s_running) continue;
+            return false;
+        }
+        off += (size_t)n;
+    }
+    return true;
+}
+
+static std::string error_reply(const std::string& msg) {
+    return "{" + json_bool("ok", false) + "," + json_string("error", msg) + "}";
+}
+
+/// Cheap shape check before the string-scanning readers see a line: they
+/// answer a garbage line with defaults, which would run an unintended command.
+static bool looks_like_request(const std::string& line) {
+    const size_t first = line.find_first_not_of(" \t\r");
+    const size_t last = line.find_last_not_of(" \t\r");
+    if (first == std::string::npos || line[first] != '{' || line[last] != '}') return false;
+    return !json_get_string(line, "cmd").empty();
+}
+
+static std::string run_on_lvgl_thread(const std::string& line) {
+    auto req = std::make_shared<Request>();
+    req->line = line;
+    {
+        std::lock_guard<std::mutex> qlock(s_queueMutex);
+        s_commandQueue.push(req);
+    }
+    std::unique_lock<std::mutex> lock(req->mutex);
+    const bool answered = req->cv.wait_for(lock, std::chrono::milliseconds(COMMAND_WAIT_MS),
+                                           [&] { return req->done || !s_running; });
+    if (answered && req->done) return req->response;
+    req->abandoned = true;
+    return error_reply("timeout");
+}
 
 static void handle_client(socket_t client) {
-    // Set receive timeout
-    #ifdef _WIN32
-    DWORD timeout = 30000; // 30s
-    setsockopt(client, SOL_SOCKET, SO_RCVTIMEO, (const char*)&timeout, sizeof(timeout));
-    #endif
+    // A short receive timeout lets the thread see s_running; a client silent
+    // for IDLE_LIMIT_MS is dropped so idle sockets do not pile up.
+    set_socket_timeout(client, SO_RCVTIMEO, 1000);
+    set_socket_timeout(client, SO_SNDTIMEO, SEND_TIMEOUT_MS);
 
     std::string buffer;
     char chunk[4096];
+    int idleMs = 0;
 
     while (s_running) {
-        int n = recv(client, chunk, sizeof(chunk) - 1, 0);
-        if (n <= 0) break;
-        chunk[n] = '\0';
-        buffer.append(chunk, n);
+        const int n = (int)recv(client, chunk, sizeof(chunk), 0);
+        if (n == 0) break;
+        if (n < 0) {
+            if (recv_timed_out() && (idleMs += 1000) < IDLE_LIMIT_MS) continue;
+            break;
+        }
+        idleMs = 0;
+        buffer.append(chunk, (size_t)n);
 
-        // Process complete lines (newline-delimited JSON)
         size_t pos;
         while ((pos = buffer.find('\n')) != std::string::npos) {
             std::string line = buffer.substr(0, pos);
             buffer.erase(0, pos + 1);
+            if (line.find_first_not_of(" \t\r") == std::string::npos) continue;
 
-            if (line.empty()) continue;
-
-            // Commands that need SDL/LVGL context must run on LVGL thread
-            std::string cmd = json_get_string(line, "cmd");
-            if (cmd == "ping") {
-                // ping can respond immediately
-                std::string resp = dispatch_command(line) + "\n";
-                send(client, resp.c_str(), (int)resp.size(), 0);
+            std::string resp;
+            if (!looks_like_request(line)) {
+                resp = error_reply("malformed request: expected one JSON object with a \"cmd\" per line");
             } else {
-                // Queue for LVGL thread, wait for response
-                std::unique_lock<std::mutex> lock(s_responseMutex);
-                s_responseReady = false;
-
-                {
-                    std::lock_guard<std::mutex> qlock(s_queueMutex);
-                    s_commandQueue.push({line, nullptr});
+                try {
+                    // ping needs no LVGL/SDL context and answers at once
+                    resp = json_get_string(line, "cmd") == "ping" ? dispatch_command(line)
+                                                                   : run_on_lvgl_thread(line);
+                } catch (const std::exception& e) {
+                    resp = error_reply(std::string("exception: ") + e.what());
                 }
-
-                // Busy wait for response (with timeout)
-                lock.unlock();
-                int waitMs = 0;
-                while (!s_responseReady && s_running && waitMs < 10000) {
-                    std::this_thread::sleep_for(std::chrono::milliseconds(5));
-                    waitMs += 5;
-                }
-
-                lock.lock();
-                std::string resp = s_responseReady ? s_pendingResponse :
-                    ("{" + json_bool("ok", false) + "," + json_string("error", "timeout") + "}");
-                lock.unlock();
-
-                resp += "\n";
-                send(client, resp.c_str(), (int)resp.size(), 0);
             }
+            resp += "\n";
+            if (!send_all(client, resp)) { CLOSE_SOCKET(client); s_clients--; return; }
+        }
+
+        if (buffer.size() > MAX_LINE_BYTES) {
+            send_all(client, error_reply("request line longer than 1 MiB") + "\n");
+            break;
         }
     }
 
     CLOSE_SOCKET(client);
+    s_clients--;
 }
 
-static void server_thread_func() {
-#ifdef _WIN32
-    WSADATA wsa;
-    if (WSAStartup(MAKEWORD(2, 2), &wsa) != 0) {
-        printf("[Remote] WSAStartup failed\n");
-        return;
-    }
-#endif
-
-    s_listenSocket = socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
-    if (s_listenSocket == SOCKET_INVALID) {
-        printf("[Remote] Failed to create socket\n");
-        return;
-    }
-
-    // Allow reuse
-    int reuse = 1;
-    setsockopt(s_listenSocket, SOL_SOCKET, SO_REUSEADDR, (const char*)&reuse, sizeof(reuse));
-
-    struct sockaddr_in addr = {};
-    addr.sin_family = AF_INET;
-    addr.sin_addr.s_addr = htonl(INADDR_LOOPBACK); // localhost only
-    addr.sin_port = htons(PORT);
-
-    if (bind(s_listenSocket, (struct sockaddr*)&addr, sizeof(addr)) != 0) {
-        printf("[Remote] Failed to bind port %d\n", PORT);
-        CLOSE_SOCKET(s_listenSocket);
-        s_listenSocket = SOCKET_INVALID;
-        return;
-    }
-
-    if (listen(s_listenSocket, 2) != 0) {
-        printf("[Remote] Failed to listen\n");
-        CLOSE_SOCKET(s_listenSocket);
-        s_listenSocket = SOCKET_INVALID;
-        return;
-    }
-
-    printf("[Remote] Listening on 127.0.0.1:%d\n", PORT);
-
+static void accept_loop() {
     while (s_running) {
-        // Use select() with timeout so we can check s_running
         fd_set readfds;
         FD_ZERO(&readfds);
         FD_SET(s_listenSocket, &readfds);
-        struct timeval tv = {1, 0}; // 1 second timeout
+        struct timeval tv = {1, 0};   // wake once a second to see s_running
 
-        int sel = select((int)s_listenSocket + 1, &readfds, nullptr, nullptr, &tv);
+        const int sel = select((int)s_listenSocket + 1, &readfds, nullptr, nullptr, &tv);
         if (sel <= 0) continue;
 
         socket_t client = accept(s_listenSocket, nullptr, nullptr);
         if (client == SOCKET_INVALID) continue;
 
-        // Handle one client at a time (simple for MCP use case)
-        handle_client(client);
+        // One thread per client: a connection that sits idle or reads slowly
+        // never keeps another one (or the LVGL thread) waiting.
+        if (s_clients.load() >= MAX_CLIENTS) {
+            send_all(client, error_reply("too many control connections") + "\n");
+            CLOSE_SOCKET(client);
+            continue;
+        }
+        s_clients++;
+        std::thread(handle_client, client).detach();
     }
-
-    CLOSE_SOCKET(s_listenSocket);
-    s_listenSocket = SOCKET_INVALID;
-
-#ifdef _WIN32
-    WSACleanup();
-#endif
-
-    printf("[Remote] Server stopped\n");
 }
 
 /* ── Public API ──────────────────────────────────────────────────────── */
 
 namespace remote {
 
-void start(lv_display_t* disp) {
+bool start(lv_display_t* disp) {
     s_disp = disp;
+
+#ifdef _WIN32
+    WSADATA wsa;
+    if (WSAStartup(MAKEWORD(2, 2), &wsa) != 0) {
+        fprintf(stderr, "[Remote] WSAStartup failed\n");
+        return false;
+    }
+#endif
+
+    // Bind here, not in the thread: the caller learns at once whether it has
+    // a control port.
+    s_listenSocket = socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
+    bool ok = s_listenSocket != SOCKET_INVALID;
+    if (ok) {
+        int reuse = 1;
+        setsockopt(s_listenSocket, SOL_SOCKET, SO_REUSEADDR, (const char*)&reuse, sizeof(reuse));
+
+        struct sockaddr_in addr = {};
+        addr.sin_family = AF_INET;
+        addr.sin_addr.s_addr = htonl(INADDR_LOOPBACK);   // localhost only
+        addr.sin_port = htons(PORT);
+        ok = bind(s_listenSocket, (struct sockaddr*)&addr, sizeof(addr)) == 0 &&
+             listen(s_listenSocket, 8) == 0;
+    }
+    if (!ok) {
+        const char* why = strerror(errno);
+        fprintf(stderr, "[Remote] !!! NO CONTROL PORT: cannot listen on 127.0.0.1:%d (%s). "
+                        "Another simulator owns it? Set CROSSPAD_REMOTE_PORT. "
+                        "This instance cannot be driven.\n", PORT, why);
+        printf("[Remote] !!! NO CONTROL PORT on %d (%s)\n", PORT, why);
+        if (s_listenSocket != SOCKET_INVALID) CLOSE_SOCKET(s_listenSocket);
+        s_listenSocket = SOCKET_INVALID;
+        const std::string title = "CrossPad - NO CONTROL PORT (" + std::to_string(PORT) + " busy)";
+        lv_sdl_window_set_title(disp, title.c_str());
+        return false;
+    }
+
     s_running = true;
-    s_serverThread = std::thread(server_thread_func);
-    printf("[Remote] Control server starting on port %d\n", PORT);
+    s_serverThread = std::thread(accept_loop);
+    printf("[Remote] Listening on 127.0.0.1:%d\n", PORT);
+    return true;
 }
 
 void stop() {
     s_running = false;
+    if (s_serverThread.joinable()) {
+        s_serverThread.join();
+    }
     if (s_listenSocket != SOCKET_INVALID) {
         CLOSE_SOCKET(s_listenSocket);
         s_listenSocket = SOCKET_INVALID;
     }
-    if (s_serverThread.joinable()) {
-        s_serverThread.join();
+    // client threads see s_running within a second (receive timeout)
+    for (int i = 0; i < 300 && s_clients.load() > 0; i++) {
+        std::this_thread::sleep_for(std::chrono::milliseconds(10));
     }
     printf("[Remote] Control server stopped\n");
 }
@@ -1507,19 +1627,38 @@ void set_audio_device_ctl(const AudioDeviceCtl& ctl) {
 }
 
 void process_pending() {
-    std::lock_guard<std::mutex> lock(s_queueMutex);
-    while (!s_commandQueue.empty()) {
-        auto cmd = std::move(s_commandQueue.front());
-        s_commandQueue.pop();
-
-        std::string response = dispatch_command(cmd.request);
-
-        // Signal response to waiting TCP thread
+    // One request at a time, the queue unlocked while it runs, and a bounded
+    // batch per call: a client flooding commands must not hold the LVGL task
+    // out of lv_timer_handler.
+    for (int handled = 0; handled < 16; handled++) {
+        std::shared_ptr<Request> req;
         {
-            std::lock_guard<std::mutex> rlock(s_responseMutex);
-            s_pendingResponse = response;
-            s_responseReady = true;
+            std::lock_guard<std::mutex> lock(s_queueMutex);
+            if (s_commandQueue.empty()) return;
+            req = std::move(s_commandQueue.front());
+            s_commandQueue.pop();
         }
+
+        {
+            std::lock_guard<std::mutex> lock(req->mutex);
+            if (req->abandoned) continue;   // the client already got "timeout"
+        }
+
+        std::string response;
+        try {
+            response = dispatch_command(req->line);
+        } catch (const std::exception& e) {
+            response = error_reply(std::string("exception: ") + e.what());
+        } catch (...) {
+            response = error_reply("exception");
+        }
+
+        {
+            std::lock_guard<std::mutex> lock(req->mutex);
+            req->response = std::move(response);
+            req->done = true;
+        }
+        req->cv.notify_all();
     }
 }
 
