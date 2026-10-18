@@ -380,11 +380,37 @@ list(APPEND MAIN_SOURCES ${SETTINGS_APP_SOURCES} ${CITEST_APP_SOURCES} ${UPDATE_
      ${FIRMWARE_APP_SOURCES})
 
 # ── Installable apps (submodules in src/apps/crosspad-*) ────────────────
-file(GLOB _app_submodule_dirs "${CMAKE_SOURCE_DIR}/src/apps/crosspad-*/")
-foreach(_app_dir ${_app_submodule_dirs})
+# Only directories .gitmodules registers are apps. A leftover checkout of an
+# app the repo no longer carries (untracked, so it survives a branch switch)
+# would otherwise be compiled in and appear in the launcher.
+set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS "${CMAKE_SOURCE_DIR}/.gitmodules")
+file(STRINGS "${CMAKE_SOURCE_DIR}/.gitmodules" _gitmodule_paths REGEX "^[ \t]*path[ \t]*=[ \t]*src/apps/crosspad-")
+set(_registered_app_names "")
+foreach(_line ${_gitmodule_paths})
+    string(REGEX REPLACE "^.*src/apps/" "" _reg_name "${_line}")
+    string(STRIP "${_reg_name}" _reg_name)
+    list(APPEND _registered_app_names "${_reg_name}")
+endforeach()
+
+file(GLOB _app_glob_dirs "${CMAKE_SOURCE_DIR}/src/apps/crosspad-*/")
+set(_app_submodule_dirs "")
+set(_stray_app_names "")
+foreach(_app_dir ${_app_glob_dirs})
     if(NOT IS_DIRECTORY "${_app_dir}")
         continue()
     endif()
+    get_filename_component(_app_name "${_app_dir}" NAME)
+    if(_app_name IN_LIST _registered_app_names)
+        list(APPEND _app_submodule_dirs "${_app_dir}")
+    else()
+        list(APPEND _stray_app_names "${_app_name}")
+        message(WARNING "Ignoring src/apps/${_app_name}: not a submodule in .gitmodules "
+                        "(a leftover directory). Not built, not registered. Add it with "
+                        "`git submodule add` to build it, or delete the directory.")
+    endif()
+endforeach()
+
+foreach(_app_dir ${_app_submodule_dirs})
     get_filename_component(_app_name "${_app_dir}" NAME)
 
     # App Store is dev-only — skip when BUILD_TESTING is OFF (release builds)
@@ -432,8 +458,15 @@ endforeach()
 set(_crosspad_asset_stage "${CMAKE_SOURCE_DIR}/bin/assets")
 file(MAKE_DIRECTORY "${_crosspad_asset_stage}")
 file(GLOB _crosspad_gui_assets "${CMAKE_SOURCE_DIR}/lib/crosspad-gui/assets/*.png")
-file(GLOB _crosspad_app_asset_dirs
-     "${CMAKE_SOURCE_DIR}/src/apps/*/assets")
+set(_crosspad_app_asset_dirs "")
+file(GLOB _crosspad_all_asset_dirs "${CMAKE_SOURCE_DIR}/src/apps/*/assets")
+foreach(_dir ${_crosspad_all_asset_dirs})
+    get_filename_component(_owner "${_dir}" DIRECTORY)
+    get_filename_component(_owner "${_owner}" NAME)
+    if(NOT _owner IN_LIST _stray_app_names)
+        list(APPEND _crosspad_app_asset_dirs "${_dir}")
+    endif()
+endforeach()
 set(_crosspad_app_assets "")
 foreach(_dir ${_crosspad_app_asset_dirs})
     file(GLOB _found "${_dir}/*.png")
@@ -472,6 +505,7 @@ set(_registry_excludes "")
 if(NOT BUILD_TESTING)
     list(APPEND _registry_excludes "crosspad-appstore")
 endif()
+list(APPEND _registry_excludes ${_stray_app_names})
 crosspad_generate_app_registry(
     OUTPUT  "${APP_REGISTRY_FILE}"
     DIRS    "${PROJECT_SOURCE_DIR}/src/apps"
@@ -538,7 +572,7 @@ endif()
 # Same generator the firmware uses, so `--versions` here and APP_VERSIONS on a
 # board answer in the same format.
 include(${CMAKE_CURRENT_LIST_DIR}/lib/crosspad-core/cmake/crosspad_app_versions.cmake)
-file(GLOB _crosspad_app_dirs "${CMAKE_CURRENT_LIST_DIR}/src/apps/crosspad-*")
+set(_crosspad_app_dirs ${_app_submodule_dirs})
 crosspad_generate_app_versions(
     OUTPUT   "${CMAKE_BINARY_DIR}/app_versions.cpp"
     SHARED   "${CMAKE_CURRENT_LIST_DIR}/lib/crosspad-core"
@@ -696,6 +730,8 @@ if(CMAKE_BUILD_TYPE STREQUAL "Debug")
             -Wfloat-conversion
             -Wstrict-aliasing
         )
+        # Vendor code: these two are 674 of its 709 Debug warnings and drown the rest.
+        target_compile_options(lvgl PRIVATE -Wno-shadow -Wno-unused-parameter)
     endif()
 
 if (ASAN)
