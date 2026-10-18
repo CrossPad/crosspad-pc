@@ -17,7 +17,9 @@
 #include <mutex>
 #include <thread>
 #include <atomic>
-#include <functional>
+#include <chrono>
+#include <condition_variable>
+#include <memory>
 
 // SDL2 for framebuffer capture and event injection
 #include <SDL2/SDL.h>
@@ -91,6 +93,7 @@
 #else
 #  include <sys/socket.h>
 #  include <netinet/in.h>
+#  include <cerrno>
 #  include <unistd.h>
    typedef int socket_t;
 #  define CLOSE_SOCKET close
@@ -190,19 +193,28 @@ static std::thread s_serverThread;
 static std::atomic<bool> s_running{false};
 static socket_t s_listenSocket = SOCKET_INVALID;
 
-// Command queue: commands are received on TCP thread, executed on LVGL thread
+/* Commands are received on the TCP thread and executed on the LVGL thread;
+ * each carries the slot its own reply goes into. There used to be one reply
+ * slot for all of them: a command that outlived the 10 s wait got "timeout",
+ * and the reply it produced afterwards was taken as the reply to the next
+ * command -- every reply after that one was the previous command's. */
+struct ReplySlot {
+    std::mutex              mutex;
+    std::condition_variable cv;
+    bool                    ready = false;
+    std::string             response;
+};
+
 struct PendingCommand {
-    std::string request;
-    std::function<void(const std::string&)> respond;
+    std::string                request;
+    std::shared_ptr<ReplySlot> reply;
 };
 
 static std::mutex s_queueMutex;
 static std::queue<PendingCommand> s_commandQueue;
 
-// Response storage for synchronous command processing
-static std::mutex s_responseMutex;
-static std::string s_pendingResponse;
-static bool s_responseReady = false;
+/// How long the TCP thread waits for the LVGL thread to run a command.
+static constexpr auto kReplyTimeout = std::chrono::seconds(10);
 
 /* ── Command handlers (run on LVGL thread) ───────────────────────────── */
 
@@ -1345,6 +1357,49 @@ static std::string dispatch_command(const std::string& json) {
 
 /* ── TCP server thread ───────────────────────────────────────────────── */
 
+/* All of it, or false: a screenshot's reply is hundreds of kB, which a
+ * stream socket may take in pieces. Never SIGPIPE on a client that hung up. */
+static bool send_all(socket_t client, const std::string& data) {
+    size_t off = 0;
+    while (off < data.size()) {
+#ifdef _WIN32
+        const int n = send(client, data.data() + off, (int)(data.size() - off), 0);
+#else
+        const ssize_t n = send(client, data.data() + off, data.size() - off, MSG_NOSIGNAL);
+        if (n < 0 && errno == EINTR) continue;
+#endif
+        if (n <= 0) return false;
+        off += (size_t)n;
+    }
+    return true;
+}
+
+/* The audio device verbs open and close sound-server streams (100-500 ms,
+ * seconds for a pactl move) and are thread-safe by design -- the jack panel
+ * runs the same functions on a worker thread. On the LVGL thread they froze
+ * the UI for as long; they run here instead. */
+static bool runs_on_tcp_thread(const std::string& cmd) {
+    return cmd == "ping" ||
+           cmd == "audio_out_list" || cmd == "audio_in_list" ||
+           cmd == "audio_out_set"  || cmd == "audio_in_set";
+}
+
+static std::string run_on_lvgl_thread(const std::string& line) {
+    auto reply = std::make_shared<ReplySlot>();
+    {
+        std::lock_guard<std::mutex> qlock(s_queueMutex);
+        s_commandQueue.push({line, reply});
+    }
+    std::unique_lock<std::mutex> lock(reply->mutex);
+    if (!reply->cv.wait_for(lock, kReplyTimeout, [&] { return reply->ready || !s_running; })) {
+        return "{" + json_bool("ok", false) + "," + json_string("error", "timeout") + "}";
+    }
+    if (!reply->ready) {
+        return "{" + json_bool("ok", false) + "," + json_string("error", "stopping") + "}";
+    }
+    return reply->response;
+}
+
 static void handle_client(socket_t client) {
     // Set receive timeout
     #ifdef _WIN32
@@ -1357,6 +1412,9 @@ static void handle_client(socket_t client) {
 
     while (s_running) {
         int n = recv(client, chunk, sizeof(chunk) - 1, 0);
+#ifndef _WIN32
+        if (n < 0 && errno == EINTR) continue;
+#endif
         if (n <= 0) break;
         chunk[n] = '\0';
         buffer.append(chunk, n);
@@ -1370,36 +1428,12 @@ static void handle_client(socket_t client) {
             if (line.empty()) continue;
 
             // Commands that need SDL/LVGL context must run on LVGL thread
-            std::string cmd = json_get_string(line, "cmd");
-            if (cmd == "ping") {
-                // ping can respond immediately
-                std::string resp = dispatch_command(line) + "\n";
-                send(client, resp.c_str(), (int)resp.size(), 0);
-            } else {
-                // Queue for LVGL thread, wait for response
-                std::unique_lock<std::mutex> lock(s_responseMutex);
-                s_responseReady = false;
-
-                {
-                    std::lock_guard<std::mutex> qlock(s_queueMutex);
-                    s_commandQueue.push({line, nullptr});
-                }
-
-                // Busy wait for response (with timeout)
-                lock.unlock();
-                int waitMs = 0;
-                while (!s_responseReady && s_running && waitMs < 10000) {
-                    std::this_thread::sleep_for(std::chrono::milliseconds(5));
-                    waitMs += 5;
-                }
-
-                lock.lock();
-                std::string resp = s_responseReady ? s_pendingResponse :
-                    ("{" + json_bool("ok", false) + "," + json_string("error", "timeout") + "}");
-                lock.unlock();
-
-                resp += "\n";
-                send(client, resp.c_str(), (int)resp.size(), 0);
+            const std::string cmd = json_get_string(line, "cmd");
+            const std::string resp = (runs_on_tcp_thread(cmd) ? dispatch_command(line)
+                                                              : run_on_lvgl_thread(line)) + "\n";
+            if (!send_all(client, resp)) {
+                CLOSE_SOCKET(client);
+                return;
             }
         }
     }
@@ -1416,7 +1450,13 @@ static void server_thread_func() {
     }
 #endif
 
+#ifdef SOCK_CLOEXEC
+    // Not into a child: the updater's script and the app it restarts
+    // inherited the bound port, and the new simulator could not bind it.
+    s_listenSocket = socket(AF_INET, SOCK_STREAM | SOCK_CLOEXEC, IPPROTO_TCP);
+#else
     s_listenSocket = socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
+#endif
     if (s_listenSocket == SOCKET_INVALID) {
         printf("[Remote] Failed to create socket\n");
         return;
@@ -1457,7 +1497,11 @@ static void server_thread_func() {
         int sel = select((int)s_listenSocket + 1, &readfds, nullptr, nullptr, &tv);
         if (sel <= 0) continue;
 
+#ifdef SOCK_CLOEXEC
+        socket_t client = accept4(s_listenSocket, nullptr, nullptr, SOCK_CLOEXEC);
+#else
         socket_t client = accept(s_listenSocket, nullptr, nullptr);
+#endif
         if (client == SOCKET_INVALID) continue;
 
         // Handle one client at a time (simple for MCP use case)
@@ -1507,19 +1551,24 @@ void set_audio_device_ctl(const AudioDeviceCtl& ctl) {
 }
 
 void process_pending() {
-    std::lock_guard<std::mutex> lock(s_queueMutex);
-    while (!s_commandQueue.empty()) {
-        auto cmd = std::move(s_commandQueue.front());
-        s_commandQueue.pop();
+    for (;;) {
+        PendingCommand cmd;
+        {
+            std::lock_guard<std::mutex> lock(s_queueMutex);
+            if (s_commandQueue.empty()) return;
+            cmd = std::move(s_commandQueue.front());
+            s_commandQueue.pop();
+        }
 
         std::string response = dispatch_command(cmd.request);
 
-        // Signal response to waiting TCP thread
+        // Into this command's own slot; nobody reads it if the wait timed out
         {
-            std::lock_guard<std::mutex> rlock(s_responseMutex);
-            s_pendingResponse = response;
-            s_responseReady = true;
+            std::lock_guard<std::mutex> rlock(cmd.reply->mutex);
+            cmd.reply->response = std::move(response);
+            cmd.reply->ready = true;
         }
+        cmd.reply->cv.notify_one();
     }
 }
 
