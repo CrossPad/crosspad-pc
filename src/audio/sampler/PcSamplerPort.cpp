@@ -117,6 +117,17 @@ int platform_getFreeSlotCount() {
     return SampleStreamPlayer_GetFreeWavCnt();
 }
 
+uint32_t platform_liveScope(float* outData, uint32_t maxSamples,
+                            float* fundamentalHz, uint32_t* sampleRate) {
+    if (fundamentalHz) *fundamentalHz = 0.0f; // a drum mix has no single note
+    if (sampleRate) *sampleRate = s_node.scopeTap().sampleRate();
+    return s_node.scopeTap().snapshot(outData, maxSamples);
+}
+
+void platform_setLiveScopeEnabled(bool enabled) {
+    s_node.setScopeEnabled(enabled);
+}
+
 bool platform_getSampleInfo(const char* path, crosspad_sampler::SampleInfo* outInfo) {
     if (!path || !outInfo) return false;
     sample_info_from_file info{};
@@ -411,6 +422,8 @@ crosspad::IAudioNode* sampler_port_init(const crosspad_sampler::KitGateHost& gat
     cb.player.clearLoop        = platform_clearLoop;
     cb.player.wipeOut          = platform_wipeOut;
     cb.player.getFreeSlotCount = platform_getFreeSlotCount;
+    cb.player.getLiveScopeData = platform_liveScope;
+    cb.player.setLiveScopeEnabled = platform_setLiveScopeEnabled;
 
     cb.waveform.getFileInfo        = platform_wf_getFileInfo;
     cb.waveform.getWaveformSamples = platform_wf_getWaveformSamples;

@@ -581,6 +581,12 @@ foreach(_app_dir ${_app_submodule_dirs})
 endforeach()
 target_link_libraries(CrossPad ${MAIN_LIBS})
 
+# Export the dynamic symbol table so the backtrace an LVGL assert prints
+# (lv_assert_crosspad.h) carries function names rather than bare addresses.
+if(NOT WIN32)
+    target_link_options(CrossPad PRIVATE -rdynamic)
+endif()
+
 # Winsock + COM (folder picker dialog) for Windows
 if(WIN32)
     target_link_libraries(CrossPad ws2_32 ole32 shell32 winhttp)

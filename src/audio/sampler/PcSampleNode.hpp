@@ -17,14 +17,18 @@
  */
 
 #include <crosspad/audio/IAudioNode.hpp>
+#include <crosspad/audio/ScopeTap.hpp>
 
 #include <atomic>
 #include <cstdint>
+#include <vector>
 
 namespace crosspad_pc {
 
 class PcSampleNode : public crosspad::IAudioNode {
 public:
+    PcSampleNode() { scopeTap_.setEnabled(false); }
+
     const char* name() const override { return "Sampler"; }
     bool isGenerator() const override { return true; }
 
@@ -37,8 +41,18 @@ public:
 
     void mix(float* out, uint32_t frames) override;
 
+    /// Allocate/enable capture only while a live waveform mode is visible.
+    void setScopeEnabled(bool enabled);
+
+    crosspad::ScopeTap& scopeTap() { return scopeTap_; }
+    const crosspad::ScopeTap& scopeTap() const { return scopeTap_; }
+
 private:
     std::atomic<bool> enabled_{true};
+    std::vector<float> renderScratch_;
+    std::vector<float> scopeMono_;
+    crosspad::ScopeTap scopeTap_;
+    uint32_t preparedMaxFrames_ = 0;
 };
 
 } // namespace crosspad_pc
