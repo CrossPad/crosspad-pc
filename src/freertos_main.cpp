@@ -73,7 +73,7 @@ static void lvgl_task(void* pvParameters)
                    Stm32EmuWindow::LCD_Y + Stm32EmuWindow::LCD_H - 1 };
     crosspad_gui::touch_gesture_attach(sdl_hal_get_mouse(), swipe);
 
-    // Start remote control server (TCP localhost:19840) for MCP integration
+    // Start remote control server (TCP localhost:19840, or CROSSPAD_REMOTE_PORT) for MCP integration
     remote::start(disp);
 
     while (true) {

@@ -9,6 +9,7 @@
 #include "crosspad/control/PadInput.hpp"
 
 #include <cstdio>
+#include <cstdlib>
 #include <cstring>
 #include <string>
 #include <vector>
@@ -173,7 +174,16 @@ static std::vector<uint8_t> pixels_to_png(const uint8_t* bgra, int w, int h) {
 
 /* ── State ───────────────────────────────────────────────────────────── */
 
-static constexpr uint16_t PORT = 19840;
+/* 19840 unless CROSSPAD_REMOTE_PORT says otherwise: two simulators -- a test
+ * run beside the one somebody is playing -- cannot share a port, and the
+ * second one used to come up with no control port at all and say so only in
+ * its log. */
+static uint16_t remote_port() {
+    const char* v = getenv("CROSSPAD_REMOTE_PORT");
+    const long p = v ? strtol(v, nullptr, 10) : 0;
+    return (p > 0 && p < 65536) ? (uint16_t)p : (uint16_t)19840;
+}
+static const uint16_t PORT = remote_port();
 
 static lv_display_t* s_disp = nullptr;
 static std::thread s_serverThread;

@@ -7,7 +7,7 @@
  * PipeWire through pipewire-pulse. The sinks' auto-generated .monitor
  * sources are then captured by CrossPad as IN1/IN2.
  *
- * We shell out to `pactl` (via fork+execvp) instead of linking libpulse —
+ * We shell out to `pactl` (via posix_spawnp) instead of linking libpulse —
  * zero extra build deps and pactl ships on every distro with PA/PW.
  */
 
@@ -26,10 +26,16 @@
 #include <map>
 #include <mutex>
 #include <sstream>
+#include <string>
+#include <vector>
 
 #include <fcntl.h>
+#include <signal.h>
+#include <spawn.h>
 #include <unistd.h>
 #include <sys/wait.h>
+
+extern char** environ;
 #include <sys/types.h>
 
 namespace crosspad_pc {
@@ -48,34 +54,61 @@ struct PactlResult {
 PactlResult runPactl(const char* const argv[]) {
     PactlResult r;
 
-    int pipefd[2];
-    if (pipe(pipefd) != 0) return r;
+    /* Everything below parses pactl's human-readable output, which is
+     * translated. In Polish a sink-input block opens with
+     * "4685. odpływ wejścia" — no '#', and the id first — so the header
+     * matcher never fired and CrossPad's own output stream could never be
+     * found, let alone pinned. Ask for the untranslated output instead of
+     * trying to recognise every language.
+     *
+     * The environment is built here, in the parent. It used to be set with
+     * setenv() in a fork()ed child, and in a process with thirty threads the
+     * child of a fork() may only make async-signal-safe calls: setenv()
+     * allocates, and when any other thread held the allocator's lock at the
+     * moment of the fork the child waited for it forever — and so did this
+     * function, reading a pipe the child never closed. The simulator hung on
+     * about every other start that way, right after the audio thread came
+     * up. posix_spawnp() runs nothing of ours in the child. */
+    std::vector<std::string> envStore;
+    for (char** e = environ; e && *e; ++e) {
+        if (!strncmp(*e, "LC_ALL=", 7) || !strncmp(*e, "LANG=", 5) ||
+            !strncmp(*e, "LANGUAGE=", 9)) continue;
+        envStore.emplace_back(*e);
+    }
+    envStore.emplace_back("LC_ALL=C");
+    envStore.emplace_back("LANG=C");
+    std::vector<char*> envp;
+    for (auto& e : envStore) envp.push_back(e.data());
+    envp.push_back(nullptr);
 
-    pid_t pid = fork();
-    if (pid < 0) {
+    int pipefd[2];
+    if (pipe2(pipefd, O_CLOEXEC) != 0) return r;
+
+    posix_spawn_file_actions_t fa;
+    posix_spawn_file_actions_init(&fa);
+    posix_spawn_file_actions_adddup2(&fa, pipefd[1], STDOUT_FILENO);
+    posix_spawn_file_actions_addopen(&fa, STDERR_FILENO, "/dev/null", O_WRONLY, 0);
+
+    /* The FreeRTOS POSIX port blocks and handles signals for its scheduling;
+     * pactl gets a clean slate. */
+    posix_spawnattr_t attr;
+    posix_spawnattr_init(&attr);
+    sigset_t none, all;
+    sigemptyset(&none);
+    sigfillset(&all);
+    posix_spawnattr_setsigmask(&attr, &none);
+    posix_spawnattr_setsigdefault(&attr, &all);
+    posix_spawnattr_setflags(&attr, POSIX_SPAWN_SETSIGMASK | POSIX_SPAWN_SETSIGDEF);
+
+    pid_t pid = -1;
+    const int rc = posix_spawnp(&pid, "pactl", &fa, &attr,
+                                const_cast<char* const*>(argv), envp.data());
+    posix_spawnattr_destroy(&attr);
+    posix_spawn_file_actions_destroy(&fa);
+    if (rc != 0) {
         close(pipefd[0]);
         close(pipefd[1]);
         return r;
-    }
-
-    if (pid == 0) {
-        // Child — redirect stdout to pipe, discard stderr.
-        dup2(pipefd[1], STDOUT_FILENO);
-        int devnull = open("/dev/null", O_WRONLY);
-        if (devnull >= 0) { dup2(devnull, STDERR_FILENO); close(devnull); }
-        close(pipefd[0]);
-        close(pipefd[1]);
-        // Everything below parses pactl's human-readable output, which is
-        // translated. In Polish a sink-input block opens with
-        // "4685. odpływ wejścia" — no '#', and the id first — so the header
-        // matcher never fired and CrossPad's own output stream could never be
-        // found, let alone pinned. Ask for the untranslated output instead of
-        // trying to recognise every language.
-        setenv("LC_ALL", "C", 1);
-        setenv("LANG", "C", 1);
-        unsetenv("LANGUAGE");
-        execvp("pactl", const_cast<char* const*>(argv));
-        _exit(127);
     }
 
     // Parent — read child stdout, then reap. Retry on EINTR: the FreeRTOS
