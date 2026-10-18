@@ -24,6 +24,7 @@
 #include <crosspad-gui/components/status_bar.h>
 
 #include "remote/RemoteControl.hpp"
+#include "sequencer/PcSequencer.hpp"
 #include "song/PcSongSounds.hpp"
 
 #include <crosspad-sampler/SamplerApp.hpp>
@@ -271,6 +272,8 @@ void platform_onKitLoadFinished(bool success) {
         }
     }
     platform_topUpWaveformCache();
+    // Only a request: the scenes store reads the card on its own task.
+    sequencer_kit_changed(kit ? kit->path : std::string());
 }
 
 // ── Waveform callbacks ───────────────────────────────────────────────────
