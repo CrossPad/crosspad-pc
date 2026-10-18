@@ -1,13 +1,13 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
 #include "PcSamplerPort.hpp"
+#include "PcInstrumentHost.hpp"
 #include "PcPitchedPort.hpp"
 #include "PcSampleNode.hpp"
 #include "SampleStreamPlayer.hpp"
 #include "SampleStreamEngine.hpp"
 
 #include "pc_stubs/pc_platform.h"
-#include "pc_stubs/PcApp.hpp"
 
 #include <crosspad/event/EventData.hpp>
 #include <crosspad/event/IEventBus.hpp>
@@ -20,22 +20,24 @@
 #include <crosspad/pad/PadManager.hpp>
 #include <crosspad/platform/PlatformServices.hpp>
 
-#include <crosspad-gui/components/app_orchestrator.h>
 #include <crosspad-gui/components/file_explorer.h>
 #include <crosspad-gui/components/status_bar.h>
 
 #include "remote/RemoteControl.hpp"
+#include "sequencer/PcSequencer.hpp"
+#include "song/PcSongSounds.hpp"
 
 #include <crosspad-sampler/SamplerApp.hpp>
 #include <crosspad-sampler/SamplerConfig.hpp>
 #include <crosspad-sampler/SamplerPlatformCallbacks.hpp>
+#include <crosspad-sampler/logic/kit_gate.hpp>
 #include <crosspad-sampler/logic/kit_load_task.hpp>
-#include <crosspad-sampler/ui/kit_selector_app.hpp>
+#include <crosspad-sampler/logic/pad_color_manager.hpp>
+#include <crosspad-sampler/ui/sampler_panel.hpp>
 #include <crosspad-sampler/waveform/waveform_cache.hpp>
 #include <crosspad-sampler/waveform/waveform_loader.hpp>
 
 #include <cstdio>
-#include <cstring>
 #include <filesystem>
 #include <string>
 
@@ -149,17 +151,20 @@ void platform_reloadPad(uint8_t padIdx) {
 
     SampleStreamPlayer_WipeOut(padIdx);
 
+    // While an app holds the pitched engine (PcInstrumentHost) the bank is
+    // its own: a kit load leaves it alone, and release() reloads the kit.
+    const bool appBank = instrument_host_owns_engine();
     if (kit->engine == crosspad::KitEngine::Pitched) {
         // The WipeOut above is all the streaming engine has to do for a pitched
         // kit. The whole bank is built once, on pad 0; the other fifteen pads
         // carry no per-engine state (their volume/pan come from the bank swap).
-        if (padIdx == 0) pitched_port_load(*kit);
+        if (padIdx == 0 && !appBank) pitched_port_load(*kit);
         return;
     }
 
     // Back on a sampler kit: the pitched bank goes first, so the two engines
     // never hold their sample memory at once.
-    if (padIdx == 0 && pitched_port_active()) pitched_port_unload();
+    if (padIdx == 0 && !appBank && pitched_port_active()) pitched_port_unload();
 
     auto& pad = kit->pads[padIdx];
     int ok = 0;
@@ -252,6 +257,8 @@ void platform_onKitLoadFinished(bool success) {
         }
         return;
     }
+    // The open song is made with this kit from now on.
+    song_sounds_kit_loaded();
     auto* kit = crosspad::getKitManager() ? crosspad::getKitManager()->getCurrentKit() : nullptr;
     std::printf("[sampler] kit ready: '%s' — %d pads, %d layers in the engine%s\n",
                 kit ? kit->name.c_str() : "?", s_padsLoaded, s_layersLoaded,
@@ -265,6 +272,8 @@ void platform_onKitLoadFinished(bool success) {
         }
     }
     platform_topUpWaveformCache();
+    // Only a request: the scenes store reads the card on its own task.
+    sequencer_kit_changed(kit ? kit->path : std::string());
 }
 
 // ── Waveform callbacks ───────────────────────────────────────────────────
@@ -320,6 +329,8 @@ void onSamplePlaybackEvent(const void* data, crosspad::EventType, void*) {
     // streaming engine is not involved and need not be ready.
     auto* kit = crosspad::getKitManager() ? crosspad::getKitManager()->getCurrentKit() : nullptr;
     if (kit && kit->engine == crosspad::KitEngine::Pitched) {
+        // The bank is an app's (PcInstrumentHost), not this kit's.
+        if (instrument_host_owns_engine()) return;
         // No bank: the load failed, or a failed load dropped the previous one.
         // Falling through to the streaming engine is not a fallback —
         // reloadPad() wiped every slot for this kit and put nothing back, so it
@@ -349,42 +360,6 @@ void onSamplePlaybackEvent(const void* data, crosspad::EventType, void*) {
     }
 }
 
-// ── Kit-selector gate ────────────────────────────────────────────────────
-
-App*      s_overlay       = nullptr;
-App*      s_pendingApp    = nullptr;
-lv_obj_t* s_pendingParent = nullptr;
-bool      s_shouldLaunch  = false;
-
-const char* kKitRequiredApps[] = {"Sampler", "Sequencer"};
-
-bool app_requires_kit(const char* name) {
-    if (!name) return false;
-    for (const char* n : kKitRequiredApps) {
-        if (std::strcmp(name, n) == 0) return true;
-    }
-    return false;
-}
-
-void on_kit_loaded() {
-    s_shouldLaunch = true;
-    crosspad_gui::statusbar_process_loader_status(100, true, false, "Kit loaded");
-}
-
-// The selector reports here once it has torn itself down — both when a kit
-// finished loading and when the user backed out. Only the first launches what
-// was waiting behind the gate.
-void on_selector_closed() {
-    auto& orch = crosspad_gui::AppOrchestrator::getInstance();
-    if (s_pendingApp && s_shouldLaunch && s_pendingParent) {
-        s_pendingApp->start(s_pendingParent);
-        s_pendingApp->resume();
-        orch.setRunningApp(s_pendingApp);
-    }
-    s_pendingApp   = nullptr;
-    s_shouldLaunch = false;
-}
-
 // ── Kit discovery ────────────────────────────────────────────────────────
 
 void rescanKits() {
@@ -402,7 +377,7 @@ void rescanKits() {
 
 // ── Public API ───────────────────────────────────────────────────────────
 
-crosspad::IAudioNode* sampler_port_init() {
+crosspad::IAudioNode* sampler_port_init(const crosspad_sampler::KitGateHost& gate) {
     if (!SampleStreamPlayer_Init()) {
         std::printf("[sampler] engine init failed — pads will not sound\n");
         return nullptr;
@@ -419,8 +394,7 @@ crosspad::IAudioNode* sampler_port_init() {
 
     crosspad_sampler::SamplerPlatformCallbacks cb{};
 
-    cb.kitSelector.onKitLoaded = on_kit_loaded;
-    cb.kitSelector.onClosed    = on_selector_closed;
+    crosspad_sampler::kit_gate_install(gate, cb.kitSelector);
 
     cb.audio.startLoadKit      = platform_startLoadKit;
     cb.audio.onKitLoadFinished = platform_onKitLoadFinished;
@@ -473,6 +447,17 @@ crosspad::IAudioNode* sampler_port_init() {
     return &s_node;
 }
 
+void sampler_port_load_kit(int kitId) {
+    platform_startLoadKit(kitId, /*onlyModified=*/false);
+}
+
+void sampler_port_unload_kit() {
+    for (uint8_t pad = 0; pad < KIT_PADS; ++pad) SampleStreamPlayer_WipeOut(pad);
+    if (!instrument_host_owns_engine() && pitched_port_active()) pitched_port_unload();
+    s_kitLoader.clearCurrentKit();
+    crosspad_sampler::getPadColorManager().loadColorsFromKit(crosspad::KitInfo{});
+}
+
 void sampler_port_set_sdcard(const std::string& root) {
     s_sdRoot = root;
     s_kitLoader.setRootPrefix(root);
@@ -480,29 +465,6 @@ void sampler_port_set_sdcard(const std::string& root) {
 
     SampleStreamPlayer_SetRootPrefix(root.c_str());
     rescanKits();
-}
-
-bool sampler_port_pre_launch(crosspad_gui::ILvglApp* app, lv_obj_t* container) {
-    if (!app || !app_requires_kit(app->getName())) return true;
-
-    auto* mgr = crosspad::getKitManager();
-    if (mgr && mgr->getCurrentKit() != nullptr) return true;
-
-    s_pendingApp    = static_cast<App*>(app);
-    s_pendingParent = container;
-    s_shouldLaunch  = false;
-
-    // Built once and reused. The overlay is not owned by the app factory, so
-    // nothing would ever delete it — re-creating it per prompt leaked one App
-    // each time. destroyApp() clears its root, so start() rebuilds the UI on
-    // the same instance.
-    if (!s_overlay) {
-        s_overlay = new App(container, "Kit selector", "notepick.png",
-                            lv_CreateKitSelector, lv_KitSelector_destroy);
-    }
-    s_overlay->start(container);
-    s_overlay->resume();
-    return false;
 }
 
 } // namespace crosspad_pc

@@ -10,13 +10,14 @@
 #include "crosspad/platform/PlatformServices.hpp"
 #include "crosspad/sequencer/MetronomeNode.hpp"
 #include "crosspad/sequencer/PatternSequencer.hpp"
-#include "crosspad/sequencer/SequenceStore.hpp"
 #include "crosspad/sequencer/SequencerController.hpp"
+#include "crosspad/song/SongScenes.hpp"
 #include "pc_stubs/pc_platform.h"
 
 #include "FreeRTOS.h"
 #include "task.h"
 
+#include <cstdio>
 #include <string>
 
 namespace {
@@ -25,7 +26,6 @@ crosspad::MetronomeNode s_metronome;
 crosspad::PatternSequencer s_sequencer;
 crosspad::SequencerController s_controller;
 
-constexpr const char* kScenesFile = "/crosspad/sequences.json";
 /// While a pattern or a count-in runs the poll is the jitter a fired hit
 /// inherits; idle it only decides how soon a transport start is noticed.
 constexpr uint32_t kPollLiveMs = 2;
@@ -51,25 +51,22 @@ void poll_task(void*)
     }
 }
 
-/// Read the scenes once a card is there, then write them back whenever they
-/// change -- never mid-take, and never over a file that did not read.
+void scenes_log(bool warning, const char* msg)
+{
+    std::printf("[seq_store]%s %s\n", warning ? " warning:" : "", msg);
+}
+
+/// The scenes as the open song's (core's SongScenes), as on the board.
+crosspad::SongScenes s_scenes(s_sequencer, scenes_log);
+
+/// Sweep while a card is in: the open song's scenes come in, changes go out.
 void store_task(void*)
 {
-    std::string file;
     for (;;) {
         vTaskDelay(pdMS_TO_TICKS(kStoreSweepMs));
-        if (pc_platform_get_sdcard_path().empty()) continue;
-        if (file.empty()) {
-            const std::string path = pc_platform_resolve_sdcard_path(kScenesFile);
-            if (crosspad::SequenceStore::open(s_sequencer, path) == crosspad::SequenceLoad::Unreadable) {
-                continue;
-            }
-            file = path;
-            s_sequencer.clearDirty();
-            continue;
-        }
-        if (!s_sequencer.dirty() || s_sequencer.isRecording()) continue;
-        if (crosspad::SequenceStore::save(s_sequencer, file)) s_sequencer.clearDirty();
+        const std::string root = pc_platform_get_sdcard_path();
+        if (root.empty()) continue;
+        s_scenes.sweep(root);
     }
 }
 
@@ -77,6 +74,12 @@ void store_task(void*)
 
 crosspad::MetronomeNode& getMetronome() { return s_metronome; }
 crosspad::PatternSequencer& getSequencer() { return s_sequencer; }
+
+namespace crosspad_pc {
+
+void sequencer_kit_changed(const std::string& kitJsonPath) { s_scenes.kitChanged(kitJsonPath); }
+
+} // namespace crosspad_pc
 
 namespace crosspad_pc {
 
