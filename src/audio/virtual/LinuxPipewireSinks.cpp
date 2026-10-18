@@ -17,6 +17,7 @@
 #include <thread>
 
 #include "IVirtualSinkManager.hpp"
+#include "../../InstanceEnv.hpp"
 
 #include <cerrno>
 #include <cstdio>
@@ -25,6 +26,7 @@
 #include <array>
 #include <map>
 #include <mutex>
+#include <set>
 #include <sstream>
 #include <string>
 #include <vector>
@@ -165,8 +167,8 @@ public:
         previousDefaultSink_ = readDefaultSink();
 
         for (uint32_t i = 0; i < sinkCount; ++i) {
-            const std::string sinkName = "crosspad_vin" + std::to_string(i + 1);
-            const std::string displayName = "CrossPad virtual IN#" + std::to_string(i + 1);
+            const std::string sinkName = instance::nodeName("crosspad_vin" + std::to_string(i + 1));
+            const std::string displayName = instance::description("CrossPad virtual IN#" + std::to_string(i + 1));
 
             // pactl's sink_properties= parser splits the value on the first
             // ASCII space and silently discards the rest — neither double nor
@@ -272,8 +274,23 @@ public:
     }
 
 private:
+    /// True when the module's arguments name one of THIS instance's sinks:
+    /// "sink_name=crosspad_vin<N><suffix>" followed by a space or the end.
+    /// Another instance's sinks (a different suffix, or none) are not ours.
+    static bool ownsModuleLine(const std::string& line) {
+        for (uint32_t n = 1; n <= 2; ++n) {
+            const std::string want =
+                "sink_name=" + instance::nodeName("crosspad_vin" + std::to_string(n));
+            const size_t at = line.find(want);
+            if (at == std::string::npos) continue;
+            const size_t end = at + want.size();
+            if (end == line.size() || line[end] == ' ' || line[end] == '\t') return true;
+        }
+        return false;
+    }
+
     /**
-     * Remove any crosspad_vin* modules left over from a prior crashed run.
+     * Remove this instance's crosspad_vin* modules left over from a prior crashed run.
      * Parses `pactl list modules short` looking for module-null-sink rows
      * whose arguments reference a crosspad_vin sink_name.
      */
@@ -287,7 +304,7 @@ private:
         while (std::getline(ss, line)) {
             // Format: <id>\tmodule-null-sink\t<args>
             if (line.find("module-null-sink") == std::string::npos) continue;
-            if (line.find("crosspad_vin") == std::string::npos) continue;
+            if (!ownsModuleLine(line)) continue;
             size_t tab = line.find('\t');
             if (tab == std::string::npos) continue;
             std::string idStr = line.substr(0, tab);
@@ -440,6 +457,28 @@ std::vector<PulseSinkInfo> enumeratePulseSinks(bool includeUnavailable) {
 
 static bool tryMovePulseOutputToSink(int slot, const std::string& targetSinkName);
 
+/// Pulse client indexes (as `pactl list clients` numbers them) that belong to
+/// this process: "Client #N" followed by application.process.id = "<our pid>".
+static std::set<std::string> ownPulseClients() {
+    std::set<std::string> out;
+    const char* const argv[] = { "pactl", "list", "clients", nullptr };
+    PactlResult r = runPactl(argv);
+    if (r.exitCode != 0) return out;
+    const std::string ownPidLine =
+        "application.process.id = \"" + std::to_string(getpid()) + "\"";
+    std::istringstream ss(r.stdoutText);
+    std::string l, current;
+    while (std::getline(ss, l)) {
+        if (l.rfind("Client #", 0) == 0) {
+            current = l.substr(8);
+            trim(current);
+        } else if (!current.empty() && l.find(ownPidLine) != std::string::npos) {
+            out.insert(current);
+        }
+    }
+    return out;
+}
+
 bool movePulseOutputToSink(int slot, const std::string& targetSinkName) {
     if (slot < 0 || slot > 1 || targetSinkName.empty()) return false;
     return movePulseOutputToSinkWithin(slot, targetSinkName, 1500);
@@ -462,24 +501,30 @@ bool movePulseOutputToSinkWithin(int slot, const std::string& targetSinkName,
 }
 
 static bool tryMovePulseOutputToSink(int slot, const std::string& targetSinkName) {
-    // Find CrossPad sink-inputs in creation order. PulseAudio assigns IDs
-    // monotonically per session, so the first ID belongs to OUT1, the second
-    // to OUT2.
+    // Find THIS process's sink-inputs in creation order. PulseAudio assigns IDs
+    // monotonically per session, so the first ID belongs to OUT1, the second to
+    // OUT2. Matching on the application name alone would also match another
+    // CrossPad running on the desktop -- a test instance beside a user's would
+    // move the user's output -- so the stream's client must be one of ours.
+    // The stream carries no pid itself; its client does.
     const char* const argvList[] = { "pactl", "list", "sink-inputs", nullptr };
     PactlResult r = runPactl(argvList);
     if (r.exitCode != 0) return false;
 
+    const std::set<std::string> ownClients = ownPulseClients();
     std::vector<std::string> crosspadInputIds;
     {
         std::istringstream ss(r.stdoutText);
         std::string l, currentId;
         bool isCrossPad = false;
+        bool isOurs = false;
         auto flush = [&]() {
-            if (isCrossPad && !currentId.empty()) {
+            if (isCrossPad && isOurs && !currentId.empty()) {
                 crosspadInputIds.push_back(currentId);
             }
             currentId.clear();
             isCrossPad = false;
+            isOurs = false;
         };
         while (std::getline(ss, l)) {
             if (!l.empty() && l.back() == '\r') l.pop_back();
@@ -499,6 +544,11 @@ static bool tryMovePulseOutputToSink(int slot, const std::string& targetSinkName
                 l.find("application.name = \"PipeWire ALSA [CrossPad]\"") != std::string::npos ||
                 l.find("application.name = \"ALSA plug-in [CrossPad]\"") != std::string::npos) {
                 isCrossPad = true;
+            }
+            if (l.find("Client: ") != std::string::npos) {
+                std::string c = l.substr(l.find("Client: ") + 8);
+                trim(c);
+                if (ownClients.count(c)) isOurs = true;
             }
         }
         flush();

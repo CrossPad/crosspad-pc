@@ -71,6 +71,7 @@
 #include "audio/PcAudio.hpp"
 #include "audio/PcAudioInput.hpp"
 #include "audio/PcAudioModule.hpp"
+#include "InstanceEnv.hpp"
 #include "audio/audio_platform.hpp"
 #include "audio/sampler/PcInstrumentHost.hpp"
 #include "audio/sampler/PcPitchedPort.hpp"
@@ -1025,8 +1026,11 @@ void crosspad_app_init()
         }
     };
 
-    openOutputSlot(pcAudio,  0, s_devicePrefs.audioOut1, s_devicePrefs.audioOut1Pa);
-    openOutputSlot(pcAudio2, 1, s_devicePrefs.audioOut2, s_devicePrefs.audioOut2Pa);
+    // CROSSPAD_AUDIO=off: no device is opened at all (see InstanceEnv.hpp).
+    if (crosspad_pc::instance::audioEnabled()) {
+        openOutputSlot(pcAudio,  0, s_devicePrefs.audioOut1, s_devicePrefs.audioOut1Pa);
+        openOutputSlot(pcAudio2, 1, s_devicePrefs.audioOut2, s_devicePrefs.audioOut2Pa);
+    }
     pc_platform_set_audio_output_2(&pcAudio2);
 
     // ── Audio IN1/IN2: auto-connect saved devices ──
@@ -1039,7 +1043,8 @@ void crosspad_app_init()
     // Create OS-visible virtual sinks ("CrossPad virtual IN#1/#2") that other
     // apps and DAWs can route audio to. RtAudio's monitor-source discovery
     // runs afterwards — the sinks must exist before enumerateAudioInputDevices.
-    s_virtualSinkManager = crosspad_pc::makeVirtualSinkManager();
+    if (crosspad_pc::instance::audioEnabled())
+        s_virtualSinkManager = crosspad_pc::makeVirtualSinkManager();
     if (s_virtualSinkManager) {
         if (!s_virtualSinkManager->setup(2)) {
             printf("[VirtSink] Virtual sinks not available: %s\n",
@@ -1065,7 +1070,7 @@ void crosspad_app_init()
             crosspad::IAudioInput* nativeIn1 = s_virtualSinkManager->input(0);
             crosspad::IAudioInput* nativeIn2 = s_virtualSinkManager->input(1);
             if (nativeIn1) {
-                printf("[Audio] IN1 connected to native virtual sink (crosspad_vin1)\n");
+                printf("[Audio] IN1 connected to native virtual sink (%s)\n", crosspad_pc::instance::nodeName("crosspad_vin1").c_str());
                 pc_platform_set_audio_input(0, nativeIn1);
                 in1Virtual = true;
             } else if (sinks.size() >= 1) {
@@ -1078,7 +1083,7 @@ void crosspad_app_init()
                 }
             }
             if (nativeIn2) {
-                printf("[Audio] IN2 connected to native virtual sink (crosspad_vin2)\n");
+                printf("[Audio] IN2 connected to native virtual sink (%s)\n", crosspad_pc::instance::nodeName("crosspad_vin2").c_str());
                 pc_platform_set_audio_input(1, nativeIn2);
                 in2Virtual = true;
             } else if (sinks.size() >= 2) {
@@ -1101,7 +1106,9 @@ void crosspad_app_init()
         const bool in2Skip = false;
 #endif
 
-        auto inDevices = enumerateAudioInputDevices();
+        auto inDevices = crosspad_pc::instance::audioEnabled()
+                             ? enumerateAudioInputDevices()
+                             : decltype(enumerateAudioInputDevices()){};
         // Restore a saved IN pick. New prefs store the UI label (a PipeWire
         // description); prefs written before that stored the raw RtAudio name.
         // Try the raw match first for back-compat, then resolve the label
@@ -1127,15 +1134,22 @@ void crosspad_app_init()
                 return;
             }
         };
-        if (!in1Skip) restoreInSlot(pcAudioIn1, 0, s_devicePrefs.audioIn1);
-        if (!in2Skip) restoreInSlot(pcAudioIn2, 1, s_devicePrefs.audioIn2);
+        if (crosspad_pc::instance::audioEnabled()) {
+            if (!in1Skip) restoreInSlot(pcAudioIn1, 0, s_devicePrefs.audioIn1);
+            if (!in2Skip) restoreInSlot(pcAudioIn2, 1, s_devicePrefs.audioIn2);
+        }
     }
 
 #ifdef USE_PIPEWIRE
     // Make CrossPad IN#1 the system default sink so audio from other apps
     // flows into the mixer without manual routing. Only when the native PW
     // backend is active (input(0) != nullptr) and the pref allows it.
-    const bool pwTakeoverWillRun = s_devicePrefs.pwTakeoverDefault &&
+    // Only the primary instance takes the desktop's default sink: a test
+    // instance (CROSSPAD_INSTANCE / CROSSPAD_AUDIO) must leave it, and the
+    // crash-recovery marker, alone.
+    const bool pwMayTouchDefault = crosspad_pc::instance::defaultSinkTakeoverAllowed();
+    const bool pwTakeoverWillRun = pwMayTouchDefault &&
+                                   s_devicePrefs.pwTakeoverDefault &&
                                    s_virtualSinkManager &&
                                    s_virtualSinkManager->input(0) != nullptr;
     if (pwTakeoverWillRun) {
@@ -1144,13 +1158,13 @@ void crosspad_app_init()
         // still our own sink), is what we must eventually restore.
         if (!s_devicePrefs.pwPrevDefaultSink.empty())
             s_pwGuard.setPreviousSink(s_devicePrefs.pwPrevDefaultSink);
-        if (s_pwGuard.takeover("crosspad_vin1")) {
+        if (s_pwGuard.takeover(crosspad_pc::instance::nodeName("crosspad_vin1").c_str())) {
             s_devicePrefs.pwPrevDefaultSink = s_pwGuard.previousSink();
             saveDevicePrefs();
             printf("[Audio] system default sink -> CrossPad IN#1 (was: %s)\n",
                    s_devicePrefs.pwPrevDefaultSink.c_str());
         }
-    } else if (!s_devicePrefs.pwPrevDefaultSink.empty()) {
+    } else if (pwMayTouchDefault && !s_devicePrefs.pwPrevDefaultSink.empty()) {
         // Takeover is NOT running this launch (pref off, or native PW backend
         // unavailable) but a previous run left a crash-recovery marker — the
         // configured default sink is still pointed at our virtual sink. Do a
@@ -1313,7 +1327,10 @@ void crosspad_app_init()
         // capture directly. Attach as the module's aux stream (OUT1 tap) only
         // after the source connects; setAuxStream stores a non-owning pointer
         // read by the audio thread.
-        if (s_pwSource.start("crosspad_out", "CrossPad Out", cfg.sampleRate)) {
+        if (crosspad_pc::instance::audioEnabled() &&
+            s_pwSource.start(crosspad_pc::instance::nodeName("crosspad_out").c_str(),
+                             crosspad_pc::instance::description("CrossPad Out").c_str(),
+                             cfg.sampleRate)) {
             s_audioModule.setAuxStream(&s_pwSource);
             printf("[Audio] OUT1 tap -> virtual source 'CrossPad Out' @ %u Hz\n",
                    cfg.sampleRate);
