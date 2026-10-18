@@ -8,7 +8,9 @@
  */
 
 #include "EmuSdCardSlot.hpp"
+#include "pc_stubs/GuiThread.hpp"
 #include <cstdio>
+#include <thread>
 
 // Windows COM headers for folder picker dialog (after LVGL to avoid macro conflicts)
 #ifdef _WIN32
@@ -141,15 +143,30 @@ void EmuSdCardSlot::onSlotClicked(lv_event_t* e)
         self->setMounted(false);
         if (self->onUnmount_) self->onUnmount_();
         printf("[SDCard] Unmounted by user\n");
-    } else {
-        // Not mounted — open folder picker
-        std::string folder = openFolderDialog();
-        if (!folder.empty()) {
-            self->setMounted(true, folder);
-            if (self->onMount_) self->onMount_(folder);
-            printf("[SDCard] Mounted by user: %s\n", folder.c_str());
-        }
+    } else if (!self->picking_) {
+        // Not mounted — open the folder picker. On a thread of its own: the
+        // dialog is modal to the user, not to the simulator, and on the LVGL
+        // thread it froze the UI, the drawn LEDs and the control port (every
+        // command timed out) for as long as it stayed open.
+        self->picking_ = true;
+        std::thread([self]() {
+            auto* picked = new Picked{self, openFolderDialog()};
+            pc_gui::post([](void* ud) {
+                auto* p = static_cast<Picked*>(ud);
+                p->slot->onFolderPicked(p->folder);
+                delete p;
+            }, picked);
+        }).detach();
     }
+}
+
+void EmuSdCardSlot::onFolderPicked(const std::string& folder)
+{
+    picking_ = false;
+    if (folder.empty() || mounted_) return;
+    setMounted(true, folder);
+    if (onMount_) onMount_(folder);
+    printf("[SDCard] Mounted by user: %s\n", folder.c_str());
 }
 
 /* ── Win32 folder picker dialog ──────────────────────────────────────── */
