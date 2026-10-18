@@ -66,6 +66,9 @@
 #endif
 #include "crosspad-gui/components/power_gesture.h"
 #include "crosspad-gui/components/status_bar.h"
+#include "crosspad-gui/components/touch_gesture.h"
+#include "crosspad-gui/components/transport_bar.h"
+#include "crosspad-gui/platform/IGuiPlatform.h"
 #include "crosspad-gui/components/app_orchestrator.h"   // AppOrchestrator — app_list
 #include "crosspad_app.hpp"                              // crosspad_app_start() — app_start
 
@@ -309,7 +312,7 @@ static std::string handle_click(const std::string& json) {
     if (holdMs > 5000) holdMs = 5000;
 
     // LVGL coordinates are the layout's; SDL event coordinates are those times
-    // the window zoom, which is what lv_sdl_mouse divides by.
+    // the window zoom, which is what the mouse driver in hal.c divides by.
     const float zoom = lv_sdl_window_get_zoom(s_disp);
     int lx, ly;
     if (space == "lcd") {
@@ -387,6 +390,135 @@ static std::string handle_click(const std::string& json) {
            json_bool("in_lcd", inLcd) + "," +
            json_int("hold_ms", holdMs) + "," +
            "\"hit\":" + hitJson + "}";
+}
+
+/* A drag with the mouse, the board's finger: press at (x1,y1), move to
+ * (x2,y2) in `steps` even steps over `ms`, rest there `rest_ms`, release.
+ * The same SDL events a real mouse makes, so LVGL's scrolling, its momentum
+ * and the swipe recogniser on the indev all see an ordinary drag. A rest
+ * longer than LVGL's momentum window lets go without a flick. The reply comes
+ * at once; the drag takes ms + rest_ms after it. */
+struct DragJob {
+    Uint32 windowId;
+    int x1, y1, x2, y2;   // window pixels
+    int steps, step = 0;
+    uint32_t restMs;
+};
+
+static void drag_push(Uint32 type, Uint32 windowId, int x, int y) {
+    SDL_Event ev = {};
+    ev.type = type;
+    if (type == SDL_MOUSEMOTION) {
+        ev.motion.windowID = windowId;
+        ev.motion.state = SDL_BUTTON_LMASK;
+        ev.motion.x = x;
+        ev.motion.y = y;
+    } else {
+        ev.button.windowID = windowId;
+        ev.button.button = SDL_BUTTON_LEFT;
+        ev.button.state = type == SDL_MOUSEBUTTONDOWN ? SDL_PRESSED : SDL_RELEASED;
+        ev.button.x = x;
+        ev.button.y = y;
+        ev.button.clicks = 1;
+    }
+    SDL_PushEvent(&ev);
+}
+
+static void drag_release_cb(lv_timer_t* t) {
+    auto* job = static_cast<DragJob*>(lv_timer_get_user_data(t));
+    drag_push(SDL_MOUSEBUTTONUP, job->windowId, job->x2, job->y2);
+    delete job;
+}
+
+static void drag_step_cb(lv_timer_t* t) {
+    auto* job = static_cast<DragJob*>(lv_timer_get_user_data(t));
+    job->step++;
+    const int x = job->x1 + (job->x2 - job->x1) * job->step / job->steps;
+    const int y = job->y1 + (job->y2 - job->y1) * job->step / job->steps;
+    drag_push(SDL_MOUSEMOTION, job->windowId, x, y);
+    if (job->step < job->steps) return;
+    lv_timer_delete(t);
+    if (job->restMs == 0) {
+        drag_push(SDL_MOUSEBUTTONUP, job->windowId, job->x2, job->y2);
+        delete job;
+        return;
+    }
+    lv_timer_t* up = lv_timer_create(drag_release_cb, job->restMs, job);
+    lv_timer_set_repeat_count(up, 1);
+}
+
+static std::string handle_drag(const std::string& json) {
+    const int x1 = json_get_int(json, "x1", -1), y1 = json_get_int(json, "y1", -1);
+    const int x2 = json_get_int(json, "x2", -1), y2 = json_get_int(json, "y2", -1);
+    if (x1 < 0 || y1 < 0 || x2 < 0 || y2 < 0) {
+        return "{" + json_bool("ok", false) + "," + json_string("error", "missing x1/y1/x2/y2") + "}";
+    }
+    std::string space = json_get_string(json, "space");
+    if (space.empty()) space = "lcd";
+    if (space != "lcd" && space != "window") {
+        return "{" + json_bool("ok", false) + "," +
+               json_string("error", "space must be lcd or window") + "}";
+    }
+    int ms = json_get_int(json, "ms", 200);
+    if (ms < 10) ms = 10;
+    if (ms > 5000) ms = 5000;
+    int steps = json_get_int(json, "steps", 0);
+    if (steps <= 0) steps = ms / 15;   // the board's panel reports every ~13 ms
+    if (steps < 1) steps = 1;
+    if (steps > 200) steps = 200;
+    int restMs = json_get_int(json, "rest_ms", 0);
+    if (restMs < 0) restMs = 0;
+    if (restMs > 5000) restMs = 5000;
+
+    const float zoom = lv_sdl_window_get_zoom(s_disp);
+    auto toWindow = [&](int x, int y, int& wx, int& wy) {
+        if (space == "lcd") {
+            wx = (int)((x + Stm32EmuWindow::LCD_X) * zoom);
+            wy = (int)((y + Stm32EmuWindow::LCD_Y) * zoom);
+        } else {
+            wx = x;
+            wy = y;
+        }
+    };
+    auto* job = new DragJob{};
+    job->windowId = SDL_GetWindowID(lv_sdl_window_get_window(s_disp));
+    toWindow(x1, y1, job->x1, job->y1);
+    toWindow(x2, y2, job->x2, job->y2);
+    job->steps = steps;
+    job->restMs = (uint32_t)restMs;
+
+    drag_push(SDL_MOUSEMOTION, job->windowId, job->x1, job->y1);
+    drag_push(SDL_MOUSEBUTTONDOWN, job->windowId, job->x1, job->y1);
+    lv_timer_create(drag_step_cb, (uint32_t)(ms / steps > 0 ? ms / steps : 1), job);
+
+    return "{" + json_bool("ok", true) + "," +
+           json_string("space", space) + "," +
+           json_int("ms", ms) + "," + json_int("steps", steps) + "," +
+           json_int("rest_ms", restMs) + "}";
+}
+
+/* The top row: which of the two bars is the page the encoder works on, where
+ * the row rests, the drawer, the encoder's focus and the last swipe -- what a
+ * drag test checks instead of reading pixels. */
+static std::string handle_top_bar() {
+    lv_indev_t* nav = crosspad_gui::getGuiPlatform().getNavigationEncoder();
+    lv_group_t* g = nav ? lv_indev_get_group(nav) : nullptr;
+    lv_obj_t* focused = g ? lv_group_get_focused(g) : nullptr;
+    const char* focus = !focused ? "none"
+                      : focused == crosspad_gui::statusbar_get_arrow() ? "arrow"
+                      : crosspad_gui::transportbar_has_focus() ? "transport"
+                      : "screen";
+    lv_area_t fa = {};
+    if (focused) lv_obj_get_coords(focused, &fa);
+    return "{" + json_bool("ok", true) + "," +
+           "\"focus_at\":[" + std::to_string(fa.x1 - Stm32EmuWindow::LCD_X) + "," +
+           std::to_string(fa.y1 - Stm32EmuWindow::LCD_Y) + "]," +
+           json_bool("transport_shown", crosspad_gui::transportbar_shown()) + "," +
+           json_int("row_scroll", crosspad_gui::transportbar_row_scroll()) + "," +
+           json_bool("drawer_open", crosspad_gui::statusbar_drawer_is_open()) + "," +
+           json_string("focus", focus) + "," +
+           json_string("swipe_last", crosspad_gui::swipeDirName(crosspad_gui::touch_gesture_last())) + "," +
+           json_int("swipe_count", (int)crosspad_gui::touch_gesture_count()) + "}";
 }
 
 /* The power button. The firmware resolves both gestures in crosspad-gui, so
@@ -1088,6 +1220,12 @@ static std::string dispatch_command(const std::string& json) {
     }
     if (cmd == "click") {
         return handle_click(json);
+    }
+    if (cmd == "drag") {
+        return handle_drag(json);
+    }
+    if (cmd == "top_bar") {
+        return handle_top_bar();
     }
     if (cmd == "pad_press") {
         return handle_pad_press(json);

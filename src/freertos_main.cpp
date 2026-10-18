@@ -21,6 +21,7 @@
 #include "stm32_emu/Stm32EmuWindow.hpp"
 #include "crosspad_app.hpp"
 #include "remote/RemoteControl.hpp"
+#include "crosspad-gui/components/touch_gesture.h"
 
 #include "crosspad/app/AppVersions.hpp"
 
@@ -62,6 +63,15 @@ static void lvgl_task(void* pvParameters)
     lv_init();
     lv_display_t* disp = sdl_hal_init(Stm32EmuWindow::WIN_W, Stm32EmuWindow::WIN_H);
     crosspad_app_init();
+
+    /* The board's screen-wide swipes (display.h on the firmware), on the
+     * mouse. Only inside the drawn panel: a drag across the drawn pads below
+     * it is not a back gesture. */
+    crosspad_gui::SwipeConfig swipe;
+    swipe.area = { Stm32EmuWindow::LCD_X, Stm32EmuWindow::LCD_Y,
+                   Stm32EmuWindow::LCD_X + Stm32EmuWindow::LCD_W - 1,
+                   Stm32EmuWindow::LCD_Y + Stm32EmuWindow::LCD_H - 1 };
+    crosspad_gui::touch_gesture_attach(sdl_hal_get_mouse(), swipe);
 
     // Start remote control server (TCP localhost:19840) for MCP integration
     remote::start(disp);
