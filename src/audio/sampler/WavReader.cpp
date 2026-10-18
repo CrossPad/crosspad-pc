@@ -18,9 +18,9 @@ bool parse_header(FILE* f, WavInfo& out) {
     // WAVE_FORMAT_EXTENSIBLE (0xFFFE) carries the real tag in its subformat
     // GUID; for our purposes the sample layout in the common fields is
     // already what matters, so it is accepted like PCM.
-    if (l.audioFormat != 1 && l.audioFormat != 0xFFFE) return false;
+    if (l.format != 1 && l.format != 0xFFFE) return false;
     out.channels      = l.channels;
-    out.sampleRate    = l.sampleRate;
+    out.sampleRate    = l.rate;
     out.blockAlign    = l.blockAlign;
     out.bitsPerSample = l.bits;
     out.dataOffset    = l.dataOffset;

@@ -44,6 +44,7 @@ set(CORE_TEST_SOURCES
     ${PROJECT_SOURCE_DIR}/lib/crosspad-core/src/dsp/PitchDetector.cpp
     ${PROJECT_SOURCE_DIR}/lib/crosspad-core/src/dsp/FftResampler.cpp
     ${PROJECT_SOURCE_DIR}/lib/crosspad-core/src/instrument/WavPcm.cpp
+    ${PROJECT_SOURCE_DIR}/lib/crosspad-core/src/audio/WavLayout.cpp
     ${PROJECT_SOURCE_DIR}/lib/crosspad-core/src/instrument/SampleBank.cpp
     ${PROJECT_SOURCE_DIR}/lib/crosspad-core/src/instrument/PitchedInstrument.cpp
     ${PROJECT_SOURCE_DIR}/lib/crosspad-core/src/instrument/PitchedKitLoader.cpp
@@ -72,8 +73,9 @@ set(CORE_TEST_SOURCES
 # ── Audio pipeline sources (Tier 2 & 3 tests) ──
 set(AUDIO_TEST_SOURCES
     ${PROJECT_SOURCE_DIR}/src/apps/crosspad-mixer/src/AudioMixerEngine.cpp
-    # The mixer's output EQ lives in core.
+    # The mixer's output EQ and its DSP kernels live in core.
     ${PROJECT_SOURCE_DIR}/lib/crosspad-core/src/audio/OutputEq.cpp
+    ${PROJECT_SOURCE_DIR}/lib/crosspad-core/src/dsp/AudioKernels.cpp
     ${PROJECT_SOURCE_DIR}/src/audio/PcAudio.cpp
     ${PROJECT_SOURCE_DIR}/src/audio/PcAudioModule.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/audio/audio_test_stubs.cpp
