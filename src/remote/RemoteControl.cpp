@@ -948,6 +948,7 @@ static std::string handle_mix_lvl() {
 #ifdef REMOTE_HAS_MIXER
     auto& mx = getMixerEngine();
     std::string chans, outs;
+    crosspad::control::MixerTapLevel tap;
     crosspad::control::readMixerLevels(mx,
         [&](const crosspad::control::MixerChannelLevel& row) {
             if (!chans.empty()) chans += ",";
@@ -956,8 +957,9 @@ static std::string handle_mix_lvl() {
         [&](const crosspad::control::MixerOutputLevel& row) {
             if (!outs.empty()) outs += ",";
             outs += remote::controlJsonMixOutput(row);
-        });
-    return remote::controlJsonMixLevels(mx.numOutputs(), chans, outs);
+        },
+        [&](const crosspad::control::MixerTapLevel& row) { tap = row; });
+    return remote::controlJsonMixLevels(mx.numOutputs(), chans, outs, tap);
 #else
     return "{" + json_bool("ok", false) + "," +
            json_string("error", "mixer not built") + "}";

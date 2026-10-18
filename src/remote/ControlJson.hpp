@@ -40,8 +40,10 @@ std::string controlJsonLedState(const crosspad::control::LedState& st);
 std::string controlJsonMixChannel(const crosspad::control::MixerChannelLevel& row);
 /// One element of mix_lvl's "out" array.
 std::string controlJsonMixOutput(const crosspad::control::MixerOutputLevel& row);
-/// The whole mix_lvl reply around the rows above, each list comma-joined.
-std::string controlJsonMixLevels(uint8_t outputs, const std::string& channels, const std::string& outs);
+/// The whole mix_lvl reply around the rows above, each list comma-joined,
+/// and the pads tap's limiter.
+std::string controlJsonMixLevels(uint8_t outputs, const std::string& channels, const std::string& outs,
+                                 const crosspad::control::MixerTapLevel& tap);
 
 /// pitched_status: active, zones, roots, voices, steals, last note, bank size.
 std::string controlJsonPitchedStatus(const crosspad::control::PitchedStatus& st);

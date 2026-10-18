@@ -68,19 +68,24 @@ std::string controlJsonMixChannel(const MixerChannelLevel& row) {
            json_float("pk_l", row.peakL) + "," + json_float("pk_r", row.peakR) + "," +
            json_float("vol", row.volume) + "," +
            json_bool("mute", row.muted) + "," +
-           json_string("route", routes) + "}";
+           json_string("route", routes) + "," +
+           json_float("trim", row.trim) + "}";
 }
 
 std::string controlJsonMixOutput(const MixerOutputLevel& row) {
     return "{" + json_int("out", row.out) + "," +
            json_float("pk_l", row.peakL) + "," + json_float("pk_r", row.peakR) + "," +
            json_float("vol", row.volume) + "," +
-           json_bool("mute", row.muted) + "}";
+           json_bool("mute", row.muted) + "," +
+           json_float("lim", row.limit) + "," +
+           json_float("ceil", row.ceiling) + "}";
 }
 
-std::string controlJsonMixLevels(uint8_t outputs, const std::string& channels, const std::string& outs) {
+std::string controlJsonMixLevels(uint8_t outputs, const std::string& channels, const std::string& outs,
+                                 const MixerTapLevel& tap) {
     return "{" + json_bool("ok", true) + "," + json_int("outputs", outputs) +
-           ",\"channels\":[" + channels + "],\"out\":[" + outs + "]}";
+           ",\"channels\":[" + channels + "],\"out\":[" + outs + "]," +
+           json_float("tap_lim", tap.limit) + "}";
 }
 
 std::string controlJsonPitchedStatus(const PitchedStatus& st) {

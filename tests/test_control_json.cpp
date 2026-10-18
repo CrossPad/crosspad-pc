@@ -52,6 +52,7 @@ TEST_CASE("control json: mix_lvl", "[remote][control]") {
     a.volume = 1.0f;
     a.outputs = 2;
     a.routes = 0b01;
+    a.trim = 1.5f;
     MixerChannelLevel b;
     b.ch = 2;
     b.volume = 0.8f;
@@ -61,16 +62,21 @@ TEST_CASE("control json: mix_lvl", "[remote][control]") {
     MixerOutputLevel o0;
     o0.peakL = 0.125f;
     o0.volume = 1.0f;
+    o0.limit = 0.5f;
+    o0.ceiling = 0.9f;
     MixerOutputLevel o1;
     o1.out = 1;
     o1.volume = 0.5f;
     o1.muted = true;
     const std::string chans = remote::controlJsonMixChannel(a) + "," + remote::controlJsonMixChannel(b);
     const std::string outs = remote::controlJsonMixOutput(o0) + "," + remote::controlJsonMixOutput(o1);
-    CHECK(remote::controlJsonMixLevels(2, chans, outs) ==
+    MixerTapLevel tap;
+    tap.limit = 0.75f;
+    CHECK(remote::controlJsonMixLevels(2, chans, outs, tap) ==
           R"({"ok":true,"outputs":2,"channels":[{"ch":0,"name":"Sampler","pk_l":0.5,"pk_r":0.25,"vol":1,)"
-          R"("mute":false,"route":"10"},{"ch":2,"name":"","pk_l":0,"pk_r":0,"vol":0.8,"mute":true,"route":"01"}],)"
-          R"("out":[{"out":0,"pk_l":0.125,"pk_r":0,"vol":1,"mute":false},{"out":1,"pk_l":0,"pk_r":0,"vol":0.5,"mute":true}]})");
+          R"("mute":false,"route":"10","trim":1.5},{"ch":2,"name":"","pk_l":0,"pk_r":0,"vol":0.8,"mute":true,"route":"01","trim":0}],)"
+          R"("out":[{"out":0,"pk_l":0.125,"pk_r":0,"vol":1,"mute":false,"lim":0.5,"ceil":0.9},)"
+          R"({"out":1,"pk_l":0,"pk_r":0,"vol":0.5,"mute":true,"lim":1,"ceil":1}],"tap_lim":0.75})");
 }
 
 TEST_CASE("control json: mix_lvl rows read off the real mixer", "[remote][control]") {
@@ -90,9 +96,9 @@ TEST_CASE("control json: mix_lvl rows read off the real mixer", "[remote][contro
         [&](const MixerOutputLevel& row) { ++nout; if (!outs.empty()) outs += ","; outs += remote::controlJsonMixOutput(row); });
     CHECK(nch == 1);
     CHECK(nout == 2);
-    CHECK(chans == R"({"ch":0,"name":"SYNTH","pk_l":0,"pk_r":0,"vol":0.5,"mute":false,"route":"01"})");
+    CHECK(chans == R"({"ch":0,"name":"SYNTH","pk_l":0,"pk_r":0,"vol":0.5,"mute":false,"route":"01","trim":1})");
     CHECK(outs.find(R"({"out":1,"pk_l":0,"pk_r":0,)") != std::string::npos);
-    CHECK(outs.find(R"("mute":true})") != std::string::npos);
+    CHECK(outs.find(R"("mute":true,"lim":1,"ceil":0.98})") != std::string::npos);
 }
 
 TEST_CASE("control json: pitched_status", "[remote][control]") {
