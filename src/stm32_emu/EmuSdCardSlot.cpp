@@ -203,62 +203,63 @@ std::string EmuSdCardSlot::openFolderDialog()
     return result;
 }
 #elif defined(__linux__)
-#include <cerrno>
-#include <unistd.h>
+#include <cstdlib>
+#include "pc_stubs/PcSubprocess.hpp"
 /* ── Linux folder picker: zenity → kdialog fallback ─────────────────────
- * Blocking popen, same modality as the Win32 IFileDialog path. Both tools
- * are spawned with stderr silenced (GTK/Qt warnings) and their trailing
- * newline stripped. Empty result = cancelled or neither tool installed.
- *
- * The pipe is read with read(2) in a loop that retries on EINTR, not with
- * fgets(): the FreeRTOS POSIX port ticks this process with SIGALRM at 1 kHz
- * and installs the handler without SA_RESTART, so the first tick during the
- * dialog interrupted fgets() with nothing read, the stream was closed under
- * the picker (SIGPIPE, status 141) and every selection looked cancelled. */
-static std::string runPickerCommand(const char* cmd)
-{
-    FILE* pipe = popen(cmd, "r");
-    if (!pipe) return "";
-    const int fd = fileno(pipe);
-    char buf[1024];
-    std::string out;
-    for (;;) {
-        const ssize_t n = read(fd, buf, sizeof buf);
-        if (n > 0) { out.append(buf, static_cast<size_t>(n)); continue; }
-        if (n < 0 && errno == EINTR) continue;
-        break;
-    }
-    int status;
-    do { status = pclose(pipe); } while (status == -1 && errno == EINTR);
-    while (!out.empty() && (out.back() == '\n' || out.back() == '\r'))
-        out.pop_back();
-    // Non-zero exit = cancel (zenity: 1) or tool missing (127).
-    if (status != 0) return "";
-    return out;
-}
+ * Blocking, same modality as the Win32 IFileDialog path. Both tools are
+ * spawned with stderr silenced (GTK/Qt warnings) and their trailing newline
+ * stripped. Empty result = cancelled or neither tool installed. pc_proc
+ * reads the pipe retrying on EINTR: the FreeRTOS POSIX port ticks this
+ * process with SIGALRM at 1 kHz without SA_RESTART, and an fgets() that the
+ * first tick interrupted closed the stream under the picker (SIGPIPE, status
+ * 141) -- every selection looked cancelled. */
 
 /* A simulator started from a snap-packaged IDE (VS Code) inherits the snap's
  * LD_LIBRARY_PATH, GTK_* and glib schema/pixbuf paths; the host's zenity then
  * dies with "symbol lookup error ... GLIBC_PRIVATE" (status 127) before any
  * window appears. The picker is spawned with those unset, and the XDG dirs
  * put back from the *_VSCODE_SNAP_ORIG copies the snap launcher leaves. */
-static constexpr const char* kPickerEnvPrefix =
-    "env -u LD_LIBRARY_PATH -u LD_PRELOAD -u GTK_PATH -u GTK_EXE_PREFIX "
-    "-u GTK_IM_MODULE_FILE -u GIO_MODULE_DIR -u GSETTINGS_SCHEMA_DIR "
-    "-u GDK_PIXBUF_MODULE_FILE -u GDK_PIXBUF_MODULEDIR -u LOCPATH -u XDG_DATA_HOME "
-    "XDG_DATA_DIRS=\"${XDG_DATA_DIRS_VSCODE_SNAP_ORIG:-${XDG_DATA_DIRS:-/usr/local/share:/usr/share}}\" "
-    "XDG_CONFIG_DIRS=\"${XDG_CONFIG_DIRS_VSCODE_SNAP_ORIG:-${XDG_CONFIG_DIRS:-/etc/xdg}}\" ";
+static pc_proc::Options pickerOptions()
+{
+    auto envOr = [](const char* name, const char* fallback, const char* dflt) {
+        if (const char* v = std::getenv(name); v && *v) return std::string(v);
+        if (const char* v = std::getenv(fallback); v && *v) return std::string(v);
+        return std::string(dflt);
+    };
+    pc_proc::Options opt;
+    opt.unsetEnv = {"LD_LIBRARY_PATH", "LD_PRELOAD", "GTK_PATH", "GTK_EXE_PREFIX",
+                    "GTK_IM_MODULE_FILE", "GIO_MODULE_DIR", "GSETTINGS_SCHEMA_DIR",
+                    "GDK_PIXBUF_MODULE_FILE", "GDK_PIXBUF_MODULEDIR", "LOCPATH",
+                    "XDG_DATA_HOME"};
+    opt.setEnv = {
+        "XDG_DATA_DIRS=" + envOr("XDG_DATA_DIRS_VSCODE_SNAP_ORIG", "XDG_DATA_DIRS",
+                                 "/usr/local/share:/usr/share"),
+        "XDG_CONFIG_DIRS=" + envOr("XDG_CONFIG_DIRS_VSCODE_SNAP_ORIG", "XDG_CONFIG_DIRS",
+                                   "/etc/xdg"),
+    };
+    return opt;
+}
+
+static std::string runPicker(const std::vector<std::string>& argv)
+{
+    pc_proc::Result r = pc_proc::run(argv, pickerOptions());
+    // Non-zero exit = cancel (zenity: 1); not started = tool missing.
+    if (!r.started || r.exitCode != 0) return "";
+    while (!r.out.empty() && (r.out.back() == '\n' || r.out.back() == '\r'))
+        r.out.pop_back();
+    return r.out;
+}
 
 std::string EmuSdCardSlot::openFolderDialog()
 {
-    std::string dir = runPickerCommand((std::string(kPickerEnvPrefix) +
-        "zenity --file-selection --directory "
-        "--title='Select SD Card Working Directory' 2>/dev/null").c_str());
+    static const char* kTitle = "Select SD Card Working Directory";
+    std::string dir = runPicker({"zenity", "--file-selection", "--directory",
+                                 std::string("--title=") + kTitle});
     if (!dir.empty()) return dir;
 
-    dir = runPickerCommand((std::string(kPickerEnvPrefix) +
-        "kdialog --getexistingdirectory \"$HOME\" "
-        "--title 'Select SD Card Working Directory' 2>/dev/null").c_str());
+    const char* home = std::getenv("HOME");
+    dir = runPicker({"kdialog", "--getexistingdirectory", home ? home : "/",
+                     "--title", kTitle});
     if (!dir.empty()) return dir;
 
     printf("[SDCard] Folder picker: cancelled, or neither 'zenity' nor 'kdialog' "

@@ -16,6 +16,7 @@
 #include <crosspad/net/IHttpClient.hpp>
 #include <crosspad/platform/PlatformServices.hpp>
 #include "crosspad-gui/platform/IGuiPlatform.h"
+#include "crosspad_app.hpp"
 
 #include <ArduinoJson.h>
 #include <cstdio>
@@ -707,7 +708,9 @@ static void launchBatAndExit(const std::string& batPath)
         printf("[Updater] ERROR: Failed to launch script (error %lu)\n", GetLastError());
         return;
     }
-    // Terminate immediately — _exit() works from any thread and skips CRT cleanup
+    // What the OS does not clean up first; then _exit(), which works from any
+    // thread and skips CRT cleanup
+    crosspad_app_shutdown();
     _exit(0);
 }
 
@@ -752,8 +755,9 @@ std::string PcUpdater::getCachedMetadataJson(const std::string& version)
 #include <filesystem>
 #include <fstream>
 #include <sys/stat.h>
-#include <sys/wait.h>
 #include <unistd.h>
+
+#include "pc_stubs/PcSubprocess.hpp"
 
 namespace fs = std::filesystem;
 
@@ -808,20 +812,19 @@ static bool curlDownload(const std::string& url, const std::string& outputPath,
 {
     if (progressCb) progressCb(UpdateState::Downloading, 0, "Connecting...");
 
-    pid_t pid = fork();
-    if (pid == 0) {
-        execlp("curl", "curl", "-L", "-f", "-s",
-               "-o", outputPath.c_str(), url.c_str(), (char*)nullptr);
-        _exit(127);
-    }
+    /* Not fork() + execlp(): execlp() searches PATH and may allocate, and a
+     * fork()ed child of this many-threaded process may only make
+     * async-signal-safe calls before it execs. */
+    const pid_t pid = pc_proc::spawn({"curl", "-L", "-f", "-s", "-o", outputPath, url},
+                                     /*quiet=*/true, /*newSession=*/false);
     if (pid < 0) {
         if (progressCb) progressCb(UpdateState::Error, 0, "Failed to start download");
         return false;
     }
 
     // Poll file size for progress while curl downloads
-    int status;
-    while (waitpid(pid, &status, WNOHANG) == 0) {
+    int exitCode = -1;
+    while (!pc_proc::reap(pid, /*block=*/false, exitCode)) {
         if (expectedSize > 0 && progressCb) {
             std::error_code ec;
             if (fs::exists(outputPath, ec)) {
@@ -838,7 +841,7 @@ static bool curlDownload(const std::string& url, const std::string& outputPath,
         usleep(500000);
     }
 
-    if (!WIFEXITED(status) || WEXITSTATUS(status) != 0) {
+    if (exitCode != 0) {
         if (progressCb) progressCb(UpdateState::Error, 0, "Download failed");
         std::error_code ec;
         fs::remove(outputPath, ec);
@@ -1020,20 +1023,21 @@ static void cacheCurrentExe()
 
 /* ── Launch script and exit ─────────────────────────────────────────── */
 
+/* In a session of its own, so it outlives us; with none of our descriptors,
+ * so the CrossPad it starts can bind the control port again. The shutdown
+ * before we go puts the desktop's default sink back and the sinks away. */
 static void launchScriptAndExit(const std::string& scriptPath)
 {
-    pid_t pid = fork();
-    if (pid == 0) {
-        setsid();
-        execl("/bin/bash", "bash", scriptPath.c_str(), (char*)nullptr);
-        _exit(127);
+    const pid_t pid = pc_proc::spawn({"/bin/bash", scriptPath},
+                                     /*quiet=*/false, /*newSession=*/true);
+    if (pid < 0) {
+        printf("[Updater] ERROR: Failed to start the update script\n");
+        return;
     }
-    if (pid > 0) {
-        printf("[Updater] Update script launched (PID %d), exiting...\n", pid);
-        fflush(stdout);
-        _exit(0);
-    }
-    printf("[Updater] ERROR: Failed to fork for update script\n");
+    printf("[Updater] Update script launched (PID %d), exiting...\n", pid);
+    fflush(stdout);
+    crosspad_app_shutdown();
+    _exit(0);
 }
 
 void PcUpdater::installAndRestart()

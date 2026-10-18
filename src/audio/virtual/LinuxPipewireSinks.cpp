@@ -7,7 +7,7 @@
  * PipeWire through pipewire-pulse. The sinks' auto-generated .monitor
  * sources are then captured by CrossPad as IN1/IN2.
  *
- * We shell out to `pactl` (via posix_spawnp) instead of linking libpulse —
+ * We shell out to `pactl` (via pc_proc, posix_spawnp) instead of linking libpulse —
  * zero extra build deps and pactl ships on every distro with PA/PW.
  */
 
@@ -18,10 +18,8 @@
 
 #include "IVirtualSinkManager.hpp"
 
-#include <cerrno>
 #include <cstdio>
 #include <cstdlib>
-#include <cstring>
 #include <array>
 #include <map>
 #include <mutex>
@@ -29,14 +27,7 @@
 #include <string>
 #include <vector>
 
-#include <fcntl.h>
-#include <signal.h>
-#include <spawn.h>
-#include <unistd.h>
-#include <sys/wait.h>
-
-extern char** environ;
-#include <sys/types.h>
+#include "pc_stubs/PcSubprocess.hpp"
 
 namespace crosspad_pc {
 
@@ -47,90 +38,35 @@ struct PactlResult {
     std::string stdoutText;
 };
 
+/// A pactl that has not answered by then never will: the sound server is
+/// wedged, and a start or a shutdown waiting on it hung with it.
+constexpr int kPactlTimeoutMs = 5000;
+
 /**
  * Run pactl with the given argv (argv[0] must be "pactl").
  * argv must end with nullptr. Captures stdout, returns exit code.
  */
 PactlResult runPactl(const char* const argv[]) {
-    PactlResult r;
-
     /* Everything below parses pactl's human-readable output, which is
      * translated. In Polish a sink-input block opens with
      * "4685. odpływ wejścia" — no '#', and the id first — so the header
      * matcher never fired and CrossPad's own output stream could never be
      * found, let alone pinned. Ask for the untranslated output instead of
-     * trying to recognise every language.
-     *
-     * The environment is built here, in the parent. It used to be set with
-     * setenv() in a fork()ed child, and in a process with thirty threads the
-     * child of a fork() may only make async-signal-safe calls: setenv()
-     * allocates, and when any other thread held the allocator's lock at the
-     * moment of the fork the child waited for it forever — and so did this
-     * function, reading a pipe the child never closed. The simulator hung on
-     * about every other start that way, right after the audio thread came
-     * up. posix_spawnp() runs nothing of ours in the child. */
-    std::vector<std::string> envStore;
-    for (char** e = environ; e && *e; ++e) {
-        if (!strncmp(*e, "LC_ALL=", 7) || !strncmp(*e, "LANG=", 5) ||
-            !strncmp(*e, "LANGUAGE=", 9)) continue;
-        envStore.emplace_back(*e);
-    }
-    envStore.emplace_back("LC_ALL=C");
-    envStore.emplace_back("LANG=C");
-    std::vector<char*> envp;
-    for (auto& e : envStore) envp.push_back(e.data());
-    envp.push_back(nullptr);
-
-    int pipefd[2];
-    if (pipe2(pipefd, O_CLOEXEC) != 0) return r;
-
-    posix_spawn_file_actions_t fa;
-    posix_spawn_file_actions_init(&fa);
-    posix_spawn_file_actions_adddup2(&fa, pipefd[1], STDOUT_FILENO);
-    posix_spawn_file_actions_addopen(&fa, STDERR_FILENO, "/dev/null", O_WRONLY, 0);
-
-    /* The FreeRTOS POSIX port blocks and handles signals for its scheduling;
-     * pactl gets a clean slate. */
-    posix_spawnattr_t attr;
-    posix_spawnattr_init(&attr);
-    sigset_t none, all;
-    sigemptyset(&none);
-    sigfillset(&all);
-    posix_spawnattr_setsigmask(&attr, &none);
-    posix_spawnattr_setsigdefault(&attr, &all);
-    posix_spawnattr_setflags(&attr, POSIX_SPAWN_SETSIGMASK | POSIX_SPAWN_SETSIGDEF);
-
-    pid_t pid = -1;
-    const int rc = posix_spawnp(&pid, "pactl", &fa, &attr,
-                                const_cast<char* const*>(argv), envp.data());
-    posix_spawnattr_destroy(&attr);
-    posix_spawn_file_actions_destroy(&fa);
-    if (rc != 0) {
-        close(pipefd[0]);
-        close(pipefd[1]);
-        return r;
-    }
-
-    // Parent — read child stdout, then reap. Retry on EINTR: the FreeRTOS
-    // POSIX port delivers SIGALRM/SIGUSR1 for thread scheduling and will
-    // interrupt blocking syscalls, which would otherwise leave stdoutText
-    // empty even when the child wrote a valid module ID.
-    close(pipefd[1]);
-    char buf[256];
-    for (;;) {
-        ssize_t n = read(pipefd[0], buf, sizeof(buf));
-        if (n > 0) { r.stdoutText.append(buf, buf + n); continue; }
-        if (n == 0) break;
-        if (errno == EINTR) continue;
-        break;
-    }
-    close(pipefd[0]);
-
-    int status = 0;
-    while (waitpid(pid, &status, 0) < 0) {
-        if (errno != EINTR) break;
-    }
-    if (WIFEXITED(status)) r.exitCode = WEXITSTATUS(status);
+     * trying to recognise every language. pc_proc builds that environment
+     * in the parent and spawns without running anything of ours in the
+     * child (setenv() in a fork()ed child deadlocked the start, 47f6c4b). */
+    std::vector<std::string> args;
+    for (const char* const* a = argv; *a; ++a) args.emplace_back(*a);
+    pc_proc::Options opt;
+    opt.unsetEnv  = {"LANGUAGE"};
+    opt.setEnv    = {"LC_ALL=C", "LANG=C"};
+    opt.timeoutMs = kPactlTimeoutMs;
+    const pc_proc::Result pr = pc_proc::run(args, opt);
+    if (pr.timedOut) printf("[VirtSink] pactl %s: no answer in %d ms\n",
+                            args.size() > 1 ? args[1].c_str() : "", kPactlTimeoutMs);
+    PactlResult r;
+    r.exitCode   = pr.exitCode;
+    r.stdoutText = pr.out;
     return r;
 }
 
