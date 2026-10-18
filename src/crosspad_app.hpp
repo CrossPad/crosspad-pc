@@ -23,8 +23,9 @@ void crosspad_app_init();
 bool crosspad_app_tick();
 
 /// Release platform resources that must be cleaned up before exit
-/// (virtual audio sinks, RtAudio streams, etc.). Safe to call from
-/// signal handlers and atexit; idempotent.
+/// (virtual audio sinks, RtAudio streams, etc.). From any thread and from
+/// atexit, never from a signal handler (it locks, allocates and talks to
+/// PipeWire); idempotent.
 void crosspad_app_shutdown();
 
 /// Return to the launcher main screen (destroys running app, reloads launcher)

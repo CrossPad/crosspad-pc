@@ -23,6 +23,7 @@
 #include "remote/RemoteControl.hpp"
 #include "crosspad-gui/components/touch_gesture.h"
 #include "pc_stubs/GuiThread.hpp"
+#include "pc_stubs/ShutdownSignals.hpp"
 
 #include "crosspad/app/AppVersions.hpp"
 
@@ -109,6 +110,9 @@ int main(int argc, char** argv)
         printf("APPVER: end count=%zu\n", crosspad::appVersionCount());
         return 0;
     }
+
+    // Before the first thread: every thread inherits the mask it leaves.
+    pc_install_shutdown_signals();
 
     if (xTaskCreate(lvgl_task, "LVGL", 8192, NULL, 1, NULL) != pdPASS) {
         printf("Error creating LVGL task\n");

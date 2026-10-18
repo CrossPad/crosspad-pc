@@ -252,6 +252,7 @@ set(PC_STUB_SOURCES
     src/pc_stubs/PcPlatformStubs.cpp
     src/pc_stubs/PcHttpClient.cpp
     src/pc_stubs/GuiThread.cpp
+    src/pc_stubs/ShutdownSignals.cpp
 )
 
 # Windows application icon

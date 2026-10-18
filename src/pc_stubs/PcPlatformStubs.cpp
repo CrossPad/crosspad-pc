@@ -41,6 +41,7 @@
 // crosspad-core interfaces (BEFORE Windows.h to avoid ERROR macro conflict)
 #include "crosspad/platform/CrosspadPlatformInit.hpp"
 #include "pc_stubs/GuiThread.hpp"
+#include "crosspad_app.hpp"
 #include "crosspad/platform/PlatformServices.hpp"
 #include "crosspad/platform/PlatformCapabilities.hpp"
 #include "crosspad/platform/IClock.hpp"
@@ -314,9 +315,11 @@ public:
     void sendPowerOff() override {
         printf("[PC] Power off requested (exiting)\n");
         fflush(stdout);
+        // What the OS does not clean up -- the desktop's default sink, the
+        // pactl null-sinks -- before going, as the window's close does.
+        crosspad_app_shutdown();
         // _exit() skips CRT cleanup (atexit, thread join, static destructors)
         // which avoids abort() when detached std::threads are still running.
-        // OS cleans up all resources on process exit anyway.
         _exit(0);
     }
 

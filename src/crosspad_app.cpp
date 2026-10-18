@@ -85,7 +85,6 @@
 #include "audio/pipewire/PwVirtualSource.hpp"
 #include "audio/pipewire/PwVirtualSinkCapture.hpp"
 #endif
-#include <csignal>
 #endif
 #include "crosspad-gui/components/vu_meter.h"
 #include "crosspad/audio/PeakMeter.hpp"
@@ -1806,14 +1805,12 @@ void crosspad_app_init()
 {
 #if defined(USE_AUDIO) && defined(USE_VIRTUAL_AUDIO)
     /* Make sure virtual sinks get unloaded whatever the exit path.
-       SDL_QUIT calls crosspad_app_shutdown() directly; atexit and signals
-       catch the remaining cases (normal return, SIGINT, SIGTERM).
+       SDL_QUIT, Power off and the updater call crosspad_app_shutdown()
+       directly; SIGINT/SIGTERM go through pc_install_shutdown_signals()
+       (main()), atexit catches a normal return.
        kill -9 is unrecoverable — sinks will be cleaned up at next launch
        by LinuxPipewireSinks::cleanupStaleSinks(). */
     std::atexit(crosspad_app_shutdown);
-    auto sigHandler = [](int sig) { crosspad_app_shutdown(); std::signal(sig, SIG_DFL); std::raise(sig); };
-    std::signal(SIGINT,  sigHandler);
-    std::signal(SIGTERM, sigHandler);
 #endif
 
     /* Platform stubs (event bus, settings, pad manager, GUI) */
