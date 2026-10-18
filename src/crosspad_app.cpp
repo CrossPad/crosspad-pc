@@ -227,6 +227,21 @@ struct DevicePreferences {
 };
 
 static DevicePreferences s_devicePrefs;
+/* The preferences are written from the LVGL thread (jack panel, SD slot,
+ * BLE), the audio-device workers and the control port's thread (device
+ * picks), the boot worker and the shutdown. Every write and every save
+ * holds this; a save that read a string another thread was assigning, or
+ * two saves writing the file at once, was a crash or a torn JSON that
+ * dropped every preference at the next start. */
+static std::recursive_mutex s_prefsMutex;
+
+/// Change the preferences in memory, from any thread; saveDevicePrefs()
+/// writes them out.
+template <typename F>
+static void setDevicePrefs(F&& change) {
+    std::lock_guard<std::recursive_mutex> lock(s_prefsMutex);
+    change(s_devicePrefs);
+}
 
 static std::string getDevicePrefsPath() {
     const char* dir = pc_platform_get_profile_dir();
@@ -278,6 +293,7 @@ static void loadDevicePrefs() {
 }
 
 static void saveDevicePrefs() {
+    std::lock_guard<std::recursive_mutex> lock(s_prefsMutex);
     std::string path = getDevicePrefsPath();
     JsonDocument doc;
     doc["audio_out1"] = s_devicePrefs.audioOut1;
@@ -296,12 +312,26 @@ static void saveDevicePrefs() {
     doc["pw_takeover_default"]  = s_devicePrefs.pwTakeoverDefault;
     doc["pw_prev_default_sink"] = s_devicePrefs.pwPrevDefaultSink;
 
-    std::ofstream f(path);
-    if (!f.is_open()) {
-        printf("[DevPrefs] Failed to write %s\n", path.c_str());
+    // Beside it, then over it: a process killed mid-write leaves the old file.
+    const std::string tmp = path + ".tmp";
+    {
+        std::ofstream f(tmp);
+        if (!f.is_open()) {
+            printf("[DevPrefs] Failed to write %s\n", tmp.c_str());
+            return;
+        }
+        serializeJsonPretty(doc, f);
+        if (!f.flush()) {
+            printf("[DevPrefs] Failed to write %s\n", tmp.c_str());
+            return;
+        }
+    }
+    std::error_code ec;
+    std::filesystem::rename(tmp, path, ec);
+    if (ec) {
+        printf("[DevPrefs] Failed to replace %s: %s\n", path.c_str(), ec.message().c_str());
         return;
     }
-    serializeJsonPretty(doc, f);
     printf("[DevPrefs] Saved to %s\n", path.c_str());
 }
 
@@ -508,8 +538,10 @@ static bool appAudioOutSelectIdx(int slot, int uiIndex, std::string& outLabel) {
     if (uiIndex <= 0) {
         output.end();
         outLabel.clear();
-        if (slot == 0) { s_devicePrefs.audioOut1.clear(); s_devicePrefs.audioOut1Pa.clear(); }
-        else           { s_devicePrefs.audioOut2.clear(); s_devicePrefs.audioOut2Pa.clear(); }
+        setDevicePrefs([&](DevicePreferences& p) {
+            if (slot == 0) { p.audioOut1.clear(); p.audioOut1Pa.clear(); }
+            else           { p.audioOut2.clear(); p.audioOut2Pa.clear(); }
+        });
         saveDevicePrefs();
         return false;
     }
@@ -521,8 +553,10 @@ static bool appAudioOutSelectIdx(int slot, int uiIndex, std::string& outLabel) {
         output.switchDevice(sel.rtAudioId);
         connected = output.isOpen();
         outLabel = output.getCurrentDeviceName();
-        if (slot == 0) { s_devicePrefs.audioOut1 = outLabel; s_devicePrefs.audioOut1Pa.clear(); }
-        else           { s_devicePrefs.audioOut2 = outLabel; s_devicePrefs.audioOut2Pa.clear(); }
+        setDevicePrefs([&](DevicePreferences& p) {
+            if (slot == 0) { p.audioOut1 = outLabel; p.audioOut1Pa.clear(); }
+            else           { p.audioOut2 = outLabel; p.audioOut2Pa.clear(); }
+        });
     }
 #if defined(USE_VIRTUAL_AUDIO)
     else {
@@ -540,8 +574,10 @@ static bool appAudioOutSelectIdx(int slot, int uiIndex, std::string& outLabel) {
         if (crosspad_pc::movePulseOutputToSink(slot, sel.paSinkName)) {
             connected = true;
             outLabel = sel.label;
-            if (slot == 0) { s_devicePrefs.audioOut1 = sel.label; s_devicePrefs.audioOut1Pa = sel.paSinkName; }
-            else           { s_devicePrefs.audioOut2 = sel.label; s_devicePrefs.audioOut2Pa = sel.paSinkName; }
+            setDevicePrefs([&](DevicePreferences& p) {
+                if (slot == 0) { p.audioOut1 = sel.label; p.audioOut1Pa = sel.paSinkName; }
+                else           { p.audioOut2 = sel.label; p.audioOut2Pa = sel.paSinkName; }
+            });
         }
     }
 #endif
@@ -562,7 +598,9 @@ static bool appAudioInSelectIdx(int slot, int uiIndex, std::string& outLabel) {
     if (uiIndex <= 0) {
         outLabel.clear();
         pc_platform_set_audio_input(slot, nullptr);
-        if (slot == 0) s_devicePrefs.audioIn1.clear(); else s_devicePrefs.audioIn2.clear();
+        setDevicePrefs([&](DevicePreferences& p) {
+            if (slot == 0) p.audioIn1.clear(); else p.audioIn2.clear();
+        });
         saveDevicePrefs();
         return false;
     }
@@ -575,7 +613,9 @@ static bool appAudioInSelectIdx(int slot, int uiIndex, std::string& outLabel) {
         connected = input.isOpen();
         if (connected) pc_platform_set_audio_input(slot, &input);
         outLabel = sel.label;   // store the shown label, not the raw device id
-        if (slot == 0) s_devicePrefs.audioIn1 = sel.label; else s_devicePrefs.audioIn2 = sel.label;
+        setDevicePrefs([&](DevicePreferences& p) {
+            if (slot == 0) p.audioIn1 = sel.label; else p.audioIn2 = sel.label;
+        });
     }
     else if (sel.isVirtual) {
         uint32_t rate = pcAudio.isOpen() ? pcAudio.getSampleRate() : 44100;
@@ -584,7 +624,9 @@ static bool appAudioInSelectIdx(int slot, int uiIndex, std::string& outLabel) {
             connected = true;
             outLabel = sel.label;
             pc_platform_set_audio_input(slot, cap);
-            if (slot == 0) s_devicePrefs.audioIn1 = sel.label; else s_devicePrefs.audioIn2 = sel.label;
+            setDevicePrefs([&](DevicePreferences& p) {
+                if (slot == 0) p.audioIn1 = sel.label; else p.audioIn2 = sel.label;
+            });
         }
     }
     saveDevicePrefs();
@@ -927,7 +969,7 @@ static void boot_devices()
                 auto* st = crosspad::getPlatformServices().status;
                 if (st) st->bluetoothConnected = d->connected;
                 if (d->connected) {
-                    s_devicePrefs.bleDevice = d->address;
+                    setDevicePrefs([&](DevicePreferences& p) { p.bleDevice = d->address; });
                     saveDevicePrefs();
                 }
                 delete d;
@@ -992,9 +1034,19 @@ static void boot_devices()
     };
 
     {
-        BootUnlocked unlocked;
-        openOutputSlot(pcAudio,  0, s_devicePrefs.audioOut1, s_devicePrefs.audioOut1Pa);
-        openOutputSlot(pcAudio2, 1, s_devicePrefs.audioOut2, s_devicePrefs.audioOut2Pa);
+        // On copies: the opens take a while and the preferences are not
+        // held across them (setDevicePrefs).
+        DevicePreferences prefs;
+        setDevicePrefs([&](DevicePreferences& p) { prefs = p; });
+        {
+            BootUnlocked unlocked;
+            openOutputSlot(pcAudio,  0, prefs.audioOut1, prefs.audioOut1Pa);
+            openOutputSlot(pcAudio2, 1, prefs.audioOut2, prefs.audioOut2Pa);
+        }
+        setDevicePrefs([&](DevicePreferences& p) {
+            p.audioOut1 = prefs.audioOut1; p.audioOut1Pa = prefs.audioOut1Pa;
+            p.audioOut2 = prefs.audioOut2; p.audioOut2Pa = prefs.audioOut2Pa;
+        });
     }
     pc_platform_set_audio_output_2(&pcAudio2);
 
@@ -1120,7 +1172,7 @@ static void boot_devices()
             if (!s_devicePrefs.pwPrevDefaultSink.empty())
                 s_pwGuard.setPreviousSink(s_devicePrefs.pwPrevDefaultSink);
             if (s_pwGuard.takeover("crosspad_vin1")) {
-                s_devicePrefs.pwPrevDefaultSink = s_pwGuard.previousSink();
+                setDevicePrefs([](DevicePreferences& p) { p.pwPrevDefaultSink = s_pwGuard.previousSink(); });
                 saveDevicePrefs();
                 printf("[Audio] system default sink -> CrossPad IN#1 (was: %s)\n",
                        s_devicePrefs.pwPrevDefaultSink.c_str());
@@ -1135,7 +1187,7 @@ static void boot_devices()
             if (s_pwGuard.restoreStale(s_devicePrefs.pwPrevDefaultSink)) {
                 printf("[Audio] restored stale default sink -> %s (no takeover)\n",
                        s_devicePrefs.pwPrevDefaultSink.c_str());
-                s_devicePrefs.pwPrevDefaultSink.clear();
+                setDevicePrefs([](DevicePreferences& p) { p.pwPrevDefaultSink.clear(); });
                 saveDevicePrefs();
             }
         }
@@ -1541,7 +1593,7 @@ static void boot_finish()
                     PcUart::CROSSPAD_VID, PcUart::CROSSPAD_PID);
                 for (auto& port : crosspadPorts) {
                     if (pcUart.open(port, baud)) {
-                        s_devicePrefs.uartPort = port;
+                        setDevicePrefs([&](DevicePreferences& p) { p.uartPort = port; });
                         saveDevicePrefs();
                         printf("[USB] Auto-connected CrossPad on %s\n", port.c_str());
                         connected = true;
@@ -1604,7 +1656,7 @@ static void boot_finish()
                     printf("[JackPanel] MIDI OUT disconnected\n");
                     jp.setConnected(EmuJackPanel::MIDI_OUT, false);
                     jp.setDeviceName(EmuJackPanel::MIDI_OUT, "");
-                    s_devicePrefs.midiOut.clear();
+                    setDevicePrefs([&](DevicePreferences& p) { p.midiOut.clear(); });
                 } else {
                     unsigned int newOut = deviceIndex - 1;
                     // Preserve current input port
@@ -1615,7 +1667,7 @@ static void boot_finish()
                     if (midi.isOutputOpen()) {
                         std::string name = midi.getOutputPortName(newOut);
                         jp.setDeviceName(EmuJackPanel::MIDI_OUT, name);
-                        s_devicePrefs.midiOut = name;
+                        setDevicePrefs([&](DevicePreferences& p) { p.midiOut = name; });
                     }
                 }
                 saveDevicePrefs();
@@ -1626,7 +1678,7 @@ static void boot_finish()
                     printf("[JackPanel] MIDI IN disconnected\n");
                     jp.setConnected(EmuJackPanel::MIDI_IN, false);
                     jp.setDeviceName(EmuJackPanel::MIDI_IN, "");
-                    s_devicePrefs.midiIn.clear();
+                    setDevicePrefs([&](DevicePreferences& p) { p.midiIn.clear(); });
                 } else {
                     unsigned int newIn = deviceIndex - 1;
                     // Preserve current output port
@@ -1637,7 +1689,7 @@ static void boot_finish()
                     if (midi.isInputOpen()) {
                         std::string name = midi.getInputPortName(newIn);
                         jp.setDeviceName(EmuJackPanel::MIDI_IN, name);
-                        s_devicePrefs.midiIn = name;
+                        setDevicePrefs([&](DevicePreferences& p) { p.midiIn = name; });
                     }
                 }
                 saveDevicePrefs();
@@ -1651,7 +1703,7 @@ static void boot_finish()
                     pcUart.close();
                     jp.setConnected(EmuJackPanel::USB, false);
                     jp.setDeviceName(EmuJackPanel::USB, "");
-                    s_devicePrefs.uartPort.clear();
+                    setDevicePrefs([&](DevicePreferences& p) { p.uartPort.clear(); });
                     crosspad::removePlatformCapability(crosspad::Capability::Usb);
                 } else {
                     auto comPorts = PcUart::enumeratePorts();
@@ -1662,7 +1714,7 @@ static void boot_finish()
                         if (pcUart.open(comPorts[portIdx], baud)) {
                             jp.setConnected(EmuJackPanel::USB, true);
                             jp.setDeviceName(EmuJackPanel::USB, comPorts[portIdx]);
-                            s_devicePrefs.uartPort = comPorts[portIdx];
+                            setDevicePrefs([&](DevicePreferences& p) { p.uartPort = comPorts[portIdx]; });
                             crosspad::addPlatformCapability(crosspad::Capability::Usb);
                         } else {
                             jp.setConnected(EmuJackPanel::USB, false);
@@ -1789,7 +1841,7 @@ static void boot_finish()
                 auto& jp = stm32Emu.getJackPanel();
                 jp.setConnected(EmuJackPanel::USB, true);
                 jp.setDeviceName(EmuJackPanel::USB, port);
-                s_devicePrefs.uartPort = port;
+                setDevicePrefs([&](DevicePreferences& p) { p.uartPort = port; });
                 saveDevicePrefs();
                 crosspad::addPlatformCapability(crosspad::Capability::Usb);
                 printf("[USB] Auto-reconnected CrossPad on %s\n", port.c_str());
@@ -1845,7 +1897,7 @@ void crosspad_app_init()
             printf("[SDCard] Auto-mounted from saved prefs: %s\n", s_devicePrefs.sdcardPath.c_str());
         } else {
             printf("[SDCard] Saved path no longer exists: %s\n", s_devicePrefs.sdcardPath.c_str());
-            s_devicePrefs.sdcardPath.clear();
+            setDevicePrefs([&](DevicePreferences& p) { p.sdcardPath.clear(); });
             saveDevicePrefs();
         }
     }
@@ -1858,7 +1910,7 @@ void crosspad_app_init()
         // card mounted mid-session show up in the kit selector.
         crosspad_pc::sampler_port_set_sdcard(path);
 #endif
-        s_devicePrefs.sdcardPath = path;
+        setDevicePrefs([&](DevicePreferences& p) { p.sdcardPath = path; });
         saveDevicePrefs();
     });
     stm32Emu.getSdCardSlot().setOnUnmount([]() {
@@ -1866,7 +1918,7 @@ void crosspad_app_init()
 #ifdef USE_AUDIO
         crosspad_pc::sampler_port_set_sdcard("");
 #endif
-        s_devicePrefs.sdcardPath.clear();
+        setDevicePrefs([&](DevicePreferences& p) { p.sdcardPath.clear(); });
         saveDevicePrefs();
     });
 
@@ -2008,7 +2060,7 @@ void crosspad_app_shutdown()
     // pwPrevDefaultSink behind. Detach the aux stream (non-owning pointer read
     // by the audio thread) BEFORE stopping/destroying the source.
     s_pwGuard.restore();
-    s_devicePrefs.pwPrevDefaultSink.clear();
+    setDevicePrefs([&](DevicePreferences& p) { p.pwPrevDefaultSink.clear(); });
     saveDevicePrefs();
     s_audioModule.setAuxStream(nullptr);
     s_pwSource.stop();
