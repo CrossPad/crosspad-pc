@@ -29,6 +29,7 @@
 
 #include "pc_stubs/pc_platform.h"
 #include "pc_stubs/PcApp.hpp"
+#include "pc_stubs/GuiThread.hpp"
 #include "updater/PcUpdater.hpp"
 
 // crosspad-core
@@ -834,7 +835,7 @@ void crosspad_app_init()
         printf("[MIDI IN] NoteOn  ch=%u note=%u vel=%u\n", channel + 1, note, velocity);
         struct D { uint8_t ch, note, vel; };
         auto* d = new D{channel, note, velocity};
-        lv_async_call([](void* ud) {
+        pc_gui::post([](void* ud) {
             auto* n = static_cast<D*>(ud);
             auto& pm = crosspad::getPadManager();
             uint8_t padIdx = pm.getPadForMidiNote(n->note);
@@ -847,7 +848,7 @@ void crosspad_app_init()
         printf("[MIDI IN] NoteOff ch=%u note=%u vel=%u\n", channel + 1, note, velocity);
         struct D { uint8_t ch, note; };
         auto* d = new D{channel, note};
-        lv_async_call([](void* ud) {
+        pc_gui::post([](void* ud) {
             auto* n = static_cast<D*>(ud);
             auto& pm = crosspad::getPadManager();
             uint8_t padIdx = pm.getPadForMidiNote(n->note);
@@ -856,16 +857,28 @@ void crosspad_app_init()
             delete n;
         }, d);
     });
+    /* Like the notes, on the LVGL thread: the encoder's state is what the
+     * emulator's timer draws and turns into LVGL key events, and a SysEx frame
+     * drives the PadManager, its LEDs and the event bus -- a FreeRTOS queue,
+     * which a thread outside the scheduler must not touch at all. */
     midi.setHandleControlChange([](uint8_t channel, uint8_t cc, uint8_t value) {
         printf("[MIDI IN] CC      ch=%u cc=%u  val=%u\n", channel + 1, cc, value);
-        if (channel == 0 && cc == 1) {
-            stm32Emu.handleEncoderCC(value, 31, 18);
-        } else if (channel == 0 && cc == 64) {
-            stm32Emu.handleEncoderPress(value >= 64);
-        }
+        if (channel != 0 || (cc != 1 && cc != 64)) return;
+        struct D { uint8_t cc, value; };
+        pc_gui::post([](void* ud) {
+            auto* d = static_cast<D*>(ud);
+            if (d->cc == 1) stm32Emu.handleEncoderCC(d->value, 31, 18);
+            else            stm32Emu.handleEncoderPress(d->value >= 64);
+            delete d;
+        }, new D{cc, value});
     });
     midi.setHandleSystemExclusive([](uint8_t* data, unsigned size) {
-        stm32Handler.handleMessage(data, size);
+        auto* frame = new std::vector<uint8_t>(data, data + size);
+        pc_gui::post([](void* ud) {
+            auto* f = static_cast<std::vector<uint8_t>*>(ud);
+            stm32Handler.handleMessage(f->data(), static_cast<unsigned>(f->size()));
+            delete f;
+        }, frame);
     });
 
     // Periodic MIDI reconnect check (3s).
@@ -911,7 +924,7 @@ void crosspad_app_init()
         crosspad::getPlatformServices().setBleMidi(&bleMidi);
         s_midiHandler.setBleOutput(&bleMidi);  // Route pad output to BLE
 
-        // Input callbacks — dispatch to LVGL thread via lv_async_call.
+        // Input callbacks — dispatch to LVGL thread via pc_gui::post().
         // RtMidi callbacks run on a separate thread, but PadManager/LED updates
         // touch LVGL which is NOT thread-safe. Must dispatch to the LVGL task.
         // Echo is already filtered by PcBleMidi's anti-loopback ring buffer.
@@ -921,7 +934,7 @@ void crosspad_app_init()
 
             struct NoteData { uint8_t ch; uint8_t note; uint8_t vel; };
             auto* d = new NoteData{channel, note, velocity};
-            lv_async_call([](void* ud) {
+            pc_gui::post([](void* ud) {
                 auto* n = static_cast<NoteData*>(ud);
                 auto& pm = crosspad::getPadManager();
                 uint8_t padIdx = pm.getPadForMidiNote(n->note);
@@ -938,7 +951,7 @@ void crosspad_app_init()
 
             struct NoteData { uint8_t ch; uint8_t note; };
             auto* d = new NoteData{channel, note};
-            lv_async_call([](void* ud) {
+            pc_gui::post([](void* ud) {
                 auto* n = static_cast<NoteData*>(ud);
                 auto& pm = crosspad::getPadManager();
                 uint8_t padIdx = pm.getPadForMidiNote(n->note);
@@ -955,17 +968,23 @@ void crosspad_app_init()
         });
 
         // Connection state → status bar bluetooth icon + persist device address
+        // On SimpleBLE's thread; the status bar reads the flag on the LVGL
+        // thread, and the preferences are written from there too.
         bleMidi.setOnConnectionChanged([](bool connected, const crosspad::BleMidiDevice& dev) {
             printf("[BLE MIDI] %s: %s (%s)\n",
                    connected ? "Connected" : "Disconnected",
                    dev.name.c_str(), dev.address.c_str());
-            auto* st = crosspad::getPlatformServices().status;
-            if (st) st->bluetoothConnected = connected;
-
-            if (connected) {
-                s_devicePrefs.bleDevice = dev.address;
-                saveDevicePrefs();
-            }
+            struct D { bool connected; std::string address; };
+            pc_gui::post([](void* ud) {
+                auto* d = static_cast<D*>(ud);
+                auto* st = crosspad::getPlatformServices().status;
+                if (st) st->bluetoothConnected = d->connected;
+                if (d->connected) {
+                    s_devicePrefs.bleDevice = d->address;
+                    saveDevicePrefs();
+                }
+                delete d;
+            }, new D{connected, dev.address});
         });
     }
 #endif
@@ -1534,7 +1553,7 @@ void crosspad_app_init()
                 // Opening an ALSA/PulseAudio device blocks for 100–500 ms; doing
                 // it inline here froze the whole UI (this callback runs on the
                 // LVGL thread). Run the switch on a worker thread and push the
-                // result back with lv_async_call so only widget mutation — which
+                // result back with pc_gui::post() so only widget mutation — which
                 // must stay on the LVGL thread — happens there. Selection
                 // resolves against the cached list the dropdown was built from,
                 // never a fresh enumeration whose indices may have shifted.
@@ -1548,7 +1567,7 @@ void crosspad_app_init()
                     bool connected = isOut ? appAudioOutSelectIdx(slot, uiIndex, label)
                                            : appAudioInSelectIdx(slot, uiIndex, label);
                     auto* res = new AudioJackUiResult{jackId, connected, std::move(label)};
-                    lv_async_call([](void* ud) {
+                    pc_gui::post([](void* ud) {
                         auto* r = static_cast<AudioJackUiResult*>(ud);
                         auto& jp = stm32Emu.getJackPanel();
                         jp.setConnected(static_cast<EmuJackPanel::JackId>(r->jackId),

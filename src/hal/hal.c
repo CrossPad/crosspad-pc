@@ -31,6 +31,13 @@ static int touch_watch(void * user, SDL_Event * e)
 {
   (void)user;
   if (!s_mouse || !s_disp) return 0;
+  /* An event watch runs on whichever thread pushes the event -- SDL's own
+   * signal and hotplug paths included -- so nothing of LVGL is touched for an
+   * event this driver does not take. The ones it takes come from the LVGL
+   * thread: SDL_PollEvent() in the SDL driver's timer, and the control
+   * port's SDL_PushEvent() inside remote::process_pending(). */
+  if (e->type != SDL_MOUSEBUTTONDOWN && e->type != SDL_MOUSEBUTTONUP &&
+      e->type != SDL_MOUSEMOTION && e->type != SDL_WINDOWEVENT) return 0;
   const Uint32 win = SDL_GetWindowID(lv_sdl_window_get_window(s_disp));
   const float zoom = lv_sdl_window_get_zoom(s_disp);
   switch (e->type) {

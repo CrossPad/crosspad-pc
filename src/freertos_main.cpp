@@ -22,6 +22,7 @@
 #include "crosspad_app.hpp"
 #include "remote/RemoteControl.hpp"
 #include "crosspad-gui/components/touch_gesture.h"
+#include "pc_stubs/GuiThread.hpp"
 
 #include "crosspad/app/AppVersions.hpp"
 
@@ -61,6 +62,7 @@ static void lvgl_task(void* pvParameters)
     (void)pvParameters;
     printf("Starting LVGL task\n");
     lv_init();
+    pc_gui::bindThread();
     lv_display_t* disp = sdl_hal_init(Stm32EmuWindow::WIN_W, Stm32EmuWindow::WIN_H);
     crosspad_app_init();
 

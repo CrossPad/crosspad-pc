@@ -40,6 +40,7 @@
 
 // crosspad-core interfaces (BEFORE Windows.h to avoid ERROR macro conflict)
 #include "crosspad/platform/CrosspadPlatformInit.hpp"
+#include "pc_stubs/GuiThread.hpp"
 #include "crosspad/platform/PlatformServices.hpp"
 #include "crosspad/platform/PlatformCapabilities.hpp"
 #include "crosspad/platform/IClock.hpp"
@@ -290,6 +291,12 @@ public:
     // The explorer's card paths, under the folder mounted as the SD card.
     std::string storagePath(const std::string& path) override {
         return pc_platform_resolve_sdcard_path(path);
+    }
+
+    // LVGL has no OS layer here: a call from another thread is queued for
+    // the LVGL thread, never let into lv_async_call() itself.
+    void postToGui(lv_async_cb_t cb, void* user_data) override {
+        pc_gui::post(cb, user_data);
     }
 
     lv_indev_t* getNavigationEncoder() override {

@@ -3,6 +3,7 @@
 #include "PcInstrumentHost.hpp"
 #include "PcPitchedPort.hpp"
 
+#include "pc_stubs/GuiThread.hpp"
 #include "pc_stubs/pc_platform.h"
 #include "song/PcSongSounds.hpp"
 
@@ -12,8 +13,6 @@
 #include <crosspad/platform/PlatformServices.hpp>
 
 #include <crosspad-sampler/logic/kit_load_task.hpp>
-
-#include "lvgl.h"
 
 #include "FreeRTOS.h"
 #include "semphr.h"
@@ -222,7 +221,7 @@ private:
         auto* kits = crosspad::getKitManager();
         if (kits && kits->getCurrentKit()) {
             /* The kit as it was: a pitched kit builds its own bank again. */
-            lv_async_call([](void*) { crosspad_sampler::kit_load_task_start(false, -1); }, nullptr);
+            pc_gui::post([](void*) { crosspad_sampler::kit_load_task_start(false, -1); }, nullptr);
         }
     }
 
