@@ -220,6 +220,19 @@ Commands include `ping`, `screenshot`, `click`, `drag` (`x1`,`y1`,`x2`,`y2` in `
 
 Used by the [crosspad-mcp](https://github.com/CrossPad/crosspad-mcp) simulator tools.
 
+**Running a test instance beside a user's simulator** (all env, none changes a normal start):
+
+| Variable | Effect |
+|----------|--------|
+| `CROSSPAD_REMOTE_PORT` | control port (default 19840; never use that for a test) |
+| `CROSSPAD_INSTANCE=<id>` | suffix for the PipeWire/Pulse nodes (`crosspad_vin1_<id>`, `crosspad_out_<id>`); defaults to the port when that is not 19840. The pactl fallback's stale-sink cleanup removes only this instance's nodes |
+| `CROSSPAD_AUDIO=on\|isolated\|off` | `on` (default without an id): plain names + default-sink takeover. `isolated` (default with an id): real audio, suffixed names, no takeover. `off`: no audio device, no virtual sinks. Anything but `on` with no id uses id `test`. Only the primary `on` instance ever takes the default sink |
+| `CROSSPAD_PROFILE_DIR` | replaces `~/.crosspad` (preferences, device_preferences, mixer_state, cache; the SD card path comes from its `device_preferences.json`). The updater's version cache still lives under `$HOME` |
+| `CROSSPAD_NO_MIDI=1` | no MIDI ports touched |
+| `SDL_VIDEODRIVER=dummy SDL_RENDER_DRIVER=software` | headless; the control port's screenshot still works |
+
+`scripts/sim_start_stress.py N` starts an isolated instance N times and classifies each start OK / HANG / CRASH (gdb stacks for a hang, `--gdb` for a segfault); see its `--help`.
+
 ## MCP Development Server
 
 Moved out of this repo to [crosspad-mcp](https://github.com/CrossPad/crosspad-mcp) (install and tool reference there). It talks to a running simulator over the TCP control port above; build, repo and code-search tools work without one.
