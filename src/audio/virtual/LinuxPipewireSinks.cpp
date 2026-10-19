@@ -58,7 +58,13 @@ PactlResult runPactl(const char* const argv[]) {
      * found, let alone pinned. Ask for the untranslated output instead of
      * trying to recognise every language. pc_proc builds that environment
      * in the parent and spawns without running anything of ours in the
-     * child (setenv() in a fork()ed child deadlocked the start, 47f6c4b). */
+     * child -- never fork(): this runs on a FreeRTOS task, and the POSIX
+     * port switches tasks by parking the pthread inside its SIGALRM tick
+     * handler. fork() holds every malloc arena lock across the clone; a tick
+     * landing there parked the LVGL task with those locks held, and the task
+     * the scheduler woke instead (a fresh one, still allocating in
+     * prvWaitForStart with signals blocked) waited on them forever. The
+     * simulator hung on about every other start that way (47f6c4b). */
     std::vector<std::string> args;
     for (const char* const* a = argv; *a; ++a) args.emplace_back(*a);
     pc_proc::Options opt;
