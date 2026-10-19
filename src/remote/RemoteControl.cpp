@@ -1526,7 +1526,7 @@ static void handle_client(socket_t client) {
 
             std::string resp;
             if (!looks_like_request(line)) {
-                resp = error_reply("malformed request: expected one JSON object with a \"cmd\" per line");
+                resp = error_reply("malformed request: expected one JSON object with a cmd per line");
             } else {
                 try {
                     resp = runs_on_client_thread(json_get_string(line, "cmd"))
