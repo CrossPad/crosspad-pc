@@ -401,6 +401,23 @@ std::vector<PulseSinkInfo> enumeratePulseSinks(bool includeUnavailable) {
 
 static bool tryMovePulseOutputToSink(int slot, const std::string& targetSinkName);
 
+/// True when the sound server has a sink named @p name right now.
+static bool sinkExists(const std::string& name) {
+    const char* const argv[] = { "pactl", "list", "sinks", "short", nullptr };
+    PactlResult r = runPactl(argv);
+    if (r.exitCode != 0) return true;   // cannot tell: let the move itself decide
+    std::istringstream ss(r.stdoutText);
+    std::string l;
+    while (std::getline(ss, l)) {
+        // "<index>\t<name>\t<driver>\t..."
+        const size_t a = l.find('\t');
+        if (a == std::string::npos) continue;
+        const size_t b = l.find('\t', a + 1);
+        if (l.compare(a + 1, b == std::string::npos ? std::string::npos : b - a - 1, name) == 0) return true;
+    }
+    return false;
+}
+
 /// Pulse client indexes (as `pactl list clients` numbers them) that belong to
 /// this process: "Client #N" followed by application.process.id = "<our pid>".
 static std::set<std::string> ownPulseClients() {
@@ -431,6 +448,15 @@ bool movePulseOutputToSink(int slot, const std::string& targetSinkName) {
 bool movePulseOutputToSinkWithin(int slot, const std::string& targetSinkName,
                                  int timeoutMs) {
     if (slot < 0 || slot > 1 || targetSinkName.empty()) return false;
+
+    // A pin to a sink that is not there -- a device unplugged since it was
+    // saved, a sink another program made and took away -- can never succeed,
+    // and polling for it held the start for the whole timeout, per output.
+    if (!sinkExists(targetSinkName)) {
+        printf("[VirtSink] sink '%s' is not there; not pinning OUT%d\n",
+               targetSinkName.c_str(), slot + 1);
+        return false;
+    }
 
     // The stream is created asynchronously: RtAudio's open returns before the
     // sound server has a node for it, so a single look can find nothing and
