@@ -85,11 +85,19 @@ void PcAudioModule::processMixer() {
         uint32_t pushed = stream->pushSamples(pushScratchInt16_[s].data(),
                                             crosspad::AudioFormat::Int16, frames);
         if (pushed < frames) {
-            // Ring overflow — we are producing faster than RtAudio drains. Log at
-            // most once a second so sustained overrun is visible but not spammy.
-            if (++overflowCount_ % overflowLogEvery_ == 1) {
-                printf("[PcAudioModule] OUT%u overflow: dropped %u frames (total events %u)\n",
-                       unsigned(s + 1), frames - pushed, overflowCount_);
+            // Ring overflow — we are producing faster than RtAudio drains. Counted
+            // every time, said at most once per overflowLogPeriod with the total
+            // since the last line, so a sustained overrun is one line, not a stream.
+            ++overflowCount_;
+            overflowFrames_ += frames - pushed;
+            const auto now = std::chrono::steady_clock::now();
+            if (now - overflowLastLog_ >= overflowLogPeriod) {
+                overflowLastLog_ = now;
+                printf("[PcAudioModule] OUT overflow: %u events, %llu frames dropped since the last report (total events %u)\n",
+                       overflowCount_ - overflowReported_,
+                       (unsigned long long)overflowFrames_, overflowCount_);
+                overflowReported_ = overflowCount_;
+                overflowFrames_ = 0;
             }
         }
     }

@@ -21,10 +21,14 @@
 #include "stm32_emu/Stm32EmuWindow.hpp"
 #include "crosspad_app.hpp"
 #include "remote/RemoteControl.hpp"
+#include "crosspad-gui/components/touch_gesture.h"
+#include "pc_stubs/GuiThread.hpp"
+#include "pc_stubs/ShutdownSignals.hpp"
 
 #include "crosspad/app/AppVersions.hpp"
 
 #include <cstdio>
+#include <cstdlib>
 #include <cstring>
 
 /* ── FreeRTOS hooks (required by kernel config) ───────────────────────── */
@@ -60,14 +64,36 @@ static void lvgl_task(void* pvParameters)
     (void)pvParameters;
     printf("Starting LVGL task\n");
     lv_init();
+    pc_gui::bindThread();
     lv_display_t* disp = sdl_hal_init(Stm32EmuWindow::WIN_W, Stm32EmuWindow::WIN_H);
     crosspad_app_init();
 
-    // Start remote control server (TCP localhost:19840) for MCP integration
-    remote::start(disp);
-
     while (true) {
-        lv_timer_handler();
+        if (crosspad_app_tick()) {
+            /* The board's screen-wide swipes (display.h on the firmware), on
+             * the mouse. Only inside the drawn panel: a drag across the drawn
+             * pads below it is not a back gesture. */
+            crosspad_gui::SwipeConfig swipe;
+            swipe.area = { Stm32EmuWindow::LCD_X, Stm32EmuWindow::LCD_Y,
+                           Stm32EmuWindow::LCD_X + Stm32EmuWindow::LCD_W - 1,
+                           Stm32EmuWindow::LCD_Y + Stm32EmuWindow::LCD_H - 1 };
+            crosspad_gui::touch_gesture_attach(sdl_hal_get_mouse(), swipe);
+
+            // Remote control server (TCP localhost:19840, or
+            // CROSSPAD_REMOTE_PORT) for MCP integration, once there is a
+            // launcher to drive
+            if (!remote::start(disp)) {
+                /* The window title and stderr already say so. A scripted run
+                 * that cannot be driven is worth less than none:
+                 * CROSSPAD_REMOTE_REQUIRED=1 turns the missing port into exit
+                 * code 3. */
+                const char* req = getenv("CROSSPAD_REMOTE_REQUIRED");
+                if (req && req[0] == '1') {
+                    crosspad_app_shutdown();
+                    exit(3);
+                }
+            }
+        }
         remote::process_pending();
         vTaskDelay(pdMS_TO_TICKS(5));
     }
@@ -95,6 +121,9 @@ int main(int argc, char** argv)
         printf("APPVER: end count=%zu\n", crosspad::appVersionCount());
         return 0;
     }
+
+    // Before the first thread: every thread inherits the mask it leaves.
+    pc_install_shutdown_signals();
 
     if (xTaskCreate(lvgl_task, "LVGL", 8192, NULL, 1, NULL) != pdPASS) {
         printf("Error creating LVGL task\n");

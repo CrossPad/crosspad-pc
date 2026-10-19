@@ -509,8 +509,8 @@
 #define LV_USE_ASSERT_OBJ           1
 
 /** Add a custom handler when assert happens e.g. to restart MCU. */
-#define LV_ASSERT_HANDLER_INCLUDE <stdint.h>
-#define LV_ASSERT_HANDLER while(1);     /**< Halt by default */
+#define LV_ASSERT_HANDLER_INCLUDE "lv_assert_crosspad.h"
+#define LV_ASSERT_HANDLER crosspad_lv_assert_fail();   /**< Abort with a stack, never spin */
 
 /*-------------
  * Debug

@@ -81,7 +81,7 @@ src/
   freertos_main.cpp             — entry point (LVGL task + scheduler)
   crosspad_app.cpp              — shared init (MIDI, audio, apps, launcher)
   crosspad_deps.hpp             — required crosspad-core / crosspad-gui versions
-  hal/hal.c                     — SDL2 HAL (display, mouse, keyboard, mousewheel)
+  hal/hal.c                     — SDL2 HAL (display, mouse as the touch panel -- its own driver, so crosspad-gui's touch_gesture can wrap it --, keyboard, mousewheel)
   freertos/                     — FreeRTOS port glue (POSIX, Win32)
   stm32_emu/                    — device body: LCD, encoder, pads, jack panel, SD slot, keyboard capture
   midi/                         — PcMidi (RtMidi, auto-connect), PcBleMidi (SimpleBLE)
@@ -90,7 +90,7 @@ src/
   synth/MlPianoSynth.cpp        — ISynthEngine impl wrapping ML_SynthTools FM engine
   sequencer/, song/             — PC ports of the pattern sequencer and core's song engine
   uart/, updater/               — PC stand-ins for the STM32 link and the updater
-  remote/RemoteControl.cpp      — TCP server (localhost:19840) for MCP integration
+  remote/RemoteControl.cpp      — TCP server (localhost:19840, `CROSSPAD_REMOTE_PORT`) for MCP integration
   pc_stubs/
     PcPlatformStubs.cpp         — PC impls: PcClock, PcLedStrip, PcKeyValueStore, PcGuiPlatform, etc.
     PcApp.cpp                   — lightweight App class for launcher (no sequencer/CLI)
@@ -214,11 +214,24 @@ This simulator must stay compatible with the ESP32-S3 firmware ([platform-idf](h
 
 ### Remote Control Server
 
-The simulator includes a built-in TCP server (`src/remote/RemoteControl.cpp`) on `localhost:19840` for external automation. Started automatically with the simulator. Protocol: newline-delimited JSON.
+The simulator includes a built-in TCP server (`src/remote/RemoteControl.cpp`) on `localhost:19840` (`CROSSPAD_REMOTE_PORT` overrides) for external automation. Started automatically once the boot has built the launcher (the splash is up before it; a client connecting earlier gets refused, so poll `ping`). Protocol: newline-delimited JSON, one object with a `cmd` per line (anything else gets `malformed request`). If the port cannot be bound (another simulator owns it) the window title reads `NO CONTROL PORT (<port> busy)` and stderr says so; `CROSSPAD_REMOTE_REQUIRED=1` makes that exit code 3. Up to 8 clients at once, each on its own thread; the LVGL thread never waits on a socket (a command not answered in 10 s returns `timeout` and is skipped; `ping` and the `audio_*` list/set verbs run on the client's thread, never the LVGL one). `screenshot` reads LVGL's own framebuffer, not the SDL back buffer (which came back black now and then after a present).
 
-Commands include `ping`, `screenshot`, `click`, `pad_press`/`pad_release`, `pad_pressure` (`pad`, `pressure` 0-255, the board's `PAD_PRESSURE`), `pad_pan` (`pad`, `value` 0 left .. 64 centred .. 127 right, the board's `PAD_PAN`; the reply's `pan` is what `onPadPan()` got, -64..63), `app_start` (`name`, case-insensitive, the board's `APP_START`), `app_list`, `power_click`/`power_hold`/`power_press`/`power_release`, `encoder_rotate`/`encoder_press`/`encoder_release`, `key`, `stats`, `settings_get`/`settings_set`, `midi_note_on`/`midi_note_off`, `kit_list`/`kit_load`/`kit_status`, audio device and level commands — the dispatch in `RemoteControl.cpp` is the full list. The verbs the board answers too (kit_*, led_state, mix_lvl, pitched_status, wave_status, audio_level, pad_*, app_start) read their state through crosspad-core `crosspad/control/`, the same readers the board's CDC verbs use; their JSON is rendered in `src/remote/ControlJson.cpp` and pinned by `tests/test_control_json.cpp` — a reply change there is a protocol change for the MCP.
+Commands include `ping`, `screenshot`, `click`, `drag` (`x1`,`y1`,`x2`,`y2` in `lcd` space by default, `ms`, optional `steps`, `rest_ms` held still before release -- longer than LVGL's momentum window lets go without a flick; the reply comes at once, the drag takes `ms`+`rest_ms`), `top_bar` (which of the transport/status bars is the page, the row's scroll, the drawer, the encoder's focus and where, the last screen-wide swipe), `pad_press`/`pad_release`, `pad_pressure` (`pad`, `pressure` 0-255, the board's `PAD_PRESSURE`), `pad_pan` (`pad`, `value` 0 left .. 64 centred .. 127 right, the board's `PAD_PAN`; the reply's `pan` is what `onPadPan()` got, -64..63), `app_start` (`name`, case-insensitive, the board's `APP_START`), `app_list`, `power_click`/`power_hold`/`power_press`/`power_release`, `encoder_rotate`/`encoder_press`/`encoder_release`, `key`, `stats`, `settings_get`/`settings_set`, `midi_note_on`/`midi_note_off`, `kit_list`/`kit_load`/`kit_status`, audio device and level commands — the dispatch in `RemoteControl.cpp` is the full list. The verbs the board answers too (kit_*, led_state, mix_lvl, pitched_status, wave_status, audio_level, pad_*, app_start) read their state through crosspad-core `crosspad/control/`, the same readers the board's CDC verbs use; their JSON is rendered in `src/remote/ControlJson.cpp` and pinned by `tests/test_control_json.cpp` — a reply change there is a protocol change for the MCP.
 
 Used by the [crosspad-mcp](https://github.com/CrossPad/crosspad-mcp) simulator tools.
+
+**Running a test instance beside a user's simulator** (all env, none changes a normal start):
+
+| Variable | Effect |
+|----------|--------|
+| `CROSSPAD_REMOTE_PORT` | control port (default 19840; never use that for a test) |
+| `CROSSPAD_INSTANCE=<id>` | suffix for the PipeWire/Pulse nodes (`crosspad_vin1_<id>`, `crosspad_out_<id>`); defaults to the port when that is not 19840. The pactl fallback's stale-sink cleanup removes only this instance's nodes |
+| `CROSSPAD_AUDIO=on\|isolated\|off` | `on` (default without an id): plain names + default-sink takeover. `isolated` (default with an id): real audio, suffixed names, no takeover. `off`: no audio device, no virtual sinks. Anything but `on` with no id uses id `test`. Only the primary `on` instance ever takes the default sink |
+| `CROSSPAD_PROFILE_DIR` | replaces `~/.crosspad` (preferences, device_preferences, mixer_state, cache; the SD card path comes from its `device_preferences.json`). The updater's version cache still lives under `$HOME` |
+| `CROSSPAD_NO_MIDI=1` | no MIDI ports touched |
+| `SDL_VIDEODRIVER=dummy SDL_RENDER_DRIVER=software` | headless; the control port's screenshot still works |
+
+`scripts/sim_start_stress.py N` starts an isolated instance N times and classifies each start OK / HANG / CRASH (gdb stacks for a hang, `--gdb` for a segfault); see its `--help`.
 
 ## MCP Development Server
 

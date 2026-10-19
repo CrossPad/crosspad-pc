@@ -39,6 +39,9 @@ lv_display_t * sdl_hal_init(int32_t w, int32_t h);
  */
 lv_indev_t * sdl_hal_get_encoder(void);
 
+/* The mouse, as the board's touch panel (see hal.c). */
+lv_indev_t * sdl_hal_get_mouse(void);
+
 /**********************
  *      MACROS
  **********************/
