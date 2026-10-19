@@ -10,9 +10,14 @@ needs_build() {
     [ ! -f "$BIN" ] && return 0
     # No build dir (never configured)
     [ ! -d "build" ] && return 0
-    # Any source newer than binary
-    find src lib/crosspad-core/src lib/crosspad-gui/src -name '*.cpp' -o -name '*.hpp' -o -name '*.h' -o -name '*.c' 2>/dev/null \
-        | while read f; do [ "$f" -nt "$BIN" ] && echo dirty && break; done | grep -q dirty
+    # Anything that feeds the build newer than the binary: sources and headers
+    # of the simulator, both shared libraries (headers included) and every
+    # app submodule under src/apps, plus the build description itself.
+    [ -n "$(find src lib/crosspad-core lib/crosspad-gui cmake CMakeLists.txt .gitmodules lv_conf.h lv_conf.defaults \
+        \( -name .git -o -name tests \) -prune -o \
+        -type f \( -name '*.cpp' -o -name '*.hpp' -o -name '*.h' -o -name '*.c' -o -name '*.cmake' \
+            -o -name CMakeLists.txt -o -name .gitmodules -o -name 'lv_conf.*' -o -name '*.png' \) \
+        -newer "$BIN" -print -quit 2>/dev/null)" ]
 }
 
 if needs_build; then

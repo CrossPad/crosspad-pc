@@ -622,8 +622,7 @@ lv_obj_t* Update_create(lv_obj_t* parent, App* a)
 
     auto& registry = crosspad::AppRegistry::getInstance();
     for (int i = 0; i < registry.getAppCount(); i++) {
-        const auto* entry = registry.getApp(i);
-        if (!entry) continue;
+        const auto* entry = &registry.getApps()[i];
         lv_obj_t* appRow = lv_obj_create(cont);
         lv_obj_set_size(appRow, lv_pct(100), 20);
         lv_obj_set_style_bg_opa(appRow, LV_OPA_TRANSP, 0);
