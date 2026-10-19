@@ -3,9 +3,7 @@
 #include "PcSamplerPort.hpp"
 #include "PcInstrumentHost.hpp"
 #include "PcPitchedPort.hpp"
-#include "PcSampleNode.hpp"
-#include "SampleStreamPlayer.hpp"
-#include "SampleStreamEngine.hpp"
+#include "PcSamplerEngine.hpp"
 
 #include "pc_stubs/pc_platform.h"
 
@@ -44,10 +42,12 @@
 namespace crosspad_pc {
 namespace {
 
-PcSampleNode              s_node;
 crosspad::PortableKitLoader s_kitLoader("");
 std::string               s_sdRoot;
 bool                      s_engineUp = false;
+
+/* What the file browser auditions at: the kit's unity. */
+constexpr int kPreviewVolume = 100;
 
 // ── Path helpers ─────────────────────────────────────────────────────────
 //
@@ -60,31 +60,25 @@ std::string fsPath(const std::string& logical) {
 }
 
 // ── Player callbacks ─────────────────────────────────────────────────────
-
-// Kit files store pan as a signed offset with 0 meaning centre — every pad of
-// every kit on a real card holds 0, and hardware sounds them centred. The
-// player API is the MIDI convention (0..127, 64 centre), so the conversion
-// belongs here at the boundary rather than in the kit data.
-static uint8_t toPlayerPan(int kitPan) {
-    const int v = kitPan + 64;
-    return static_cast<uint8_t>(v < 0 ? 0 : (v > 127 ? 127 : v));
-}
+//
+// Core's SamplerEngine (PcSamplerEngine) holds every sampler kit; a pitched
+// kit is PcPitchedPort's. Kits store pan as a signed offset, 0 the centre,
+// and the engine glue takes it that way.
 
 void platform_noteOn(uint8_t padIdx, uint8_t velocity) {
-    if (!SampleStreamPlayer_IsReady()) return;
-    SampleStreamPlayer_NoteOn(padIdx, velocity);
+    native_sampler_note_on(padIdx, velocity, 0, crosspad::kSamplePlaybackOwnKey);
 }
 
 void platform_setVolume(uint8_t padIdx, int volume) {
-    SampleStreamPlayer_SetVolume(padIdx, static_cast<uint8_t>(volume));
+    native_sampler_set_pad_volume(padIdx, volume);
 }
 
 void platform_setPan(uint8_t padIdx, int pan) {
-    SampleStreamPlayer_SetPan(padIdx, toPlayerPan(pan));
+    native_sampler_set_pad_pan(padIdx, pan);
 }
 
 /* Pad Mixer's levels, split as the board's sampler splits them: a pitched
- * kit's pads are the instrument's, a sampler kit's the stream player's. */
+ * kit's pads are the instrument's, a sampler kit's the sample engine's. */
 class PcPadMix final : public crosspad::IPadMix {
 public:
     void setPadMix(uint8_t pad, int volume, int pan) override {
@@ -101,51 +95,58 @@ public:
     }
 };
 
-void platform_setLoopEnd(uint8_t padIdx, uint32_t endPos) {
-    SampleStreamPlayer_SetLoopEnd(padIdx, endPos);
+/* The editor's loop button writes playbackMode into the kit model and then
+ * says so; the engine reads the mode out of that model, so both calls are
+ * the same question to it. */
+void platform_setLoopEnd(uint8_t padIdx, uint32_t) {
+    native_sampler_sync_pad_mode(padIdx);
 }
 
 void platform_clearLoop(uint8_t padIdx) {
-    SampleStreamPlayer_SetLoopClear(padIdx);
+    native_sampler_sync_pad_mode(padIdx);
 }
 
 void platform_wipeOut(uint8_t padIdx) {
-    SampleStreamPlayer_WipeOut(padIdx);
+    native_sampler_stop_pad(padIdx);
 }
 
 int platform_getFreeSlotCount() {
-    return SampleStreamPlayer_GetFreeWavCnt();
+    return native_sampler_free_slots();
 }
 
 uint32_t platform_liveScope(float* outData, uint32_t maxSamples,
                             float* fundamentalHz, uint32_t* sampleRate) {
     if (fundamentalHz) *fundamentalHz = 0.0f; // a drum mix has no single note
-    if (sampleRate) *sampleRate = s_node.scopeTap().sampleRate();
-    return s_node.scopeTap().snapshot(outData, maxSamples);
+    return native_sampler_scope_snapshot(outData, maxSamples, sampleRate);
 }
 
 void platform_setLiveScopeEnabled(bool enabled) {
-    s_node.setScopeEnabled(enabled);
+    native_sampler_scope_enable(enabled);
+}
+
+/* The engine transposes in the voice, so a pitch-only pad wants the original
+ * file and a step -- not a copy. Filters and reverse it does not do. */
+bool platform_engineHandlesFx(int, uint16_t hpHz, uint16_t lpHz, bool reverse) {
+    if (hpHz || lpHz || reverse) return false;
+    return native_sampler_active();
 }
 
 bool platform_getSampleInfo(const char* path, crosspad_sampler::SampleInfo* outInfo) {
     if (!path || !outInfo) return false;
-    sample_info_from_file info{};
-    if (!SampleStreamPlayer_GetInfo(&info, path)) return false;
-    outInfo->sampleCount      = info.sampleCount;
-    outInfo->sampleRate       = info.sampleRate;
-    outInfo->numberOfChannels = info.numberOfChannels;
-    outInfo->bitsPerSample    = info.bitsPerSample;
+    uint32_t frames = 0, rate = 0;
+    uint8_t channels = 0, bits = 0;
+    if (!native_sampler_describe(path, &frames, &channels, &rate, &bits)) return false;
+    outInfo->sampleCount      = frames;
+    outInfo->sampleRate       = rate;
+    outInfo->numberOfChannels = channels;
+    outInfo->bitsPerSample    = bits;
     return true;
 }
 
+/* No path: the browser closed, the audition stops. */
 void platform_previewSample(const char* path, uint32_t start, uint32_t end,
                             int volume, int pan) {
-    if (!path || !path[0]) return;
-    SampleStreamPlayer_Preview(path, start, end);
-    SampleStreamPlayer_SetVolume(SAMPLE_STREAM_PLY_PREVIEW_NOTE,
-                                 static_cast<uint8_t>(volume > 0 ? volume : 100));
-    SampleStreamPlayer_SetPan(SAMPLE_STREAM_PLY_PREVIEW_NOTE, toPlayerPan(pan));
+    native_sampler_preview(path, start, end, volume, pan);
 }
 
 // ── Kit reload ───────────────────────────────────────────────────────────
@@ -160,47 +161,30 @@ void platform_reloadPad(uint8_t padIdx) {
     auto* kit = crosspad::getKitManager() ? crosspad::getKitManager()->getCurrentKit() : nullptr;
     if (!kit || padIdx >= KIT_PADS) return;
 
-    SampleStreamPlayer_WipeOut(padIdx);
-
     // While an app holds the pitched engine (PcInstrumentHost) the bank is
     // its own: a kit load leaves it alone, and release() reloads the kit.
     const bool appBank = instrument_host_owns_engine();
     if (kit->engine == crosspad::KitEngine::Pitched) {
-        // The WipeOut above is all the streaming engine has to do for a pitched
-        // kit. The whole bank is built once, on pad 0; the other fifteen pads
-        // carry no per-engine state (their volume/pan come from the bank swap).
+        // The sample engine lets go of the last sampler kit, so a hit during
+        // the load never sounds it; the whole bank is built once, on pad 0.
+        native_sampler_release();
         if (padIdx == 0 && !appBank) pitched_port_load(*kit);
         return;
     }
 
-    // Back on a sampler kit: the pitched bank goes first, so the two engines
-    // never hold their sample memory at once.
-    if (padIdx == 0 && !appBank && pitched_port_active()) pitched_port_unload();
+    // Back on a sampler kit: the pitched bank goes first, so a hit never
+    // sounds a zone of a kit that is no longer current.
+    if (!appBank && pitched_port_active()) pitched_port_unload();
 
-    auto& pad = kit->pads[padIdx];
-    int ok = 0;
-    for (uint8_t i = 0; i < pad.sampleCount; ++i) {
-        const std::string resolved =
-            crosspad::resolveKitSamplePath(kit->path, pad.samples[i].sample);
-        if (resolved.empty()) { ++s_layersFailed; continue; }
-
-        // end == 0 means "to the end of the file"; the player takes that as
-        // its own sentinel, so it is passed through rather than resolved here.
-        if (SampleStreamPlayer_SetupSample(padIdx, resolved.c_str(), pad.choke_group, i,
-                                           pad.samples[i].start, pad.samples[i].end)) {
-            ++ok;
-            ++s_layersLoaded;
-        } else {
-            ++s_layersFailed;
-        }
-    }
-    if (ok) ++s_padsLoaded;
-    SampleStreamPlayer_SetVolume(padIdx, static_cast<uint8_t>(pad.volume));
-    SampleStreamPlayer_SetPan(padIdx, toPlayerPan(pad.pan));
-    if (pad.playbackMode == 2) {
-        SampleStreamPlayer_SetLoopEnd(padIdx, crosspad_sampler::SAMPLE_END_MAX);
+    // The first pad of a kit the engine does not hold yet takes it whole;
+    // after that each pad swaps in under whatever is playing.
+    native_sampler_swap_pad(padIdx, crosspad_sampler::kit_load_task_is_worker());
+    const uint8_t named = kit->pads[padIdx].sampleCount;
+    if (native_sampler_pad_ready(padIdx)) {
+        ++s_padsLoaded;
+        s_layersLoaded += named;
     } else {
-        SampleStreamPlayer_SetLoopClear(padIdx);
+        s_layersFailed += named;
     }
 }
 
@@ -291,18 +275,19 @@ void platform_onKitLoadFinished(bool success) {
 
 bool platform_wf_getFileInfo(const char* path, crosspad_sampler::AudioFileInfo* outInfo) {
     if (!path || !outInfo) return false;
-    sample_info_from_file info{};
-    if (!SampleStreamPlayer_GetInfo(&info, path)) return false;
-    outInfo->sampleCount = info.sampleCount;
-    outInfo->sampleRate  = info.sampleRate;
-    outInfo->channels    = static_cast<uint8_t>(info.numberOfChannels);
-    outInfo->bitDepth    = static_cast<uint8_t>(info.bitsPerSample);
+    uint32_t frames = 0, rate = 0;
+    uint8_t channels = 0, bits = 0;
+    if (!native_sampler_describe(path, &frames, &channels, &rate, &bits)) return false;
+    outInfo->sampleCount = frames;
+    outInfo->sampleRate  = rate;
+    outInfo->channels    = channels;
+    outInfo->bitDepth    = bits;
     return true;
 }
 
 bool platform_wf_getWaveformSamples(const char* path, int16_t* outBuf, uint32_t outSamples,
                                     uint32_t startSample, uint32_t endSample) {
-    return SampleStreamPlayer_GetWaveform(path, outBuf, outSamples, startSample, endSample);
+    return native_sampler_waveform(path, outBuf, outSamples, startSample, endSample);
 }
 
 bool platform_wf_writeFile(const char* path, const uint8_t* data, uint32_t size) {
@@ -360,15 +345,51 @@ void onSamplePlaybackEvent(const void* data, crosspad::EventType, void*) {
         return;
     }
 
-    if (!SampleStreamPlayer_IsReady()) return;
-
     if (d->isOn) {
         // Velocity 0 is a note-off to the engine, so a pad reporting a
         // zero-velocity hit still has to make a sound.
-        SampleStreamPlayer_NoteOn(d->note, d->velocity ? d->velocity : 1);
+        native_sampler_note_on(d->note, d->velocity ? d->velocity : 1, d->transpose, d->key);
     } else {
-        SampleStreamPlayer_NoteOff(d->note);
+        native_sampler_note_off(d->note, d->key);
     }
+}
+
+/* A finger's hit straight from the pad logic, off the event queue, while the
+ * sample engine holds the kit; an app holding the pitched engine, or a
+ * pitched kit, keeps the event. */
+bool native_engine_plays_pads() {
+    if (instrument_host_owns_engine()) return false;
+    auto* kit = crosspad::getKitManager() ? crosspad::getKitManager()->getCurrentKit() : nullptr;
+    if (kit && kit->engine == crosspad::KitEngine::Pitched) return false;
+    return native_sampler_active();
+}
+
+bool platform_armPad(uint8_t touchPad, uint8_t soundPad, int8_t transpose, uint8_t key) {
+    return native_engine_plays_pads() && native_sampler_arm(touchPad, soundPad, transpose, key);
+}
+
+bool platform_playPad(uint8_t touchPad, uint8_t soundPad, uint8_t velocity, int8_t transpose,
+                      uint8_t key) {
+    if (!native_engine_plays_pads()) return false;
+    native_sampler_play(touchPad, soundPad, velocity ? velocity : 1, transpose, key);
+    return true;
+}
+
+/* The engine never takes a pad apart under a voice -- a voice of the old
+ * sample plays out -- so the loader has nothing to wait for. */
+bool platform_padSounding(uint8_t padIdx) {
+    if (native_sampler_active()) return false;
+    return crosspad::getPadManager().isPadPlaying(padIdx);
+}
+
+/* Whether a hit on the pad sounds, for its LED and the load's verdict. An
+ * app holding the pitched engine plays the kit its own way. */
+bool platform_padPlayable(uint8_t padIdx) {
+    auto* kit = crosspad::getKitManager() ? crosspad::getKitManager()->getCurrentKit() : nullptr;
+    if (!kit || padIdx >= KIT_PADS) return false;
+    if (instrument_host_owns_engine()) return true;
+    if (kit->engine == crosspad::KitEngine::Pitched) return pitched_port_active();
+    return native_sampler_pad_ready(padIdx);
 }
 
 // ── Kit discovery ────────────────────────────────────────────────────────
@@ -389,15 +410,8 @@ void rescanKits() {
 // ── Public API ───────────────────────────────────────────────────────────
 
 crosspad::IAudioNode* sampler_port_init(const crosspad_sampler::KitGateHost& gate) {
-    if (!SampleStreamPlayer_Init()) {
-        std::printf("[sampler] engine init failed — pads will not sound\n");
-        return nullptr;
-    }
+    crosspad::IAudioNode* node = native_sampler_node();
     s_engineUp = true;
-
-    // Sixteen pads plus the audition slot is what the grid can ask for at
-    // once; the board sets the same cap for the same reason.
-    SampleStreamPlayer_SetMaxPolyphony(16);
 
     crosspad::getPlatformServices().kitManager = &s_kitLoader;
     static PcPadMix padMix;
@@ -412,8 +426,15 @@ crosspad::IAudioNode* sampler_port_init(const crosspad_sampler::KitGateHost& gat
     cb.audio.reloadPad         = platform_reloadPad;
     cb.audio.reloadPads        = platform_reloadPads;
     cb.audio.hasCacheFile      = platform_hasCacheFile;
+    cb.audio.padSounding       = platform_padSounding;
+    cb.audio.padPlayable       = platform_padPlayable;
 
     cb.player.noteOn           = platform_noteOn;
+    cb.player.armPad           = platform_armPad;
+    cb.player.playPad          = platform_playPad;
+    cb.player.disarmPad        = native_sampler_disarm;
+    cb.player.engineHandlesFx  = platform_engineHandlesFx;
+    cb.player.setPadPitch      = native_sampler_set_pad_pitch;
     cb.player.previewSample    = platform_previewSample;
     cb.player.getSampleInfo    = platform_getSampleInfo;
     cb.player.setVolume        = platform_setVolume;
@@ -437,7 +458,7 @@ crosspad::IAudioNode* sampler_port_init(const crosspad_sampler::KitGateHost& gat
     // Audition files while browsing them — the explorer debounces the
     // selection, so this just plays whatever it rests on.
     file_explorer_set_preview_callback([](const char* path) {
-        platform_previewSample(path, 0, crosspad_sampler::SAMPLE_END_MAX, 100, 64);
+        platform_previewSample(path, 0, crosspad_sampler::SAMPLE_END_MAX, kPreviewVolume, 0);
     });
 
     crosspad::getEventBus().subscribe(crosspad::EventType::SamplePlayback,
@@ -457,7 +478,7 @@ crosspad::IAudioNode* sampler_port_init(const crosspad_sampler::KitGateHost& gat
     // A card mounted before this ran only recorded its path; apply it now.
     if (!s_sdRoot.empty()) sampler_port_set_sdcard(s_sdRoot);
 
-    return &s_node;
+    return node;
 }
 
 void sampler_port_load_kit(int kitId) {
@@ -465,7 +486,7 @@ void sampler_port_load_kit(int kitId) {
 }
 
 void sampler_port_unload_kit() {
-    for (uint8_t pad = 0; pad < KIT_PADS; ++pad) SampleStreamPlayer_WipeOut(pad);
+    native_sampler_release();
     if (!instrument_host_owns_engine() && pitched_port_active()) pitched_port_unload();
     s_kitLoader.clearCurrentKit();
     crosspad_sampler::getPadColorManager().loadColorsFromKit(crosspad::KitInfo{});
@@ -474,9 +495,9 @@ void sampler_port_unload_kit() {
 void sampler_port_set_sdcard(const std::string& root) {
     s_sdRoot = root;
     s_kitLoader.setRootPrefix(root);
+    native_sampler_set_root(root);
     if (!s_engineUp) return;   // init() replays this
 
-    SampleStreamPlayer_SetRootPrefix(root.c_str());
     rescanKits();
 }
 
