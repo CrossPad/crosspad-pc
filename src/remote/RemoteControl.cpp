@@ -904,8 +904,11 @@ static std::string handle_settings_set(const std::string& json) {
     // System
     else if (key == "kit") { settings->Kit = (uint8_t)value; found = true; }
     else if (key == "audio_engine") { settings->AudioEngineEnabled = (value != 0); found = true; }
-    else if (key == "launcher_style") {   // 0 icon grid, 1 list; shown on the next launcher build
-        settings->launcherStyle = value ? crosspad::LauncherStyle::List : crosspad::LauncherStyle::Grid;
+    else if (key == "launcher_style") {   // home screen: 0 icon grid, 1 list, 2 pad map; built on the way home
+        if (value < 0 || value > (int)crosspad::LauncherStyle::Pads) {
+            return "{" + json_bool("ok", false) + "," + json_string("error", "launcher_style is 0..2") + "}";
+        }
+        settings->launcherStyle = (crosspad::LauncherStyle)value;
         found = true;
     }
     // Keypad
