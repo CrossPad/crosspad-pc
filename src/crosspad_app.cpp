@@ -1936,11 +1936,14 @@ void crosspad_app_init()
         saveDevicePrefs();
     });
 
-    /* Overlay layer on lv_layer_top(), positioned over the LCD area. */
+    /* Overlay layer on lv_layer_top(), exactly over the LCD area. It sat at
+     * y = 20 while the panel is drawn at LCD_Y, so every overlay -- the MODE
+     * map, dialogs, the kit loader -- landed 38 px high, and one aligned to
+     * the panel lost its bottom 38 px to the layer's clip. */
     lv_obj_t* overlayLayer = lv_obj_create(lv_layer_top());
     lv_obj_remove_style_all(overlayLayer);
-    lv_obj_set_pos(overlayLayer, (Stm32EmuWindow::WIN_W - 320) / 2, 20);
-    lv_obj_set_size(overlayLayer, 320, 240);
+    lv_obj_set_pos(overlayLayer, Stm32EmuWindow::LCD_X, Stm32EmuWindow::LCD_Y);
+    lv_obj_set_size(overlayLayer, Stm32EmuWindow::LCD_W, Stm32EmuWindow::LCD_H);
     lv_obj_remove_flag(overlayLayer, (lv_obj_flag_t)(LV_OBJ_FLAG_CLICKABLE | LV_OBJ_FLAG_SCROLLABLE));
     crosspad_gui::setOverlayParent(overlayLayer);
 
