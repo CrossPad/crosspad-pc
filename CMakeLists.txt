@@ -251,6 +251,9 @@ set(PC_STUB_SOURCES
     src/pc_stubs/FreeRtosEventBus.cpp
     src/pc_stubs/PcPlatformStubs.cpp
     src/pc_stubs/PcHttpClient.cpp
+    src/pc_stubs/GuiThread.cpp
+    src/pc_stubs/ShutdownSignals.cpp
+    src/pc_stubs/PcSubprocess.cpp
 )
 
 # Windows application icon
@@ -614,6 +617,14 @@ foreach(_app_dir ${_app_submodule_dirs})
     endif()
 endforeach()
 target_link_libraries(CrossPad ${MAIN_LIBS})
+
+# Every lv_async_call() -- crosspad-gui's and the apps' included -- through
+# pc_gui::post(), which queues a call made off the LVGL thread instead of
+# letting it into LVGL's timer list and allocator (src/pc_stubs/GuiThread.hpp).
+if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
+    target_link_options(CrossPad PRIVATE "LINKER:--wrap=lv_async_call")
+    target_compile_definitions(CrossPad PRIVATE CROSSPAD_WRAP_LV_ASYNC=1)
+endif()
 
 # Export the dynamic symbol table so the backtrace an LVGL assert prints
 # (lv_assert_crosspad.h) carries function names rather than bare addresses.

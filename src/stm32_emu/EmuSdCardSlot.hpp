@@ -5,7 +5,7 @@
  * @brief Virtual micro SD card slot for the CrossPad PC emulator.
  *
  * Renders a clickable SD card slot on the device body. When clicked,
- * opens a native folder picker dialog to select a working directory
+ * opens a native folder picker dialog (off the LVGL thread) to select a working directory
  * that simulates the SD card. Shows mounted/unmounted state visually.
  */
 
@@ -41,6 +41,7 @@ private:
     lv_obj_t* pathLabel_ = nullptr;   ///< folder name label next to slot
 
     bool        mounted_ = false;
+    bool        picking_ = false;   ///< a folder picker is open (LVGL thread)
     std::string mountPath_;
 
     MountCallback   onMount_;
@@ -52,4 +53,11 @@ private:
     static std::string openFolderDialog();
 
     static void onSlotClicked(lv_event_t* e);
+
+    /// The picker's answer, back on the LVGL thread.
+    struct Picked {
+        EmuSdCardSlot* slot;
+        std::string    folder;
+    };
+    void onFolderPicked(const std::string& folder);
 };

@@ -14,6 +14,7 @@
 #include <crosspad/midi/IMidiOutput.hpp>
 #include <RtMidi.h>
 
+#include <atomic>
 #include <functional>
 #include <memory>
 #include <mutex>
@@ -102,11 +103,13 @@ private:
     std::unique_ptr<RtMidiOut> midiOut_;
     std::unique_ptr<RtMidiIn>  midiIn_;
 
-    bool outputOpen_ = false;
-    bool inputOpen_  = false;
+    /* Read on the LVGL thread (the reconnect timer, the jack panel) while the
+     * reconnect thread opens and closes the ports. */
+    std::atomic<bool> outputOpen_{false};
+    std::atomic<bool> inputOpen_{false};
 
     std::string autoConnectKeyword_;
-    bool autoConnectFound_ = false;   // true when keyword match was found
+    std::atomic<bool> autoConnectFound_{false};   // true when keyword match was found
 
     // Cached port lists — only log when devices change
     std::vector<std::string> lastOutputPorts_;
@@ -118,7 +121,14 @@ private:
     ControlChangeCallback ccCb_;
     SysExCallback         sysExCb_;
 
-    // Thread safety for output
+    /* begin/end/reconnect and everything that reads the RtMidi objects: the
+     * reconnect timer runs reconnect() on a thread of its own, the jack panel
+     * begin() and end() and the port lists on the LVGL thread. The RtMidiOut
+     * one of them was using was the one the other had just freed. */
+    mutable std::recursive_mutex lifeMutex_;
+
+    // midiOut_ and outputOpen_ between a send and the port being replaced;
+    // taken after lifeMutex_, never before it
     std::mutex outMutex_;
 
     // One message to the output port, under outMutex_; false (and the port

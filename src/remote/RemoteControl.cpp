@@ -194,9 +194,12 @@ static std::thread s_serverThread;
 static std::atomic<bool> s_running{false};
 static socket_t s_listenSocket = SOCKET_INVALID;
 
-// Commands are read on a client's thread and executed on the LVGL thread.
-// Each carries its own reply slot, so several clients never share one and a
-// client that gave up (timeout) leaves a request the LVGL thread skips.
+/* Commands are read on a client's thread and executed on the LVGL thread.
+ * Each carries its own reply slot, signalled through its condition variable.
+ * There used to be one slot for all of them: a command that outlived the
+ * wait got "timeout", and the reply it produced afterwards was taken as the
+ * reply to the next command -- every reply after that one was the previous
+ * command's. A client that gave up leaves a request the LVGL thread skips. */
 struct Request {
     std::string line;
     std::mutex mutex;
@@ -1418,11 +1421,21 @@ static void set_socket_timeout(socket_t s, int optname, int ms) {
 #endif
 }
 
-static bool recv_timed_out() {
+/// The call was interrupted by a signal and should simply be made again.
+static bool interrupted() {
+#ifdef _WIN32
+    return WSAGetLastError() == WSAEINTR;
+#else
+    return errno == EINTR;
+#endif
+}
+
+/// SO_RCVTIMEO / SO_SNDTIMEO ran out.
+static bool timed_out() {
 #ifdef _WIN32
     return WSAGetLastError() == WSAETIMEDOUT;
 #else
-    return errno == EAGAIN || errno == EWOULDBLOCK || errno == EINTR;
+    return errno == EAGAIN || errno == EWOULDBLOCK;
 #endif
 }
 
@@ -1438,10 +1451,8 @@ static bool send_all(socket_t s, const std::string& data) {
     size_t off = 0;
     while (off < data.size()) {
         const int n = (int)send(s, data.data() + off, (int)(data.size() - off), flags);
-        if (n <= 0) {
-            if (n < 0 && recv_timed_out() && s_running) continue;
-            return false;
-        }
+        if (n < 0 && interrupted()) continue;
+        if (n <= 0) return false;   // a peer gone, or stalled past SO_SNDTIMEO
         off += (size_t)n;
     }
     return true;
@@ -1460,6 +1471,17 @@ static bool looks_like_request(const std::string& line) {
     return !json_get_string(line, "cmd").empty();
 }
 
+/* The audio device verbs open and close sound-server streams (100-500 ms,
+ * seconds for a pactl move) and are thread-safe by design -- the jack panel
+ * runs the same functions on a worker thread under s_audioSelMutex. On the
+ * LVGL thread they froze the UI for as long; they run on the client's thread
+ * instead. ping needs no LVGL/SDL context at all. */
+static bool runs_on_client_thread(const std::string& cmd) {
+    return cmd == "ping" ||
+           cmd == "audio_out_list" || cmd == "audio_in_list" ||
+           cmd == "audio_out_set"  || cmd == "audio_in_set";
+}
+
 static std::string run_on_lvgl_thread(const std::string& line) {
     auto req = std::make_shared<Request>();
     req->line = line;
@@ -1468,11 +1490,11 @@ static std::string run_on_lvgl_thread(const std::string& line) {
         s_commandQueue.push(req);
     }
     std::unique_lock<std::mutex> lock(req->mutex);
-    const bool answered = req->cv.wait_for(lock, std::chrono::milliseconds(COMMAND_WAIT_MS),
-                                           [&] { return req->done || !s_running; });
-    if (answered && req->done) return req->response;
+    req->cv.wait_for(lock, std::chrono::milliseconds(COMMAND_WAIT_MS),
+                     [&] { return req->done || !s_running; });
+    if (req->done) return req->response;
     req->abandoned = true;
-    return error_reply("timeout");
+    return error_reply(s_running ? "timeout" : "stopping");
 }
 
 static void handle_client(socket_t client) {
@@ -1489,7 +1511,8 @@ static void handle_client(socket_t client) {
         const int n = (int)recv(client, chunk, sizeof(chunk), 0);
         if (n == 0) break;
         if (n < 0) {
-            if (recv_timed_out() && (idleMs += 1000) < IDLE_LIMIT_MS) continue;
+            if (interrupted()) continue;
+            if (timed_out() && (idleMs += 1000) < IDLE_LIMIT_MS) continue;
             break;
         }
         idleMs = 0;
@@ -1506,9 +1529,9 @@ static void handle_client(socket_t client) {
                 resp = error_reply("malformed request: expected one JSON object with a \"cmd\" per line");
             } else {
                 try {
-                    // ping needs no LVGL/SDL context and answers at once
-                    resp = json_get_string(line, "cmd") == "ping" ? dispatch_command(line)
-                                                                   : run_on_lvgl_thread(line);
+                    resp = runs_on_client_thread(json_get_string(line, "cmd"))
+                               ? dispatch_command(line)
+                               : run_on_lvgl_thread(line);
                 } catch (const std::exception& e) {
                     resp = error_reply(std::string("exception: ") + e.what());
                 }
@@ -1537,7 +1560,11 @@ static void accept_loop() {
         const int sel = select((int)s_listenSocket + 1, &readfds, nullptr, nullptr, &tv);
         if (sel <= 0) continue;
 
+#ifdef SOCK_CLOEXEC
+        socket_t client = accept4(s_listenSocket, nullptr, nullptr, SOCK_CLOEXEC);
+#else
         socket_t client = accept(s_listenSocket, nullptr, nullptr);
+#endif
         if (client == SOCKET_INVALID) continue;
 
         // One thread per client: a connection that sits idle or reads slowly
@@ -1569,7 +1596,13 @@ bool start(lv_display_t* disp) {
 
     // Bind here, not in the thread: the caller learns at once whether it has
     // a control port.
+#ifdef SOCK_CLOEXEC
+    // Not into a child: the updater's script and the app it restarts
+    // inherited the bound port, and the new simulator could not bind it.
+    s_listenSocket = socket(AF_INET, SOCK_STREAM | SOCK_CLOEXEC, IPPROTO_TCP);
+#else
     s_listenSocket = socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
+#endif
     bool ok = s_listenSocket != SOCKET_INVALID;
     if (ok) {
         int reuse = 1;
@@ -1603,6 +1636,17 @@ bool start(lv_display_t* disp) {
 
 void stop() {
     s_running = false;
+    // A client waiting on a queued command answers "stopping" now, not after
+    // the full COMMAND_WAIT_MS.
+    {
+        std::lock_guard<std::mutex> qlock(s_queueMutex);
+        while (!s_commandQueue.empty()) {
+            auto req = std::move(s_commandQueue.front());
+            s_commandQueue.pop();
+            { std::lock_guard<std::mutex> lock(req->mutex); }
+            req->cv.notify_all();
+        }
+    }
     if (s_serverThread.joinable()) {
         s_serverThread.join();
     }

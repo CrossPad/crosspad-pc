@@ -94,6 +94,12 @@ set(TEST_SOURCES
     test_waveform_loader.cpp
 )
 
+# Child processes (POSIX): the helper and its test
+if(NOT WIN32)
+    list(APPEND TEST_SOURCES test_subprocess.cpp)
+    list(APPEND CORE_TEST_SOURCES ${PROJECT_SOURCE_DIR}/src/pc_stubs/PcSubprocess.cpp)
+endif()
+
 # ── Audio pipeline test sources (Tier 2 + Tier 3) ──
 set(AUDIO_TEST_FILES
     audio/test_AudioEngineSettings.cpp
