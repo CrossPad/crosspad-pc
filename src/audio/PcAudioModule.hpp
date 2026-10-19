@@ -17,6 +17,7 @@
  * float buffers live here as mixerBus_.
  */
 
+#include <chrono>
 #include <crosspad/audio/AbstractAudioModule.hpp>
 #include <atomic>
 #include <thread>
@@ -130,7 +131,10 @@ private:
 
     // Ring overflow tracking and rate-limited logging
     uint32_t overflowCount_ = 0;
-    uint32_t overflowLogEvery_ = 400;  // ≈1-2 s depending on frameCount (128-256) at 48kHz
+    uint32_t overflowReported_ = 0;
+    uint64_t overflowFrames_ = 0;
+    std::chrono::steady_clock::time_point overflowLastLog_{};
+    static constexpr std::chrono::seconds overflowLogPeriod{10};
 
     void audioThreadFunc();
     void processMixer();

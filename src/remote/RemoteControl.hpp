@@ -4,7 +4,7 @@
  * @file RemoteControl.hpp
  * @brief Lightweight TCP server for external control of the CrossPad simulator.
  *
- * Listens on localhost:19840, accepts JSON commands over TCP.
+ * Listens on 127.0.0.1:19840 (CROSSPAD_REMOTE_PORT), accepts JSON commands over TCP.
  * Runs in a background thread, dispatches commands to LVGL/SDL on the main thread.
  *
  * Protocol: newline-delimited JSON.
@@ -57,8 +57,10 @@ namespace remote {
 
 /// Start the remote control TCP server on a background thread.
 /// @param disp  The main LVGL display (for screenshot capture).
-/// Call once after sdl_hal_init().
-void start(lv_display_t* disp);
+/// Call once after sdl_hal_init(). Binds before returning: false means the
+/// port is taken (a second simulator?) and this instance cannot be driven --
+/// said on stderr and in the window title. CROSSPAD_REMOTE_PORT picks the port.
+bool start(lv_display_t* disp);
 
 /// Stop the server and join the background thread.
 void stop();

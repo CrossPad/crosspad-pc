@@ -26,6 +26,7 @@
 #include "crosspad/app/AppVersions.hpp"
 
 #include <cstdio>
+#include <cstdlib>
 #include <cstring>
 
 /* ── FreeRTOS hooks (required by kernel config) ───────────────────────── */
@@ -74,7 +75,16 @@ static void lvgl_task(void* pvParameters)
     crosspad_gui::touch_gesture_attach(sdl_hal_get_mouse(), swipe);
 
     // Start remote control server (TCP localhost:19840, or CROSSPAD_REMOTE_PORT) for MCP integration
-    remote::start(disp);
+    if (!remote::start(disp)) {
+        /* The window title and stderr already say so. A scripted run that
+         * cannot be driven is worth less than none: CROSSPAD_REMOTE_REQUIRED=1
+         * turns the missing port into exit code 3. */
+        const char* req = getenv("CROSSPAD_REMOTE_REQUIRED");
+        if (req && req[0] == '1') {
+            crosspad_app_shutdown();
+            exit(3);
+        }
+    }
 
     while (true) {
         lv_timer_handler();

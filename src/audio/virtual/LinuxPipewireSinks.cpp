@@ -563,10 +563,23 @@ static bool tryMovePulseOutputToSink(int slot, const std::string& targetSinkName
         "pactl", "move-sink-input", sid.c_str(), targetSinkName.c_str(), nullptr
     };
     PactlResult mr = runPactl(argvMove);
+    /* The caller polls this every 50 ms until the move takes; a failure is
+     * said once per (input, target, exit), not once per poll. */
+    static std::mutex failMutex;
+    static std::string lastFailure;
     if (mr.exitCode != 0) {
-        printf("[VirtSink] move-sink-input %s -> %s failed (exit %d)\n",
-               sid.c_str(), targetSinkName.c_str(), mr.exitCode);
+        const std::string key = sid + ">" + targetSinkName + ":" + std::to_string(mr.exitCode);
+        std::lock_guard<std::mutex> lk(failMutex);
+        if (key != lastFailure) {
+            lastFailure = key;
+            printf("[VirtSink] move-sink-input %s -> %s failed (exit %d)\n",
+                   sid.c_str(), targetSinkName.c_str(), mr.exitCode);
+        }
         return false;
+    }
+    {
+        std::lock_guard<std::mutex> lk(failMutex);
+        lastFailure.clear();
     }
     printf("[VirtSink] Moved CrossPad OUT%d (sink-input %s) -> %s\n",
            slot + 1, sid.c_str(), targetSinkName.c_str());
