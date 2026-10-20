@@ -41,6 +41,9 @@
  *                             (parity with the board's WAVE_STATUS verb)
  *   enc_group               — every widget the encoder reaches on this screen:
  *                             index, box, first caption (parity with ENC_GROUP)
+ *   ui_find {text}          — labels holding text (any case) on the screen and
+ *                             the layers above, with the box of the clickable
+ *                             widget around each: tap a button by its name
  *   app_list                — registered apps + the running one
  *                             (parity with the board's APP_LIST verb)
  *   smpl_peak               — sample engine peak, free sample slots, load

@@ -605,6 +605,39 @@ static std::string handle_enc_group() {
     return "{" + json_bool("ok", true) + "," + json_int("count", (int)n) + ",\"items\":[" + items + "]}";
 }
 
+/* Every label on screen whose text holds "text" (case-insensitive), on the
+ * active screen and the layers above it, with the box of the nearest
+ * clickable widget around it -- a journey taps a button by its name, encoder
+ * group or not (the apps build theirs on the board only). */
+static void find_labels(lv_obj_t* obj, const std::string& want, std::string& out, int& n) {
+    if (!obj || lv_obj_has_flag(obj, LV_OBJ_FLAG_HIDDEN)) return;
+    if (lv_obj_check_type(obj, &lv_label_class)) {
+        const char* t = lv_label_get_text(obj);
+        std::string low = t ? t : "";
+        for (auto& c : low) c = (char)std::tolower((unsigned char)c);
+        if (!want.empty() && low.find(want) != std::string::npos) {
+            lv_obj_t* hit = obj;
+            while (hit && !lv_obj_has_flag(hit, LV_OBJ_FLAG_CLICKABLE)) hit = lv_obj_get_parent(hit);
+            lv_area_t a;
+            lv_obj_get_coords(hit ? hit : obj, &a);
+            out += std::string(n++ ? "," : "") + "{" + json_string("text", t ? t : "") + "," +
+                   json_int("x", a.x1) + "," + json_int("y", a.y1) + "," + json_int("w", a.x2 - a.x1 + 1) + "," +
+                   json_int("h", a.y2 - a.y1 + 1) + "," + json_bool("clickable", hit != nullptr) + "}";
+        }
+    }
+    const uint32_t cnt = lv_obj_get_child_count(obj);
+    for (uint32_t i = 0; i < cnt; ++i) find_labels(lv_obj_get_child(obj, i), want, out, n);
+}
+
+static std::string handle_ui_find(const std::string& json) {
+    std::string want = json_get_string(json, "text");
+    for (auto& c : want) c = (char)std::tolower((unsigned char)c);
+    std::string out;
+    int n = 0;
+    for (lv_obj_t* root : {lv_screen_active(), lv_layer_top(), lv_layer_sys()}) find_labels(root, want, out, n);
+    return "{" + json_bool("ok", true) + "," + json_int("count", n) + ",\"items\":[" + out + "]}";
+}
+
 static std::string handle_top_bar() {
     lv_indev_t* nav = crosspad_gui::getGuiPlatform().getNavigationEncoder();
     lv_group_t* g = nav ? lv_indev_get_group(nav) : nullptr;
@@ -1464,6 +1497,12 @@ static std::string dispatch_command(const std::string& json) {
     }
     if (cmd == "kit_status") {
         return handle_kit_status();
+    }
+    if (cmd == "enc_group") {
+        return handle_enc_group();
+    }
+    if (cmd == "ui_find") {
+        return handle_ui_find(json);
     }
     if (cmd == "audio_out_list") {
         return handle_audio_out_list();
