@@ -467,6 +467,21 @@ foreach(_app_dir ${_app_glob_dirs})
     endif()
 endforeach()
 
+# An app whose crosspad-app.json names "kits" belongs to those kits only (a
+# game is a firmware of its own): any other kit neither compiles nor
+# registers it -- the board's rule too (platform-idf main/app/CMakeLists.txt).
+foreach(_app_dir ${_app_submodule_dirs})
+    get_filename_component(_app_name "${_app_dir}" NAME)
+    if(NOT EXISTS "${_app_dir}/crosspad-app.json")
+        continue()
+    endif()
+    file(READ "${_app_dir}/crosspad-app.json" _app_json)
+    _crosspad_kit_list("${_app_json}" kits _app_kits)
+    if(_app_kits AND NOT CROSSPAD_FW_KIT IN_LIST _app_kits)
+        list(APPEND _kit_excluded "${_app_name}")
+    endif()
+endforeach()
+
 set(CROSSPAD_PC_APP_LIBS "")
 set(_kit_app_dirs "")
 foreach(_app_dir ${_app_submodule_dirs})

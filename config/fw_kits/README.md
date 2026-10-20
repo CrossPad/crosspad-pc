@@ -10,7 +10,7 @@ file here; the default is `full`.
 | `display_name` | What the Firmware app shows for it |
 | `version` | The kit's version; the simulator's own when absent |
 | `apps` | Only these apps are in the launcher (directory names under `src/apps`). Every app is still compiled: the simulator's backend links against them |
-| `exclude` | These apps are neither compiled nor registered |
+| `exclude` | These apps are neither compiled nor registered. An app whose `crosspad-app.json` names `kits` is left out of every other kit by itself (a game) |
 | `standalone` | The app the firmware starts into, with no launcher behind it |
 | `top_bar` | `false` hides the transport and status bar: the app gets the whole panel (default `true`) |
 | `description` | The kit card's text, written into the package's manifest |
