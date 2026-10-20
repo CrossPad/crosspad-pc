@@ -49,3 +49,6 @@
 [submodule "src/apps/crosspad-slicer"]
 	path = src/apps/crosspad-slicer
 	url = https://github.com/CrossPad/crosspad-slicer.git
+[submodule "src/apps/crosspad-pitchplay"]
+	path = src/apps/crosspad-pitchplay
+	url = https://github.com/CrossPad/crosspad-pitchplay.git
