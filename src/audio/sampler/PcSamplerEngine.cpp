@@ -584,9 +584,8 @@ bool kit_names(uint16_t slot) {
 void sweep_retired() {
     State& s = st();
     uint64_t left = s.retired;
-    while (left) {
-        const uint16_t i = static_cast<uint16_t>(__builtin_ctzll(left));
-        left &= left - 1;
+    for (uint16_t i = 0; left; ++i, left >>= 1) {
+        if (!(left & 1)) continue;
         if (s.node.engine.slotInUse(i)) continue;
         s.store.unloadSlot(i);
         s.retired &= ~(1ull << i);
