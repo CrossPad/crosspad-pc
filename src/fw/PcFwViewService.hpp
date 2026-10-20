@@ -4,10 +4,13 @@
 /**
  * @file PcFwViewService.hpp
  * @brief The Firmware views in the simulator: crosspad-gui's IFwViewService
- *        over made-up data -- a few packages on a pretend card, slots A and B,
- *        a cached catalog with Official and Community kits, one update
- *        waiting. A download or a check plays out over a few polls; installing
- *        or switching slots is refused (the simulator has no slots to boot).
+ *        over the simulator's firmware (PcFirmware.hpp) -- the packages on the
+ *        virtual card, the two slots, installing and switching, which restart
+ *        the simulator into the other slot's binary. The catalog stays
+ *        made-up (Official and Community kits, one update waiting): a
+ *        download or a check plays out over a few polls and puts nothing on
+ *        the card. The platform registers it at boot, as an app that leaves
+ *        the firmware (DOOM's Quit) switches through it too.
  *        LVGL thread only, as the views are.
  */
 
@@ -15,6 +18,8 @@
 
 #include <memory>
 #include <string>
+#include <utility>
+#include <vector>
 
 #include "crosspad-gui/fw/IFwViewService.h"
 
@@ -24,7 +29,7 @@ public:
 
     void dataOpen() override { ++opens_; }
     void dataClose() override;
-    bool dataBusy() override { return scanWanted_ || storeWanted_ || detailWanted_; }
+    bool dataBusy() override { return scanWanted_ || storeWanted_ || detailWanted_ || !iconsWanted_.empty(); }
     void dataPoll() override;
     void scanLibrary() override { scanWanted_ = true; }
     crosspad_gui::FwLibrarySnap* library() override { return opens_ > 0 && libReady_ ? lib_.get() : nullptr; }
@@ -42,19 +47,20 @@ public:
     void remove(const char* pkg, const char* slotA, const char* slotB) override;
     void ackCommunity(const char* kit) override;
     bool communityOk(const char* kit) override;
-    bool requestIcon(uint32_t, const char*, const char*, const char*) override { return false; }
-    void cancelIcon(uint32_t) override {}
-    void freeIcon(uint8_t*) override {}
+    bool requestIcon(uint32_t ticket, const char* pkg, const char* kit, const char* version) override;
+    void cancelIcon(uint32_t ticket) override;
+    void freeIcon(uint8_t* buf) override;
     uint32_t libraryLimitMb() override { return kLibraryLimitMb; }
 
     void readSlots(crosspad::FwSlotInfo out[2]) override;
-    bool runningOnTrial() override { return false; }
+    bool runningOnTrial() override;
+    /// `--boot` rolls back a slot that never confirmed itself (PcFirmware.hpp).
     bool rollbackSupported() override { return true; }
     bool installWriting() override { return false; }
     bool flowActive() override { return false; }
-    bool flowInstallAndRestart(const char*, bool) override { return false; }
-    bool flowSwitchAndRestart(bool) override { return false; }
-    const char* runningVersion() override { return kRunningVersion; }
+    bool flowInstallAndRestart(const char* pkg, bool allowUnknownBuild) override;
+    bool flowSwitchAndRestart(bool clearRollback) override;
+    const char* runningVersion() override;
 
     crosspad_gui::FwUpdaterState updaterState() override { return state_; }
     bool updaterBusy() override { return busy_; }
@@ -88,11 +94,9 @@ public:
 
 private:
     static constexpr uint32_t kLibraryLimitMb = 512;
-    static constexpr const char* kRunningVersion = "v1.2.0";
 
     static void copy(const std::string& s, char* out, size_t n);
-    crosspad_gui::FwLibItem& addPackage(const char* kit, const char* version, const char* displayName,
-                                        crosspad::FwTier tier);
+    void scanCard();
     crosspad::FwStoreKit& addKit(const char* kit, const char* displayName, const char* author, crosspad::FwTier tier);
     void addVersion(crosspad::FwStoreKit& k, const char* version, crosspad::FwChannel channel, crosspad::FwTier tier);
     void stepJob();
@@ -100,7 +104,6 @@ private:
     std::unique_ptr<crosspad_gui::FwLibrarySnap> lib_;
     crosspad::FwStore store_{};
     crosspad::FwKitDetail detail_{};
-    crosspad::FwSlotInfo slots_[2]{};
     int opens_ = 0;
     bool scanWanted_ = false, libReady_ = false;
     uint32_t libGen_ = 0;
@@ -109,12 +112,19 @@ private:
     bool detailWanted_ = false, detailReady_ = false;
     uint32_t detailGen_ = 0;
     std::string detailKit_;
+    struct IconWanted {
+        uint32_t ticket;
+        std::string pkg, kit;   // the package's icon.bin, else the kit's staged one
+    };
+    std::vector<IconWanted> iconsWanted_;
 
     crosspad_gui::FwUpdaterState state_ = crosspad_gui::FwUpdaterState::Available;
     bool busy_ = false;
-    bool install_ = false;
     uint8_t progress_ = 0;
-    std::string target_, targetKit_, ready_, tab_, communityOk_;
+    std::string target_, targetKit_, ready_, tab_, communityOk_, runningVersion_;
 };
+
+/// The simulator's one service, registered at boot.
+PcFwViewService& pcFwViewService();
 
 #endif // USE_LVGL

@@ -53,6 +53,9 @@
 #include "crosspad-gui/platform/IGuiPlatform.h"
 #include "crosspad-gui/components/volume_overlay.h"
 #include "crosspad-gui/components/power_gesture.h"
+#include "crosspad-gui/fw/IFwViewService.h"
+#include "fw/PcFirmware.hpp"
+#include "fw/PcFwViewService.hpp"
 #include "crosspad-gui/components/boot_splash.h"
 
 #ifdef USE_MIDI
@@ -750,7 +753,8 @@ static void LoadMainScreen(lv_obj_t* parent) {
     config.bg_color       = lv_color_black();
     // REC/DUB/PLAY/STOP live on the transport bar since the mini-daw merge;
     // without it the Sequencer and Arrange cannot take or play anything here.
-    config.transport_bar  = true;
+    // A kit without a top bar (a game) gives its app the whole panel.
+    config.transport_bar  = CROSSPAD_FW_TOP_BAR;
 
 #ifdef USE_AUDIO
     // The rebuild below cleans the whole screen, kit-selector overlay
@@ -759,6 +763,8 @@ static void LoadMainScreen(lv_obj_t* parent) {
     crosspad_sampler::kit_gate_reset();
 #endif
     auto result = orch.loadMainScreen(parent, config);
+    // Built all the same (its drawer and timers keep working), only not shown.
+    if (!CROSSPAD_FW_TOP_BAR && result.status_bar) lv_obj_add_flag(result.status_bar, LV_OBJ_FLAG_HIDDEN);
 
     app_c    = result.app_container;
 
@@ -1451,10 +1457,21 @@ static void boot_finish()
      * Once there is a launcher to go home to: the splash takes keys while
      * the devices come up, and Escape then rebuilt a launcher whose
      * orchestrator did not exist yet. */
-    stm32Emu.getKeyboardCapture().setEscapeCallback(crosspad_app_go_home);
+    stm32Emu.getKeyboardCapture().setEscapeCallback(
+        CROSSPAD_FW_STANDALONE_APP[0] ? [] { crosspad_gui::powerBack(); } : crosspad_app_go_home);
     stm32Emu.getKeyboardCapture().setPowerCallback(crosspad_gui::powerButtonPress);
     stm32Emu.getKeyboardCapture().setPowerReleaseCallback(crosspad_gui::powerButtonRelease);
     stm32Emu.getKeyboardCapture().setVolumeCallback(crosspad_gui::volume_overlay_toggle);
+
+    /* The board's boot-time decisions, made here as its platform makes them,
+     * whatever app the firmware is: pad 16 held through the boot goes back
+     * to the main firmware, a trial slot confirms itself. */
+    if (pc_fw::bootFinished(crosspad::getPadManager().isPadPressed(pc_fw::kRecoveryPad))) return;
+
+    /* A single-app kit (DOOM) starts into its app; there is no launcher to
+     * go back to, Escape is the power click. */
+    if (CROSSPAD_FW_STANDALONE_APP[0] && !crosspad_app_start(CROSSPAD_FW_STANDALONE_APP))
+        printf("[CrossPad] kit %s: app %s is not registered\n", CROSSPAD_FW_KIT_ID, CROSSPAD_FW_STANDALONE_APP);
 
     /* ── Auto-check for updates (background) ─────────────────────────── */
     if (pc_platform_get_auto_check_updates()) {
@@ -1879,8 +1896,16 @@ void crosspad_app_init()
     std::atexit(crosspad_app_shutdown);
 #endif
 
+    /* Which slot this binary runs, and that firmware's own settings in place
+     * before they are read. */
+    pc_fw::boot();
+
     /* Platform stubs (event bus, settings, pad manager, GUI) */
     pc_platform_init();
+
+    /* The Firmware views and an app that leaves the firmware (DOOM's Quit)
+     * switch through the one service. */
+    crosspad_gui::setFwViewService(&pcFwViewService());
 
     /* The pads' animations (progress bars, showFrame) and the LED controller
      * advance on this tick, as on the board's pad_anim worker. On the LVGL

@@ -68,6 +68,11 @@ void PcAudioModule::processMixer() {
     float* outBuses[NUM_BUSES];
     for (uint8_t s = 0; s < NUM_BUSES; ++s) outBuses[s] = mixerBus_[s].data();
     mixer_->render(outBuses, NUM_BUSES, frames);
+    // A generator an app put on the node chain (addNode(), DOOM's sound
+    // effects) is not a mixer channel; it plays on OUT1 rather than nowhere.
+    for (auto* node : nodes_) {
+        if (node && node->enabled() && node->isGenerator()) node->mix(mixerBus_[0].data(), frames);
+    }
     if (CaptureTap tap = captureTap_.load(std::memory_order_acquire)) {
         tap(mixerBus_[CAPTURE_BUS].data(), frames);
     }

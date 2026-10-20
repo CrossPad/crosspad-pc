@@ -270,6 +270,9 @@ set(MAIN_SOURCES ${WIN_RESOURCES} src/mouse_cursor_icon.c src/hal/hal.c
     src/stm32_emu/KeyboardCapture.cpp
     src/uart/PcUart.cpp
     src/crosspad_app.cpp
+    src/fw/PcFirmware.cpp
+    src/fw/PcFwDesc.cpp
+    src/fw/PcFwViewService.cpp
     src/remote/RemoteControl.cpp
     src/remote/ControlJson.cpp
     ${CROSSPAD_CORE_SOURCES}
@@ -370,6 +373,60 @@ if(USE_AUDIO)
     list(APPEND MAIN_SOURCES ${ML_SYNTH_SOURCES} ${ML_PIANO_SYNTH_SOURCES})
 endif()
 
+# ── Firmware kit (config/fw_kits/<kit>.json) ────────────────────────────
+# One binary per kit, as the board has one image per kit: which apps are in
+# the launcher, which are left out altogether, and the app a single-app kit
+# starts into. The binary carries the kit in its descriptor (src/fw), which
+# is what the simulator's Firmware app reads off a package.
+set(CROSSPAD_FW_KIT "full" CACHE STRING "Firmware kit: config/fw_kits/<kit>.json")
+string(LENGTH "${CROSSPAD_FW_KIT}" _kit_len)
+if(NOT CROSSPAD_FW_KIT MATCHES "^[a-z][a-z0-9_]*$" OR _kit_len GREATER 15)
+    message(FATAL_ERROR "CROSSPAD_FW_KIT=${CROSSPAD_FW_KIT}: a kit id is a-z, then a-z 0-9 _, at most 15 characters")
+endif()
+set(_kit_file "${CMAKE_SOURCE_DIR}/config/fw_kits/${CROSSPAD_FW_KIT}.json")
+if(NOT EXISTS "${_kit_file}")
+    message(FATAL_ERROR "CROSSPAD_FW_KIT=${CROSSPAD_FW_KIT}: no ${_kit_file}")
+endif()
+set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS "${_kit_file}")
+file(READ "${_kit_file}" _kit_json)
+string(JSON CROSSPAD_FW_KIT_NAME GET "${_kit_json}" display_name)
+string(JSON CROSSPAD_FW_KIT_VERSION ERROR_VARIABLE _kit_err GET "${_kit_json}" version)
+if(_kit_err)
+    set(CROSSPAD_FW_KIT_VERSION "${PROJECT_VERSION}")
+endif()
+string(JSON CROSSPAD_FW_STANDALONE ERROR_VARIABLE _kit_err GET "${_kit_json}" standalone)
+if(_kit_err)
+    set(CROSSPAD_FW_STANDALONE "")
+endif()
+string(JSON _kit_top_bar ERROR_VARIABLE _kit_err GET "${_kit_json}" top_bar)
+if(_kit_err OR _kit_top_bar)
+    set(CROSSPAD_FW_TOP_BAR 1)
+else()
+    set(CROSSPAD_FW_TOP_BAR 0)
+endif()
+function(_crosspad_kit_list json key out)
+    set(_items "")
+    string(JSON _n ERROR_VARIABLE _err LENGTH "${json}" ${key})
+    if(NOT _err)
+        math(EXPR _last "${_n} - 1")
+        if(_last GREATER_EQUAL 0)
+            foreach(_i RANGE ${_last})
+                string(JSON _item GET "${json}" ${key} ${_i})
+                list(APPEND _items "${_item}")
+            endforeach()
+        endif()
+    endif()
+    set(${out} "${_items}" PARENT_SCOPE)
+endfunction()
+_crosspad_kit_list("${_kit_json}" apps _kit_apps)
+_crosspad_kit_list("${_kit_json}" exclude _kit_excluded)
+if(CROSSPAD_FW_KIT STREQUAL "full")
+    set(CROSSPAD_EXE_NAME "CrossPad")
+else()
+    set(CROSSPAD_EXE_NAME "CrossPad-${CROSSPAD_FW_KIT}")
+endif()
+message(STATUS "CrossPad firmware kit: ${CROSSPAD_FW_KIT} ${CROSSPAD_FW_KIT_VERSION} -> bin/${CROSSPAD_EXE_NAME}")
+
 # ── Built-in apps (always present) ──────────────────────────────────────
 foreach(_builtin settings citest update firmware)
     if(EXISTS "${CMAKE_SOURCE_DIR}/src/apps/${_builtin}/CMakeLists.txt")
@@ -410,8 +467,21 @@ foreach(_app_dir ${_app_glob_dirs})
     endif()
 endforeach()
 
+set(CROSSPAD_PC_APP_LIBS "")
+set(_kit_app_dirs "")
 foreach(_app_dir ${_app_submodule_dirs})
     get_filename_component(_app_name "${_app_dir}" NAME)
+    if(_app_name IN_LIST _kit_excluded)
+        message(STATUS "Kit ${CROSSPAD_FW_KIT} leaves out: ${_app_name}")
+        continue()
+    endif()
+    list(APPEND _kit_app_dirs "${_app_dir}")
+
+    # An app with more to build than its C++ (a C library of its own, say)
+    # describes that in crosspad_pc.cmake and appends to CROSSPAD_PC_APP_LIBS.
+    if(EXISTS "${_app_dir}/crosspad_pc.cmake")
+        include("${_app_dir}/crosspad_pc.cmake")
+    endif()
 
     # App Store is dev-only — skip when BUILD_TESTING is OFF (release builds)
     if(NOT BUILD_TESTING AND _app_name STREQUAL "crosspad-appstore")
@@ -475,6 +545,24 @@ endforeach()
 foreach(_asset ${_crosspad_gui_assets} ${_crosspad_app_assets})
     file(COPY "${_asset}" DESTINATION "${_crosspad_asset_stage}")
 endforeach()
+# Kit icons (config/fw_kits/icons/<kit>.png) as the board draws them, for a
+# slot whose package is not on the card: the Firmware views ask for the icon
+# of its kit (src/fw/PcFwViewService.cpp).
+find_program(_crosspad_python NAMES python3 python)
+file(GLOB _crosspad_kit_icons "${CMAKE_SOURCE_DIR}/config/fw_kits/icons/*.png")
+set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS ${_crosspad_kit_icons})
+if(_crosspad_python)
+    foreach(_icon ${_crosspad_kit_icons})
+        get_filename_component(_kit "${_icon}" NAME_WE)
+        execute_process(
+            COMMAND "${_crosspad_python}" "${CMAKE_SOURCE_DIR}/scripts/fw_icon.py" convert "${_icon}"
+                    -o "${_crosspad_asset_stage}/fwkit_${_kit}.bin"
+            RESULT_VARIABLE _icon_rc)
+        if(NOT _icon_rc EQUAL 0)
+            message(WARNING "Kit icon ${_icon} not converted")
+        endif()
+    endforeach()
+endif()
 list(LENGTH _crosspad_app_assets _app_asset_count)
 message(STATUS "Assets: staged shared + ${_app_asset_count} app asset(s) "
                "into bin/assets")
@@ -505,7 +593,18 @@ set(_registry_excludes "")
 if(NOT BUILD_TESTING)
     list(APPEND _registry_excludes "crosspad-appstore")
 endif()
-list(APPEND _registry_excludes ${_stray_app_names})
+list(APPEND _registry_excludes ${_stray_app_names} ${_kit_excluded})
+if(_kit_apps)
+    # Only the kit's apps reach the launcher; the rest stay compiled for the
+    # backend that links against them.
+    file(GLOB _all_app_dirs LIST_DIRECTORIES true "${PROJECT_SOURCE_DIR}/src/apps/*")
+    foreach(_d ${_all_app_dirs})
+        get_filename_component(_n "${_d}" NAME)
+        if(IS_DIRECTORY "${_d}" AND NOT _n IN_LIST _kit_apps)
+            list(APPEND _registry_excludes "${_n}")
+        endif()
+    endforeach()
+endif()
 crosspad_generate_app_registry(
     OUTPUT  "${APP_REGISTRY_FILE}"
     DIRS    "${PROJECT_SOURCE_DIR}/src/apps"
@@ -513,7 +612,7 @@ crosspad_generate_app_registry(
 list(APPEND MAIN_SOURCES "${APP_REGISTRY_FILE}")
 
 # Custom target to run the executable
-add_custom_target(run COMMAND ${EXECUTABLE_OUTPUT_PATH}/CrossPad DEPENDS CrossPad)
+add_custom_target(run COMMAND $<TARGET_FILE:CrossPad> DEPENDS CrossPad)
 
 # Conditionally include and link SDL2_image if LV_USE_DRAW_SDL is enabled
 if(LV_USE_DRAW_SDL)
@@ -572,7 +671,7 @@ endif()
 # Same generator the firmware uses, so `--versions` here and APP_VERSIONS on a
 # board answer in the same format.
 include(${CMAKE_CURRENT_LIST_DIR}/lib/crosspad-core/cmake/crosspad_app_versions.cmake)
-set(_crosspad_app_dirs ${_app_submodule_dirs})
+set(_crosspad_app_dirs ${_kit_app_dirs})
 crosspad_generate_app_versions(
     OUTPUT   "${CMAKE_BINARY_DIR}/app_versions.cpp"
     SHARED   "${CMAKE_CURRENT_LIST_DIR}/lib/crosspad-core"
@@ -582,6 +681,14 @@ crosspad_generate_app_versions(
 list(APPEND MAIN_SOURCES "${CMAKE_BINARY_DIR}/app_versions.cpp")
 
 add_executable(CrossPad ${MAIN_SOURCES})
+set_target_properties(CrossPad PROPERTIES OUTPUT_NAME "${CROSSPAD_EXE_NAME}")
+target_compile_definitions(CrossPad PRIVATE
+    CROSSPAD_FW_KIT_ID="${CROSSPAD_FW_KIT}"
+    CROSSPAD_FW_KIT_NAME="${CROSSPAD_FW_KIT_NAME}"
+    CROSSPAD_FW_KIT_VERSION="${CROSSPAD_FW_KIT_VERSION}"
+    CROSSPAD_FW_STANDALONE_APP="${CROSSPAD_FW_STANDALONE}"
+    CROSSPAD_FW_TOP_BAR=${CROSSPAD_FW_TOP_BAR}
+)
 target_compile_definitions(CrossPad PRIVATE
     LV_CONF_INCLUDE_SIMPLE
     USE_LVGL=1
@@ -603,7 +710,7 @@ target_include_directories(CrossPad PRIVATE
     ${CMAKE_BINARY_DIR}/generated
 )
 # Add include dirs from installable app submodules
-foreach(_app_dir ${_app_submodule_dirs})
+foreach(_app_dir ${_kit_app_dirs})
     if(IS_DIRECTORY "${_app_dir}/include")
         target_include_directories(CrossPad PRIVATE "${_app_dir}/include")
         # Also add the nested dir so apps can use short includes (e.g. "MixerApp.hpp")
@@ -613,7 +720,7 @@ foreach(_app_dir ${_app_submodule_dirs})
         endif()
     endif()
 endforeach()
-target_link_libraries(CrossPad ${MAIN_LIBS})
+target_link_libraries(CrossPad ${MAIN_LIBS} ${CROSSPAD_PC_APP_LIBS})
 
 # Every lv_async_call() -- crosspad-gui's and the apps' included -- through
 # pc_gui::post(), which queues a call made off the LVGL thread instead of

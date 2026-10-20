@@ -52,3 +52,6 @@
 [submodule "src/apps/crosspad-pitchplay"]
 	path = src/apps/crosspad-pitchplay
 	url = https://github.com/CrossPad/crosspad-pitchplay.git
+[submodule "src/apps/crosspad-doom"]
+	path = src/apps/crosspad-doom
+	url = https://github.com/CrossPad/crosspad-doom
