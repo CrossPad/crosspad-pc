@@ -61,6 +61,28 @@ void PcAudioModule::process() {
     }
 }
 
+void PcAudioModule::addNode(crosspad::IAudioNode* node) {
+    if (!mixer_) {
+        AbstractAudioModule::addNode(node);
+        return;
+    }
+    if (!node) return;
+    if (config_.sampleRate > 0) node->onPrepare(config_.frameCount, config_.sampleRate);
+    for (auto& slot : appNodes_) {
+        crosspad::IAudioNode* empty = nullptr;
+        if (slot.compare_exchange_strong(empty, node, std::memory_order_acq_rel)) return;
+    }
+    printf("[PcAudioModule] no room for node %s\n", node->name());
+}
+
+void PcAudioModule::removeNode(crosspad::IAudioNode* node) {
+    for (auto& slot : appNodes_) {
+        crosspad::IAudioNode* expected = node;
+        slot.compare_exchange_strong(expected, nullptr, std::memory_order_acq_rel);
+    }
+    AbstractAudioModule::removeNode(node);
+}
+
 void PcAudioModule::processMixer() {
     const uint32_t frames  = config_.frameCount;
     const uint32_t samples = frames * 2;
@@ -68,10 +90,9 @@ void PcAudioModule::processMixer() {
     float* outBuses[NUM_BUSES];
     for (uint8_t s = 0; s < NUM_BUSES; ++s) outBuses[s] = mixerBus_[s].data();
     mixer_->render(outBuses, NUM_BUSES, frames);
-    // A generator an app put on the node chain (addNode(), DOOM's sound
-    // effects) is not a mixer channel; it plays on OUT1 rather than nowhere.
-    for (auto* node : nodes_) {
-        if (node && node->enabled() && node->isGenerator()) node->mix(mixerBus_[0].data(), frames);
+    for (auto& slot : appNodes_) {
+        crosspad::IAudioNode* n = slot.load(std::memory_order_acquire);
+        if (n && n->enabled() && n->isGenerator()) n->mix(mixerBus_[0].data(), frames);
     }
     if (CaptureTap tap = captureTap_.load(std::memory_order_acquire)) {
         tap(mixerBus_[CAPTURE_BUS].data(), frames);

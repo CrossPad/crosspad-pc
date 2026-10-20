@@ -89,6 +89,14 @@ public:
     /// Pass nullptr to fall back to the node chain.
     void setMixerEngine(AudioMixerEngine* mixer) { mixer_ = mixer; }
 
+    /// With the mixer rendering, a node an app adds (DOOM's sound) is no mixer
+    /// channel: it goes into a fixed table the render reads without a lock,
+    /// and plays on OUT1. Without the mixer, the node chain. An app may add
+    /// one while the render runs; one it removes must outlive the render pass
+    /// that may still be in it.
+    void addNode(crosspad::IAudioNode* node) override;
+    void removeNode(crosspad::IAudioNode* node) override;
+
     /// Optional post-master tap of OUT1: every processMixer cycle the int16
     /// conversion of bus 0 is also pushed here (e.g. a PipeWire virtual
     /// source mirroring CrossPad's output as a "microphone"). Pass nullptr
@@ -109,6 +117,8 @@ public:
 private:
     PcRtAudioOutputStream outputs_[NUM_OUTPUTS];
     AudioMixerEngine* mixer_ = nullptr;
+    static constexpr size_t kAppNodes = 4;
+    std::atomic<crosspad::IAudioNode*> appNodes_[kAppNodes] = {};
     std::atomic<crosspad::IAudioStream*> aux_{nullptr};
     std::atomic<CaptureTap> captureTap_{nullptr};
 
