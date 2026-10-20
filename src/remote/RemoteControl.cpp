@@ -1433,6 +1433,9 @@ static std::string dispatch_command(const std::string& json) {
     if (cmd == "kit_status") {
         return handle_kit_status();
     }
+    if (cmd == "seq") {
+        return "{" + json_bool("ok", true) + "," + json_string("line", crosspad_pc::sequencer_report()) + "}";
+    }
     if (cmd == "audio_out_list") {
         return handle_audio_out_list();
     }

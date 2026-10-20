@@ -12,6 +12,7 @@
 #include "crosspad/sequencer/PatternSequencer.hpp"
 #include "crosspad/sequencer/SequencerController.hpp"
 #include "crosspad/song/SongScenes.hpp"
+#include "crosspad/transport/SequencerTransport.hpp"
 #include "pc_stubs/pc_platform.h"
 
 #include "FreeRTOS.h"
@@ -79,6 +80,26 @@ namespace crosspad_pc {
 
 void sequencer_kit_changed(const std::string& kitJsonPath) { s_scenes.kitChanged(kitJsonPath); }
 
+std::string sequencer_report()
+{
+    auto& sq = s_sequencer;
+    std::string bars, ev;
+    for (uint8_t s = 0; s < crosspad::PatternSequencer::kNumSequences; ++s) {
+        const char* sep = s ? "/" : "";
+        bars += sep + std::to_string(sq.sceneBars(s));
+        ev += sep + std::to_string(sq.eventCount(s));
+    }
+    char head[192];
+    std::snprintf(head, sizeof(head), "SEQ: mode=%u state=%u scenes=%u scene=%u>%u bars=",
+                  (unsigned)sq.mode(), (unsigned)sq.state(), (unsigned)sq.sceneCount(),
+                  (unsigned)sq.activeScene(), (unsigned)sq.pendingScene());
+    char tail[160];
+    std::snprintf(tail, sizeof(tail), " bpm=%.1f quant=%u pos=%.3f dirty=%d erase=%d countin=%d file=",
+                  sq.getClickBpm(), (unsigned)sq.quantization(), (double)sq.progress(),
+                  sq.dirty() ? 1 : 0, sq.erasing() ? 1 : 0, sq.countIn() ? 1 : 0);
+    return std::string(head) + bars + " ev=" + ev + tail + s_scenes.currentFile();
+}
+
 } // namespace crosspad_pc
 
 namespace crosspad_pc {
@@ -108,6 +129,9 @@ void sequencer_init(AudioMixerEngine& mixer, uint8_t audibleOutputs)
     s_sequencer.setController(&s_controller);
     crosspad::getPlatformServices().sequencer = &s_controller;
     crosspad::getPlatformServices().sequencerEngine = &s_sequencer;
+    /* The pattern holds the transport until an app takes it, as on the board:
+     * PLAY and REC on the top bar mean something before any app is open. */
+    crosspad::transportClaim(crosspad::sequencerTransport());
     /* The process ends with _Exit(); these run until then. */
     xTaskCreate(poll_task, "seq_poll", kTaskStack, nullptr, kPollPriority, nullptr);
     xTaskCreate(store_task, "seq_store", kTaskStack, nullptr, kStorePriority, nullptr);

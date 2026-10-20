@@ -24,4 +24,8 @@ void sequencer_init(AudioMixerEngine& mixer, uint8_t audibleOutputs);
 /// shared scenes reads anything of it.
 void sequencer_kit_changed(const std::string& kitJsonPath);
 
+/// The board's bare SEQ reply (platform-idf hil_control.cpp), same fields in
+/// the same order, for the remote's seq verb.
+std::string sequencer_report();
+
 } // namespace crosspad_pc
