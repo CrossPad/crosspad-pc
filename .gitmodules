@@ -58,3 +58,6 @@
 [submodule "src/apps/crosspad-pong"]
 	path = src/apps/crosspad-pong
 	url = https://github.com/CrossPad/crosspad-pong.git
+[submodule "src/apps/crosspad-pianotiles"]
+	path = src/apps/crosspad-pianotiles
+	url = https://github.com/CrossPad/crosspad-pianotiles.git
