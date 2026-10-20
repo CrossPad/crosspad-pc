@@ -41,9 +41,14 @@
  *                             (parity with the board's WAVE_STATUS verb)
  *   app_list                — registered apps + the running one
  *                             (parity with the board's APP_LIST verb)
- *   smpl_peak               — sample engine peak, free WAV slots, load
+ *   smpl_peak               — sample engine peak, free sample slots, load
  *                             (parity with the board's SMPL_PEAK verb)
- *   led_state               — pad LED brightness, anim flags, 16 colours
+ *   smpl_loops              — each pad's Loop state, launch counters, bar clock
+ *                             (parity with the board's SMPL_LOOPS verb)
+ *   seq {action,bpm,countin} — sequencer play/stop/state, tempo, count-in
+ *                             (parity with the board's SEQ PLAY/STOP/BPM)
+ *   led_state               — pad LED brightness, anim flags, 16 colours,
+ *                             and the 16 the strip was last painted (strip)
  *                             (parity with the board's LED_STATE verb)
  *   ping                    — health check
  */

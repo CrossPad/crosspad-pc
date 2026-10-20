@@ -65,8 +65,14 @@
 #include <crosspad-sampler/waveform/waveform_loader.hpp>
 #define REMOTE_HAS_WAVE 1
 #endif
-#if __has_include("audio/sampler/SampleStreamPlayer.hpp")
-#include "audio/sampler/SampleStreamPlayer.hpp"
+#if defined(USE_AUDIO) && __has_include("sequencer/PcSequencer.hpp")
+#include "sequencer/PcSequencer.hpp"
+#include <crosspad/sequencer/MetronomeNode.hpp>
+#include <crosspad/sequencer/PatternSequencer.hpp>
+#define REMOTE_HAS_SEQ 1
+#endif
+#if defined(USE_AUDIO) && __has_include("audio/sampler/PcSamplerEngine.hpp")
+#include "audio/sampler/PcSamplerEngine.hpp"
 #define REMOTE_HAS_SMPL 1
 #endif
 #include "crosspad-gui/components/power_gesture.h"
@@ -1223,20 +1229,53 @@ static std::string handle_app_list() {
 // Pad LED state — the sim's parallel to the board's LED_STATE (shared core
 // PadLedController): brightness, animation flags and the 16 pad colours.
 static std::string handle_led_state() {
-    return remote::controlJsonLedState(crosspad::control::readLedState(crosspad::getPadLedController()));
+    std::string out = remote::controlJsonLedState(crosspad::control::readLedState(crosspad::getPadLedController()));
+    // "colors" are the pads' own colours; "strip" is what the controller
+    // last painted -- pressed, playing, a Loop pad dimmed -- which the
+    // emulator's pad grid does not show (it paints the pads' own colours).
+    std::string strip = "[";
+    for (uint16_t i = 0; i < crosspad::control::LedState::kPads; ++i) {
+        const crosspad::RgbColor c = pc_get_led_color(i);
+        char b[10];
+        snprintf(b, sizeof(b), "\"%02X%02X%02X\"", c.R, c.G, c.B);
+        if (i) strip += ",";
+        strip += b;
+    }
+    strip += "]";
+    out.insert(out.size() - 1, ",\"strip\":" + strip);
+    return out;
 }
 
-// Sample engine peak + free WAV slots and load — the sim's parallel to the
-// board's SMPL_PEAK (shared streaming SampleStreamPlayer).
+// Sample engine peak + free sample slots and load — the sim's parallel to the
+// board's SMPL_PEAK (core's SamplerEngine on both). peak and load_main are
+// the most since the last read.
 static std::string handle_smpl_peak() {
 #ifdef REMOTE_HAS_SMPL
+    const auto st = crosspad_pc::native_sampler_stats();
     return "{" + json_bool("ok", true) + "," +
-           json_float("peak", SampleStreamPly_GetPeak()) + "," +
-           json_int("free", SampleStreamPlayer_GetFreeWavCnt()) + "," +
-           json_int("active_voices", (int)SampleStreamPly_GetActiveVoices()) + "," +
-           json_int("underrun", (int)SampleStreamPly_GetUnderrunCount()) + "," +
-           json_int("dropped_notes", (int)SampleStreamPly_GetDroppedNoteCount()) + "," +
-           json_float("load_main", SampleStreamPly_GetLoadMain()) + "}";
+           json_float("peak", st.peak) + "," +
+           json_int("free", st.freeSlots) + "," +
+           json_int("active_voices", (int)st.activeVoices) + "," +
+           json_int("underrun", (int)st.underruns) + "," +
+           json_int("dropped_notes", (int)st.droppedNotes) + "," +
+           json_float("load_main", st.renderLoad) + "}";
+#else
+    return "{" + json_bool("ok", false) + "," +
+           json_string("error", "sampler not built") + "}";
+#endif
+}
+
+// Each pad's Loop state ('.' idle, 'q' waiting for the bar, 'P' playing,
+// 'm' muted), the launch counters and the bar clock — the board's SMPL_LOOPS.
+static std::string handle_smpl_loops() {
+#ifdef REMOTE_HAS_SMPL
+    const auto lp = crosspad_pc::native_sampler_loops();
+    return "{" + json_bool("ok", true) + "," +
+           json_string("pads", lp.states) + "," +
+           json_int("queued", (int)lp.queued) + "," +
+           json_int("launched", (int)lp.launched) + "," +
+           json_bool("clock", lp.clockRunning) + "," +
+           json_int("to_bar", (int)lp.framesToBar) + "}";
 #else
     return "{" + json_bool("ok", false) + "," +
            json_string("error", "sampler not built") + "}";
@@ -1278,6 +1317,36 @@ static std::string handle_kit_load(const std::string& json) {
     // kit is playable — ask kit_status for that, exactly as on the device.
     return "{" + json_bool("ok", true) + "," + json_int("kit", id) + "," +
            json_bool("started", true) + "}";
+}
+
+// The pattern sequencer's transport — the board's SEQ PLAY / SEQ STOP / SEQ
+// BPM: {action: "play"|"stop"|"state", bpm?, countin?}. Replies with the
+// clock as the sampler's Loop pads see it.
+static std::string handle_seq(const std::string& json) {
+#ifdef REMOTE_HAS_SEQ
+    crosspad::PatternSequencer& seq = getSequencer();
+    const std::string action = json_get_string(json, "action");
+    const int bpm = json_get_int(json, "bpm", 0);
+    if (bpm > 0) seq.setClickBpm(static_cast<float>(bpm));
+    const int countIn = json_get_int(json, "countin", -1);
+    if (countIn >= 0) seq.setCountIn(countIn != 0);
+    if (action == "play") {
+        seq.playback();
+    } else if (action == "stop") {
+        seq.stop();
+    } else if (!action.empty() && action != "state") {
+        return "{" + json_bool("ok", false) + "," + json_string("error", "unknown action") + "}";
+    }
+    const crosspad::MetronomeNode& m = getMetronome();
+    return "{" + json_bool("ok", true) + "," +
+           json_bool("running", m.running()) + "," +
+           json_float("bpm", m.bpm()) + "," +
+           json_int("to_bar", (int)m.framesToBar()) + "}";
+#else
+    (void)json;
+    return "{" + json_bool("ok", false) + "," +
+           json_string("error", "sequencer not built") + "}";
+#endif
 }
 
 static std::string dispatch_command(const std::string& json) {
@@ -1390,6 +1459,12 @@ static std::string dispatch_command(const std::string& json) {
     }
     if (cmd == "smpl_peak") {
         return handle_smpl_peak();
+    }
+    if (cmd == "seq") {
+        return handle_seq(json);
+    }
+    if (cmd == "smpl_loops") {
+        return handle_smpl_loops();
     }
     if (cmd == "led_state") {
         return handle_led_state();

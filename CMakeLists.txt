@@ -312,14 +312,11 @@ if(USE_AUDIO)
     list(APPEND MAIN_SOURCES src/audio/audio_platform.cpp)
     list(APPEND MAIN_LIBS rtaudio)
 
-    # Streaming sample engine — the desktop stand-in for the board's sample
-    # player. Listed explicitly rather than globbed so a stray file in the
-    # directory cannot join the build by accident.
+    # The sampler's platform side over core's SamplerEngine, the engine the
+    # board plays kits with. Listed explicitly rather than globbed so a stray
+    # file in the directory cannot join the build by accident.
     list(APPEND MAIN_SOURCES
-        src/audio/sampler/WavReader.cpp
-        src/audio/sampler/SampleStreamEngine.cpp
-        src/audio/sampler/SampleStreamPlayer.cpp
-        src/audio/sampler/PcSampleNode.cpp
+        src/audio/sampler/PcSamplerEngine.cpp
         src/audio/sampler/PcSamplerPort.cpp
         src/audio/sampler/PcPitchedPort.cpp
         src/audio/sampler/PcInstrumentHost.cpp
