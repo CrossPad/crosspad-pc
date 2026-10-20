@@ -55,3 +55,6 @@
 [submodule "src/apps/crosspad-doom"]
 	path = src/apps/crosspad-doom
 	url = https://github.com/CrossPad/crosspad-doom
+[submodule "src/apps/crosspad-pong"]
+	path = src/apps/crosspad-pong
+	url = https://github.com/CrossPad/crosspad-pong.git
