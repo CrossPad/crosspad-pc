@@ -13,6 +13,7 @@
 #include "crosspad/sequencer/SequencerController.hpp"
 #include "crosspad/song/SongScenes.hpp"
 #include "crosspad/transport/SequencerTransport.hpp"
+#include "crosspad-gui/components/mode_overlay.h"
 #include "pc_stubs/pc_platform.h"
 
 #include "FreeRTOS.h"
@@ -122,16 +123,18 @@ void sequencer_init(AudioMixerEngine& mixer, uint8_t audibleOutputs)
      * pads have more ways in (mouse grid, keyboard, MIDI, remote), so the
      * pad manager's input tap stamps them all. */
     crosspad::getPadManager().setInputTap([](void*, uint8_t pad, uint8_t vel) {
-        s_sequencer.noteIn(pad, vel);
+        /* A hit on the MODE map picks an app and plays nothing (the board's
+         * tap, midiCallbacks.cpp). */
+        if (!crosspad_gui::mode_overlay_is_open()) s_sequencer.noteIn(pad, vel);
     }, nullptr);
     s_controller.setSeqLength(crosspad::SequencerLimits::MAX_SEQ_LENGTH);
     s_controller.init(s_sequencer);
     s_sequencer.setController(&s_controller);
     crosspad::getPlatformServices().sequencer = &s_controller;
     crosspad::getPlatformServices().sequencerEngine = &s_sequencer;
-    /* The pattern holds the transport until an app takes it, as on the board:
-     * PLAY and REC on the top bar mean something before any app is open. */
-    crosspad::transportClaim(crosspad::sequencerTransport());
+    /* The pattern is the transport's home, as on the board: it holds it until
+     * an app takes it and gets it back when that app is left stopped. */
+    crosspad::transportSetHome(crosspad::sequencerTransport());
     /* The process ends with _Exit(); these run until then. */
     xTaskCreate(poll_task, "seq_poll", kTaskStack, nullptr, kPollPriority, nullptr);
     xTaskCreate(store_task, "seq_store", kTaskStack, nullptr, kStorePriority, nullptr);
