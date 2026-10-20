@@ -39,15 +39,16 @@
  *                             (parity with the board's PITCHED_STATUS verb)
  *   wave_status             — waveform loader counters (requested/loaded/…)
  *                             (parity with the board's WAVE_STATUS verb)
- *   seq                     — the pattern sequencer as the board's bare SEQ
- *                             reports it, in "line" (parity with SEQ)
+ *   enc_group               — every widget the encoder reaches on this screen:
+ *                             index, box, first caption (parity with ENC_GROUP)
  *   app_list                — registered apps + the running one
  *                             (parity with the board's APP_LIST verb)
  *   smpl_peak               — sample engine peak, free sample slots, load
  *                             (parity with the board's SMPL_PEAK verb)
  *   smpl_loops              — each pad's Loop state, launch counters, bar clock
  *                             (parity with the board's SMPL_LOOPS verb)
- *   seq {action,bpm,countin} — sequencer play/stop/state, tempo, count-in
+ *   seq {action,bpm,countin} — sequencer play/stop/state, tempo, count-in;
+ *                             "line" is the board's bare SEQ report
  *                             (parity with the board's SEQ PLAY/STOP/BPM)
  *   led_state               — pad LED brightness, anim flags, 16 colours,
  *                             and the 16 the strip was last painted (strip)

@@ -574,6 +574,37 @@ static std::string handle_drag(const std::string& json) {
 /* The top row: which of the two bars is the page the encoder works on, where
  * the row rests, the drawer, the encoder's focus and the last swipe -- what a
  * drag test checks instead of reading pixels. */
+/* The board's ENC_GROUP (hil_control.cpp): every widget the encoder reaches
+ * on this screen, where it is, and the first caption on or above it. */
+static const char* first_label_in(lv_obj_t* scope, int depth) {
+    if (!scope) return nullptr;
+    if (lv_obj_check_type(scope, &lv_label_class)) return lv_label_get_text(scope);
+    if (depth == 0) return nullptr;
+    const uint32_t cnt = lv_obj_get_child_count(scope);
+    for (uint32_t i = 0; i < cnt; ++i) {
+        if (const char* t = first_label_in(lv_obj_get_child(scope, i), depth - 1)) return t;
+    }
+    return nullptr;
+}
+
+static std::string handle_enc_group() {
+    lv_indev_t* nav = crosspad_gui::getGuiPlatform().getNavigationEncoder();
+    lv_group_t* g = nav ? lv_indev_get_group(nav) : nullptr;
+    const uint32_t n = g ? lv_group_get_obj_count(g) : 0;
+    std::string items;
+    for (uint32_t i = 0; i < n; ++i) {
+        lv_obj_t* o = lv_group_get_obj_by_index(g, i);
+        lv_area_t a = {0, 0, -1, -1};
+        if (o) lv_obj_get_coords(o, &a);
+        const char* t = first_label_in(o, 3);
+        if (!t && o) t = first_label_in(lv_obj_get_parent(o), 1);
+        items += std::string(i ? "," : "") + "{" + json_int("i", (int)i) + "," + json_int("x", a.x1) + "," +
+                 json_int("y", a.y1) + "," + json_int("w", a.x2 - a.x1 + 1) + "," +
+                 json_int("h", a.y2 - a.y1 + 1) + "," + json_string("label", t ? t : "") + "}";
+    }
+    return "{" + json_bool("ok", true) + "," + json_int("count", (int)n) + ",\"items\":[" + items + "]}";
+}
+
 static std::string handle_top_bar() {
     lv_indev_t* nav = crosspad_gui::getGuiPlatform().getNavigationEncoder();
     lv_group_t* g = nav ? lv_indev_get_group(nav) : nullptr;
@@ -1341,7 +1372,8 @@ static std::string handle_seq(const std::string& json) {
     return "{" + json_bool("ok", true) + "," +
            json_bool("running", m.running()) + "," +
            json_float("bpm", m.bpm()) + "," +
-           json_int("to_bar", (int)m.framesToBar()) + "}";
+           json_int("to_bar", (int)m.framesToBar()) + "," +
+           json_string("line", crosspad_pc::sequencer_report()) + "}";
 #else
     (void)json;
     return "{" + json_bool("ok", false) + "," +
@@ -1432,9 +1464,6 @@ static std::string dispatch_command(const std::string& json) {
     }
     if (cmd == "kit_status") {
         return handle_kit_status();
-    }
-    if (cmd == "seq") {
-        return "{" + json_bool("ok", true) + "," + json_string("line", crosspad_pc::sequencer_report()) + "}";
     }
     if (cmd == "audio_out_list") {
         return handle_audio_out_list();
