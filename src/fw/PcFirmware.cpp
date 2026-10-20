@@ -9,6 +9,7 @@
 
 #include <ArduinoJson.h>
 
+#include "crosspad/fw/FwCatalog.hpp"
 #include "crosspad_app.hpp"
 #include "crosspad-gui/components/boot_splash.h"
 #include "crosspad-gui/components/ui_toast.h"
@@ -42,7 +43,10 @@ constexpr const char* kPinned = ".pinned";
 constexpr const char* kBoardImage = "CrossPad.bin";
 constexpr const char* kManifest = "manifest.json";
 constexpr const char* kIcon = "icon.bin";
-constexpr uintmax_t kIconBytesMax = 16 * 1024;   // what the board takes for icon.bin
+/// icon.bin's LVGL v9 header (scripts/fw_icon.py): magic, colour format
+/// RGB565A8, then width, height and stride, little-endian.
+constexpr uint8_t kIconMagic = 0x19;
+constexpr uint8_t kIconRgb565A8 = 0x14;
 /// A trial boot confirms itself this long after the boot finished, as the
 /// board's image does once it has come up.
 constexpr uint32_t kConfirmDelayMs = 5000;
@@ -505,13 +509,18 @@ PackageText readPackageText(const std::string& pkg) {
     return t;
 }
 
+/* The views draw icon.bin as it is, with no length beside it: only a whole
+ * 48x48 RGB565A8 image of exactly that size is handed over. */
 static std::vector<uint8_t> readIconFile(const fs::path& path) {
     std::error_code ec;
-    const uintmax_t size = fs::file_size(path, ec);
-    if (ec || size == 0 || size > kIconBytesMax) return {};
-    std::vector<uint8_t> buf(static_cast<size_t>(size));
+    if (fs::file_size(path, ec) != crosspad::kFwIconBytes || ec) return {};
+    std::vector<uint8_t> buf(crosspad::kFwIconBytes);
     std::ifstream f(path, std::ios::binary);
     if (!f.read(reinterpret_cast<char*>(buf.data()), static_cast<std::streamsize>(buf.size()))) return {};
+    const auto u16 = [&buf](size_t at) { return static_cast<uint32_t>(buf[at] | (buf[at + 1] << 8)); };
+    if (buf[0] != kIconMagic || buf[1] != kIconRgb565A8 || u16(4) != crosspad::kFwIconSide ||
+        u16(6) != crosspad::kFwIconSide || u16(8) != crosspad::kFwIconSide * 2)
+        return {};
     return buf;
 }
 
