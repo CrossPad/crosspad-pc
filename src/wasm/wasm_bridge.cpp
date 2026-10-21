@@ -74,6 +74,7 @@ extern crosspad::CrosspadStatus status;
 #endif
 #ifdef CP_UX2000
 #include "crosspad-gui/components/mode_overlay.h"
+#include "crosspad-gui/components/ui_probe.h"
 #endif
 
 // The asset loader resolves its folder in a static constructor, long before
@@ -899,6 +900,18 @@ EMSCRIPTEN_KEEPALIVE const char* wasm_ui_apps() {
     out.clear();
     for (const auto& a : crosspad_gui::AppOrchestrator::getInstance().getApps())
         if (a && a->getName() && *a->getName()) { out += a->getName(); out += '\n'; }
+    return out.c_str();
+}
+/** The widgets on the LCD as JSON (crosspad_gui::ui_tree_json), for the GUI map. Laid out
+ *  first: a screen shown a moment ago has not had its pass yet. Valid until the next call. */
+EMSCRIPTEN_KEEPALIVE const char* wasm_ui_tree() {
+    static crosspad_gui::UiNode nodes[512];
+    static std::string out;
+    lv_obj_update_layout(lv_screen_active());
+    lv_obj_update_layout(lv_layer_top());
+    const uint16_t n = crosspad_gui::ui_tree_probe(nodes, 512);
+    out.clear();
+    crosspad_gui::ui_tree_json(nodes, n, running_name().c_str(), out);
     return out.c_str();
 }
 /** The twin's running app ("-" on the launcher). */
