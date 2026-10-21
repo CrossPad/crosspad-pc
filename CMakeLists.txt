@@ -526,10 +526,7 @@ message(STATUS "CrossPad firmware kit: ${CROSSPAD_FW_KIT} ${CROSSPAD_FW_KIT_VERS
 # two are built, their ESP half answered by src/wasm/board/ with the board's
 # data (TWIN_INFO, TWIN_FW); on the desktop the simulator's. The board's own
 # headers (main/include) come after src/wasm/board/: those that reach no
-# ESP-IDF are used as they are, the others are the shims'. Settings' WiFi
-# category is the board's shared WiFi page (main/gui/wifi_page.cpp), on a link
-# that stays idle (src/wasm/twin_wifi.cpp); its Updates views run on an updater
-# that leaves the work to the board (src/wasm/twin_updater.cpp).
+# ESP-IDF are used as they are, the others are the shims'.
 if(CROSSPAD_FIRMWARE_DIR)
     set(_builtins settings update)
 else()
@@ -537,33 +534,23 @@ else()
 endif()
 set(CP_BUILTIN_APP_DIRS "")
 if(CROSSPAD_FIRMWARE_DIR AND EMSCRIPTEN)
+    # Settings (its WiFi page, its Updates category) and the Firmware app as the
+    # board builds them: crosspad-gui's Firmware views (src/fw, in the gui
+    # sources) on the board's IFwViewService (main/fw_view_service.cpp), each
+    # with what answers for its ESP half here -- an idle WiFi link
+    # (src/wasm/twin_wifi.cpp), an updater that leaves the work to the board
+    # (src/wasm/twin_updater.cpp), the card's packages from TWIN_FW
+    # (src/wasm/twin_fw_views.cpp) instead of the SD card.
     set(_board_builtin_sources
         "${CROSSPAD_FIRMWARE_DIR}/main/app/settings/settings_app.cpp"
-        "${CROSSPAD_FIRMWARE_DIR}/main/app/update/update_app.cpp")
-    # What a later firmware's Settings and Firmware build on, each with what
-    # answers for its ESP half here: the WiFi page (Settings -> WiFi), the
-    # updater's views (Settings -> Updates, the Firmware app's Updates).
-    if(EXISTS "${CROSSPAD_FIRMWARE_DIR}/main/gui/wifi_page.cpp")
-        list(APPEND _board_builtin_sources
-            "${CROSSPAD_FIRMWARE_DIR}/main/gui/wifi_page.cpp"
-            "${PROJECT_SOURCE_DIR}/src/wasm/twin_wifi.cpp")
-    endif()
-    if(EXISTS "${CROSSPAD_FIRMWARE_DIR}/main/gui/fw_updates_view.cpp")
-        list(APPEND _board_builtin_sources
-            "${CROSSPAD_FIRMWARE_DIR}/main/gui/fw_updates_view.cpp"
-            "${CROSSPAD_FIRMWARE_DIR}/main/app/settings/settings_updates.cpp"
-            "${PROJECT_SOURCE_DIR}/src/wasm/twin_updater.cpp")
-    endif()
-    # The Firmware app's tabs and kit card (Library, Store, Updates): the
-    # board's views as they are, their card work answered from TWIN_FW
-    # (src/wasm/twin_fw_views.cpp) instead of the SD card.
-    if(EXISTS "${CROSSPAD_FIRMWARE_DIR}/main/gui/fw_views_common.cpp")
-        foreach(_v gui/fw_actions.cpp gui/fw_kit_card.cpp gui/fw_library_view.cpp gui/fw_store_view.cpp
-                   gui/fw_views_common.cpp fw_icons.cpp fw_ui_state.cpp)
-            list(APPEND _board_builtin_sources "${CROSSPAD_FIRMWARE_DIR}/main/${_v}")
-        endforeach()
-        list(APPEND _board_builtin_sources "${PROJECT_SOURCE_DIR}/src/wasm/twin_fw_views.cpp")
-    endif()
+        "${CROSSPAD_FIRMWARE_DIR}/main/app/settings/settings_updates.cpp"
+        "${CROSSPAD_FIRMWARE_DIR}/main/app/update/update_app.cpp"
+        "${CROSSPAD_FIRMWARE_DIR}/main/gui/wifi_page.cpp"
+        "${CROSSPAD_FIRMWARE_DIR}/main/fw_view_service.cpp"
+        "${CROSSPAD_FIRMWARE_DIR}/main/fw_ui_state.cpp"
+        "${PROJECT_SOURCE_DIR}/src/wasm/twin_wifi.cpp"
+        "${PROJECT_SOURCE_DIR}/src/wasm/twin_updater.cpp"
+        "${PROJECT_SOURCE_DIR}/src/wasm/twin_fw_views.cpp")
     # A firmware with a crosspad.app account (Settings -> Account, remote
     # management on the WiFi page): a board never paired (src/wasm/twin_account.cpp).
     if(EXISTS "${CROSSPAD_FIRMWARE_DIR}/main/include/cp_account.h")
@@ -954,7 +941,8 @@ if(EMSCRIPTEN)
         foreach(_d ${_more})
             get_filename_component(_owner "${_d}" DIRECTORY)
             get_filename_component(_owner "${_owner}" NAME)
-            if(_owner STREQUAL "crosspad-gui" OR _owner STREQUAL "crosspad-core" OR _owner IN_LIST CROSSPAD_EXCLUDE_APPS)
+            if(_owner STREQUAL "crosspad-gui" OR _owner STREQUAL "crosspad-core" OR _owner IN_LIST CROSSPAD_EXCLUDE_APPS
+               OR _owner IN_LIST _kit_excluded)
                 continue()
             endif()
             list(APPEND _asset_dirs "${_d}")
