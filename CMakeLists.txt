@@ -316,7 +316,9 @@ if(USE_AUDIO)
     # board plays kits with. Listed explicitly rather than globbed so a stray
     # file in the directory cannot join the build by accident.
     list(APPEND MAIN_SOURCES
+        src/audio/sampler/PcKitLoad.cpp
         src/audio/sampler/PcSamplerEngine.cpp
+        src/audio/sampler/PcSecondKit.cpp
         src/audio/sampler/PcSamplerPort.cpp
         src/audio/sampler/PcPitchedPort.cpp
         src/audio/sampler/PcInstrumentHost.cpp

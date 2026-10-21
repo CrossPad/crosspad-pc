@@ -21,18 +21,14 @@
  * at all.
  */
 
+#include "PcKitLoad.hpp"
+
 #include <cstdint>
 #include <string>
 
 namespace crosspad { class IAudioNode; }
 
 namespace crosspad_pc {
-
-/// Where logical paths ("/crosspad/kits/…") resolve: the folder mounted as
-/// the virtual SD card, empty when none is.
-void native_sampler_set_root(const std::string& root);
-/// A logical path, or one already rooted at the mount, as a filesystem path.
-std::string native_sampler_fs_path(const char* path);
 
 /// The "Sampler" channel: the kit's voices and the audition. Binds the pool
 /// and the store and starts the streaming thread the first time it is asked.
