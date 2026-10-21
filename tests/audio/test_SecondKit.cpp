@@ -11,6 +11,7 @@
 
 #include "wav_io.hpp"
 #include "audio/sampler/PcSecondKit.hpp"
+#include "crosspad/dsp/DspMath.hpp"
 
 #include <crosspad/audio/IAudioNode.hpp>
 #include <crosspad/kit/IKitManager.hpp>
@@ -68,7 +69,7 @@ void writeTone(const std::filesystem::path& path, double hz) {
     w.channels = 1;
     w.samples.resize(static_cast<size_t>(kRate * kToneSeconds));
     for (size_t i = 0; i < w.samples.size(); ++i) {
-        w.samples[i] = static_cast<int16_t>(kAmplitude * std::sin(2.0 * M_PI * hz * i / kRate));
+        w.samples[i] = static_cast<int16_t>(kAmplitude * std::sin(2.0 * crosspad::kPi * hz * i / kRate));
     }
     REQUIRE(wavWrite(path.string(), w));
 }
