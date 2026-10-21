@@ -20,6 +20,7 @@
 #include "hal/hal.h"
 #include "stm32_emu/Stm32EmuWindow.hpp"
 #include "crosspad_app.hpp"
+#include "fw/PcFirmware.hpp"
 #include "remote/RemoteControl.hpp"
 #include "crosspad-gui/components/touch_gesture.h"
 #include "pc_stubs/GuiThread.hpp"
@@ -121,6 +122,11 @@ int main(int argc, char** argv)
         printf("APPVER: end count=%zu\n", crosspad::appVersionCount());
         return 0;
     }
+
+    // --fw-slot / --recovery: which firmware slot a switch started us in.
+    // --boot: the power button -- start the slot that boots, and end here.
+    pc_fw::parseArgs(argc, argv);
+    if (pc_fw::runBootloader()) return 0;
 
     // Before the first thread: every thread inherits the mask it leaves.
     pc_install_shutdown_signals();

@@ -1,5 +1,6 @@
 # Ignore build folder
 build/
+build-*/
 bin/
 
 # Ignore all dot folders, with below exceptions
@@ -37,3 +38,6 @@ hil_logs/*
 
 # CP Tools: the app manager scripts/app_manager.py downloads
 scripts/.cache/
+
+# Python byte code (scripts/ import each other)
+__pycache__/

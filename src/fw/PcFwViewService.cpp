@@ -6,9 +6,13 @@
 #include <algorithm>
 #include <chrono>
 #include <cstdio>
+#include <cstdlib>
 #include <cstring>
+#include <utility>
 
 #include "crosspad/fw/Semver.hpp"
+#include "crosspad-gui/fw/fw_icons.h"
+#include "fw/PcFirmware.hpp"
 
 using crosspad::FwChannel;
 using crosspad::FwSlotState;
@@ -24,25 +28,6 @@ constexpr int64_t kCatalogFetched = 1791763200;   // 2026-10-12
 } // namespace
 
 PcFwViewService::PcFwViewService() : lib_(new crosspad_gui::FwLibrarySnap{}) {
-    addPackage("sampler", "1.1.0", "Sampler", FwTier::Official).pinned = true;
-    addPackage("dawcontrol", "0.9.0", "DAW Control", FwTier::Official);
-    addPackage("sequencer", "1.0.0", "Sequencer", FwTier::Official);
-    addPackage("lofi", "0.3.0", "Lo-Fi Beats", FwTier::Community);
-
-    const struct { char label; bool running; FwSlotState state; const char* pkg; const char* kit; const char* ver; }
-        slots[] = {{'A', true, FwSlotState::Confirmed, "sampler-1.1.0", "sampler", "v1.1.0"},
-                   {'B', false, FwSlotState::Installed, "dawcontrol-0.9.0", "dawcontrol", "v0.9.0"}};
-    for (int i = 0; i < 2; ++i) {
-        crosspad::FwSlotInfo& s = slots_[i];
-        s.label = slots[i].label;
-        s.running = slots[i].running;
-        s.state = slots[i].state;
-        std::snprintf(s.package, sizeof s.package, "%s", slots[i].pkg);
-        std::snprintf(s.kit, sizeof s.kit, "%s", slots[i].kit);
-        std::snprintf(s.version, sizeof s.version, "%s", slots[i].ver);
-        s.hasDesc = true;
-    }
-
     store_.fetched = kCatalogFetched;
     auto& sampler = addKit("sampler", "Sampler", "CrossPad", FwTier::Official);
     addVersion(sampler, "1.0.0", FwChannel::Stable, FwTier::Official);
@@ -59,21 +44,29 @@ PcFwViewService::PcFwViewService() : lib_(new crosspad_gui::FwLibrarySnap{}) {
     addVersion(chip, "0.1.0", FwChannel::Stable, FwTier::Community);
 }
 
-crosspad_gui::FwLibItem& PcFwViewService::addPackage(const char* kit, const char* version, const char* displayName,
-                                                     FwTier tier) {
-    crosspad_gui::FwLibItem& it = lib_->items[lib_->count++];
-    it = crosspad_gui::FwLibItem{};
-    crosspad::fwPackageName(kit, version, it.name, sizeof it.name);
-    std::snprintf(it.kit, sizeof it.kit, "%s", kit);
-    std::snprintf(it.version, sizeof it.version, "%s", version);
-    std::snprintf(it.displayName, sizeof it.displayName, "%s", displayName);
-    it.verdict = crosspad::FwPkgVerdict::Ok;
-    it.complete = true;
-    it.onCard = true;
-    it.community = tier == FwTier::Community;
-    it.bytes = kPackageBytes;
-    lib_->bytes += it.bytes;
-    return it;
+/* The library from the card. Slot and running are the Library view's to set
+ * (readSlots()); a package's kit, version and name come from its binary's
+ * descriptor, as a board package's do from CPFI. */
+void PcFwViewService::scanCard() {
+    lib_->count = 0;
+    lib_->bytes = 0;
+    for (const pc_fw::Package& p : pc_fw::scanLibrary()) {
+        if (lib_->count >= crosspad_gui::kFwLibMax) break;
+        crosspad_gui::FwLibItem& it = lib_->items[lib_->count++];
+        it = crosspad_gui::FwLibItem{};
+        std::snprintf(it.name, sizeof it.name, "%s", p.name.c_str());
+        std::snprintf(it.kit, sizeof it.kit, "%s", p.desc.kit.c_str());
+        std::snprintf(it.version, sizeof it.version, "%s", p.desc.version.c_str());
+        std::snprintf(it.displayName, sizeof it.displayName, "%s",
+                      !p.desc.name.empty() ? p.desc.name.c_str() : p.name.c_str());
+        it.verdict = p.verdict;
+        it.complete = p.complete;
+        it.pinned = p.pinned;
+        it.icon = p.hasIcon ? crosspad_gui::FwIconSrc::Package : crosspad_gui::FwIconSrc::None;
+        it.onCard = true;
+        it.bytes = p.bytes;
+        lib_->bytes += it.bytes;
+    }
 }
 
 crosspad::FwStoreKit& PcFwViewService::addKit(const char* kit, const char* displayName, const char* author,
@@ -104,6 +97,7 @@ void PcFwViewService::dataClose() {
 void PcFwViewService::dataPoll() {
     if (scanWanted_) {
         scanWanted_ = false;
+        scanCard();
         libReady_ = true;
         ++libGen_;
     }
@@ -117,6 +111,12 @@ void PcFwViewService::dataPoll() {
         detailReady_ = true;
         ++detailGen_;
     }
+    for (const IconWanted& w : std::exchange(iconsWanted_, {})) {
+        const std::vector<uint8_t> icon = w.pkg.empty() ? pc_fw::readKitIcon(w.kit) : pc_fw::readPackageIcon(w.pkg);
+        uint8_t* buf = icon.empty() ? nullptr : static_cast<uint8_t*>(std::malloc(icon.size()));
+        if (buf) std::memcpy(buf, icon.data(), icon.size());
+        fw_icons_deliver(w.ticket, buf);
+    }
     stepJob();
 }
 
@@ -125,10 +125,21 @@ void PcFwViewService::dropStore() {
     ++storeGen_;
 }
 
-void PcFwViewService::loadDetail(const char* kit, const char*, const char*) {
+void PcFwViewService::loadDetail(const char* kit, const char*, const char* pkg) {
     detail_ = crosspad::FwKitDetail{};
     const crosspad::FwStoreKit* k = crosspad::fwStoreFind(store_, kit ? kit : "");
-    if (k) {
+    const pc_fw::PackageText text = pkg && pkg[0] ? pc_fw::readPackageText(pkg) : pc_fw::PackageText{};
+    if (text.found) {
+        // The package's manifest, as the board reads it before the catalog.
+        crosspad::fwCopyText(detail_.displayName, sizeof detail_.displayName, text.displayName.c_str());
+        crosspad::fwCopyText(detail_.author, sizeof detail_.author, "CrossPad");
+        crosspad::fwCopyText(detail_.description, sizeof detail_.description, text.description.c_str());
+        for (const std::string& app : text.apps) {
+            if (detail_.appCount >= crosspad::kFwAppsMax) break;
+            crosspad::fwCopyText(detail_.apps[detail_.appCount++], crosspad::kFwAppIdMax, app.c_str());
+        }
+        detail_.tier = FwTier::Official;
+    } else if (k) {
         crosspad::fwCopyText(detail_.displayName, sizeof detail_.displayName, k->displayName);
         crosspad::fwCopyText(detail_.author, sizeof detail_.author, k->author);
         detail_.tier = k->tier;
@@ -144,21 +155,27 @@ void PcFwViewService::loadDetail(const char* kit, const char*, const char*) {
     detailWanted_ = true;
 }
 
+bool PcFwViewService::requestIcon(uint32_t ticket, const char* pkg, const char* kit, const char*) {
+    if ((!pkg || !pkg[0]) && (!kit || !kit[0])) return false;
+    iconsWanted_.push_back({ticket, pkg ? pkg : "", kit ? kit : ""});
+    return true;
+}
+
+void PcFwViewService::cancelIcon(uint32_t ticket) {
+    iconsWanted_.erase(std::remove_if(iconsWanted_.begin(), iconsWanted_.end(),
+                                      [ticket](const IconWanted& w) { return w.ticket == ticket; }),
+                       iconsWanted_.end());
+}
+
+void PcFwViewService::freeIcon(uint8_t* buf) { std::free(buf); }
+
 void PcFwViewService::setPinned(const char* pkg, bool pinned) {
-    for (size_t i = 0; i < lib_->count; ++i)
-        if (std::strcmp(lib_->items[i].name, pkg) == 0) lib_->items[i].pinned = pinned;
+    pc_fw::setPinned(pkg, pinned);
     scanWanted_ = true;
 }
 
 void PcFwViewService::remove(const char* pkg, const char* slotA, const char* slotB) {
-    if (std::strcmp(pkg, slotA) == 0 || std::strcmp(pkg, slotB) == 0) return;   // a slot's package stays
-    for (size_t i = 0; i < lib_->count; ++i) {
-        if (std::strcmp(lib_->items[i].name, pkg) != 0) continue;
-        lib_->bytes -= lib_->items[i].bytes;
-        std::copy(lib_->items + i + 1, lib_->items + lib_->count, lib_->items + i);
-        --lib_->count;
-        break;
-    }
+    if (std::strcmp(pkg, slotA) != 0 && std::strcmp(pkg, slotB) != 0) pc_fw::removePackage(pkg);
     scanWanted_ = true;
 }
 
@@ -168,9 +185,19 @@ bool PcFwViewService::communityOk(const char* kit) {
     return communityOk_.find(std::string(" ") + kit + " ") != std::string::npos;
 }
 
-void PcFwViewService::readSlots(crosspad::FwSlotInfo out[2]) {
-    out[0] = slots_[0];
-    out[1] = slots_[1];
+void PcFwViewService::readSlots(crosspad::FwSlotInfo out[2]) { pc_fw::readSlots(out); }
+
+bool PcFwViewService::runningOnTrial() { return pc_fw::runningOnTrial(); }
+
+bool PcFwViewService::flowInstallAndRestart(const char* pkg, bool allowUnknownBuild) {
+    return pc_fw::installAndSwitch(pkg ? pkg : "", allowUnknownBuild);
+}
+
+bool PcFwViewService::flowSwitchAndRestart(bool clearRollback) { return pc_fw::switchToOther(clearRollback); }
+
+const char* PcFwViewService::runningVersion() {
+    runningVersion_ = std::string("v") + pc_fw::runningSlot().version;
+    return runningVersion_.c_str();
 }
 
 bool PcFwViewService::checkStart(char* refusal, size_t n) {
@@ -184,7 +211,7 @@ bool PcFwViewService::checkStart(char* refusal, size_t n) {
     return true;
 }
 
-bool PcFwViewService::downloadStart(const char* kit, const char* version, bool install, char* refusal, size_t n) {
+bool PcFwViewService::downloadStart(const char* kit, const char* version, bool, char* refusal, size_t n) {
     if (busy_) {
         copy("busy", refusal, n);
         return false;
@@ -194,7 +221,6 @@ bool PcFwViewService::downloadStart(const char* kit, const char* version, bool i
         return false;
     }
     busy_ = true;
-    install_ = install;
     state_ = FwUpdaterState::Downloading;
     progress_ = 0;
     targetKit_ = kit;
@@ -203,29 +229,16 @@ bool PcFwViewService::downloadStart(const char* kit, const char* version, bool i
 }
 
 /* One step of the job in progress: a check ends where it began (the update is
- * still there), a download puts its package on the pretend card. */
+ * still there); a download of the made-up catalog ends with nothing on the
+ * card -- the library is the card's. */
 void PcFwViewService::stepJob() {
     if (!busy_) return;
     progress_ = static_cast<uint8_t>(std::min<int>(progress_ + kProgressStep, kProgressDone));
     if (progress_ < kProgressDone) return;
     busy_ = false;
     progress_ = 0;
-    if (state_ == FwUpdaterState::Checking) {
-        state_ = FwUpdaterState::Available;
-        return;
-    }
-    char name[crosspad::kFwPackageNameMax];
-    crosspad::fwPackageName(targetKit_.c_str(), target_.c_str(), name, sizeof name);
-    bool onCard = false;
-    for (size_t i = 0; i < lib_->count; ++i) onCard = onCard || std::strcmp(lib_->items[i].name, name) == 0;
-    if (!onCard && lib_->count < crosspad_gui::kFwLibMax) {
-        const crosspad::FwStoreKit* k = crosspad::fwStoreFind(store_, targetKit_.c_str());
-        addPackage(targetKit_.c_str(), target_.c_str(), k ? k->displayName : targetKit_.c_str(),
-                   k ? k->tier : FwTier::Official);
-    }
+    state_ = state_ == FwUpdaterState::Checking ? FwUpdaterState::Available : FwUpdaterState::Idle;
     scanWanted_ = true;
-    state_ = install_ ? FwUpdaterState::ReadyToRestart : FwUpdaterState::Idle;
-    ready_ = install_ ? target_ : "";
 }
 
 int64_t PcFwViewService::nowUs() {
@@ -234,5 +247,10 @@ int64_t PcFwViewService::nowUs() {
 }
 
 void PcFwViewService::copy(const std::string& s, char* out, size_t n) { std::snprintf(out, n, "%s", s.c_str()); }
+
+PcFwViewService& pcFwViewService() {
+    static PcFwViewService service;
+    return service;
+}
 
 #endif // USE_LVGL

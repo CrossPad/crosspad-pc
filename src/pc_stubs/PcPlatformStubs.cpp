@@ -197,20 +197,7 @@ private:
         return std::string(ns) + "/" + key;
     }
 
-    /// CROSSPAD_PROFILE_DIR names the whole profile directory (preferences,
-    /// device_preferences, mixer_state, cache): a test instance points it at a
-    /// scratch directory and never rewrites the user's files.
-    static std::string resolveProfileDir() {
-        if (const char* dir = std::getenv("CROSSPAD_PROFILE_DIR"); dir && *dir)
-            return dir;
-#ifdef _MSC_VER
-        const char* userProfile = std::getenv("USERPROFILE");
-        if (userProfile) return std::string(userProfile) + "/.crosspad";
-#endif
-        const char* home = std::getenv("HOME");
-        if (home) return std::string(home) + "/.crosspad";
-        return ".crosspad";
-    }
+    static std::string resolveProfileDir() { return pc_platform_resolve_profile_dir(); }
 
     void load() {
         std::ifstream f(filePath_);
@@ -581,6 +568,21 @@ void pc_platform_save_settings() {
     if (settings) {
         settings->saveTo(s_kvStore);
     }
+}
+
+/// CROSSPAD_PROFILE_DIR names the whole profile directory (preferences,
+/// device_preferences, mixer_state, cache): a test instance points it at a
+/// scratch directory and never rewrites the user's files.
+std::string pc_platform_resolve_profile_dir() {
+    if (const char* dir = std::getenv("CROSSPAD_PROFILE_DIR"); dir && *dir)
+        return dir;
+#ifdef _MSC_VER
+    const char* userProfile = std::getenv("USERPROFILE");
+    if (userProfile) return std::string(userProfile) + "/.crosspad";
+#endif
+    const char* home = std::getenv("HOME");
+    if (home) return std::string(home) + "/.crosspad";
+    return ".crosspad";
 }
 
 // Get user profile directory (~/.crosspad)

@@ -202,6 +202,44 @@ App noteOn/noteOff → MlPianoSynth (ISynthEngine)
   → VU meter timer: pcAudio.getOutputLevel() → crosspad_gui::vu_set_levels()
 ```
 
+A generator put on the node chain with `IAudioModule::addNode()` (DOOM's
+sound effects) plays on OUT1 also when the mixer engine renders the buses.
+
+### Firmware kits, the library and slots A/B
+
+The board's firmware library and A/B switch, played by simulator binaries
+(`src/fw/`). A kit (`config/fw_kits/<kit>.json`, `-DCROSSPAD_FW_KIT=<kit>`)
+is one binary: `bin/CrossPad` for `full`, `bin/CrossPad-<kit>` otherwise
+(build dir `build-<kit>`, e.g. `cmake -B build-doom -G Ninja
+-DCROSSPAD_FW_KIT=doom -DBUILD_TESTING=OFF`). Its descriptor
+(`src/fw/PcFwDesc.cpp`, `CPFI-PC1;kit=…`) is what a package is judged by.
+`python3 scripts/make_fw_package.py bin/CrossPad-doom` puts it on the mounted
+card as `crosspad/firmware/<kit>-<version>/` (`CrossPad.pc`, `icon.bin` from
+`config/fw_kits/icons/<kit>.png`, `manifest.json` with the kit's text); the
+Firmware app's Library installs it into the slot not running and switches,
+which starts that slot's binary (`--fw-slot=A|B`) and ends this process.
+
+- Slots live in `<profile>/fw/slots.json` (+ `slot_a|slot_b/CrossPad.pc`); a
+  binary started by hand is slot A, "flashed over USB".
+- `bin/CrossPad --boot` is the power button and bootloader: it starts the boot
+  slot, and rolls back one that was started on trial and never confirmed
+  itself (crashed, killed) -- the card then offers *Try this slot again* /
+  *Reinstall*, and the slot booted instead shows a toast.
+- A switched-into slot confirms itself 5 s after its boot; a switch away from
+  an unconfirmed one is refused, as on the board.
+- Each firmware keeps its own `preferences.json` (`fw/settings/<package>.json`,
+  saved on a switch, taken back by the slot started); `device_preferences.json`
+  (card, audio devices) is shared, as the board shares its list.
+- The assets are shared too: a slot's binary gets the starting one's through
+  `CROSSPAD_ASSETS`, as both board slots read one assets partition.
+- Pad 16 held through the boot (or `--recovery`) switches to the slot holding
+  the `full` kit, before the firmware's own app starts.
+- A kit with `standalone` starts into that app with no launcher (Escape is the
+  power click there); `"top_bar": false` gives it the whole panel.
+
+Switching on Windows goes through `CreateProcessW` and is not tried on a
+Windows machine yet.
+
 ## Compatibility with ESP32-S3
 
 This simulator must stay compatible with the ESP32-S3 firmware ([platform-idf](https://github.com/CrossPad/platform-idf)). Key constraints:

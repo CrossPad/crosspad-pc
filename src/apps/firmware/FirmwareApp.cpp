@@ -2,14 +2,12 @@
 /**
  * @file FirmwareApp.cpp
  * @brief The Firmware app in the simulator: crosspad-gui's app and views
- *        (crosspad-gui/fw/fw_app.h) over PcFwViewService's made-up card,
- *        slots and catalog, so the screens can be looked at and walked
- *        without a board.
+ *        (crosspad-gui/fw/fw_app.h) over PcFwViewService: the virtual
+ *        card's packages and the simulator's two slots (fw/PcFirmware.hpp).
  */
 
 #if USE_LVGL
 
-#include "PcFwViewService.hpp"
 #include "pc_stubs/PcApp.hpp"
 
 #include <crosspad/app/AppRegistrar.hpp>
@@ -17,7 +15,6 @@
 #include "crosspad-gui/fw/fw_app.h"
 #include "crosspad-gui/platform/IGuiPlatform.h"
 
-static PcFwViewService s_service;
 static lv_group_t* s_launcherGroup = nullptr;   // the encoder's group when the app opened
 
 static lv_group_t* launcher_group() { return s_launcherGroup; }
@@ -25,7 +22,6 @@ static lv_group_t* launcher_group() { return s_launcherGroup; }
 static const crosspad_gui::FwAppHooks kHooks = {nullptr, nullptr, nullptr, launcher_group};
 
 static lv_obj_t* lv_CreateFirmware(lv_obj_t* parent, App* a) {
-    crosspad_gui::setFwViewService(&s_service);
     lv_indev_t* nav = crosspad_gui::getGuiPlatform().getNavigationEncoder();
     s_launcherGroup = nav ? lv_indev_get_group(nav) : nullptr;
     return crosspad_gui::fw_app_create(parent, a, kHooks);

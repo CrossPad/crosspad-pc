@@ -1,0 +1,11 @@
+{
+  "kit": "doom",
+  "display_name": "DOOM",
+  "version": "0.1.0",
+  "apps": [
+    "crosspad-doom"
+  ],
+  "standalone": "Doom",
+  "top_bar": false,
+  "description": "DOOM, the shareware episode on the card (crosspad/doom/doom1.wad): pads, encoder, sound effects and OPL music. Quit Game goes back to the other firmware."
+}

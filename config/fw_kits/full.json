@@ -1,0 +1,8 @@
+{
+  "kit": "full",
+  "display_name": "CrossPad",
+  "exclude": [
+    "crosspad-doom"
+  ],
+  "description": "Every CrossPad app: Sampler, Sequencer, Song, Arrange, Mixer, DAW Control and the rest."
+}
