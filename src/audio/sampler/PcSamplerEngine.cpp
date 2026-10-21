@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
 #include "PcSamplerEngine.hpp"
+#include "PcKitLoad.hpp"
 
 #include <crosspad/audio/IAudioNode.hpp>
 #include <crosspad/audio/ScopeTap.hpp>
@@ -49,6 +50,18 @@ using crosspad::TakePad;
 using crosspad::TakePadSpec;
 using crosspad::TakeSpec;
 
+using kit_load::PcSampleSource;
+using kit_load::heap_alloc;
+using kit_load::heap_free;
+using kit_load::kBlockBytes;
+using kit_load::kHeadBytes;
+using kit_load::kHeadsBudget;
+using kit_load::kMaxPages;
+using kit_load::kPageBytes;
+using kit_load::kPanCentre;
+using kit_load::kStreamBlocks;
+using kit_load::wait_for;
+
 using Clock = std::chrono::steady_clock;
 
 uint32_t now_us() {
@@ -56,20 +69,7 @@ uint32_t now_us() {
         std::chrono::duration_cast<std::chrono::microseconds>(Clock::now().time_since_epoch()).count());
 }
 
-/* The board's numbers, kept: 16 kB blocks, six to a voice's ring, sixteen
- * rings at most, so a kit streams here the way it does on the card. */
-constexpr size_t   kBlockBytes   = 16384;
-constexpr uint8_t  kStreamBlocks = 6;
-constexpr size_t   kPageBytes    = kStreamBlocks * kBlockBytes;
-constexpr uint32_t kMaxPages     = 16;
 constexpr uint32_t kPreviewBlocks = crosspad::StreamWindow::kDefaultBlocks;
-
-/* What a sample asks to keep resident, as on the board -- halved by HeadPlan
- * until the kit fits the budget. The board's budget is what its arena has
- * left; the heap here has no such wall, so it is a plain cap that still
- * leaves a long sample streaming. */
-constexpr uint32_t kHeadBytes   = 256u * 1024;
-constexpr uint32_t kHeadsBudget = 32u * 1024 * 1024;
 
 /* The streaming pass runs once a millisecond, the board's audio_bg rate --
  * what kPreviewPrimeMaxPasses and the ring's lookahead are sized for. */
@@ -88,90 +88,9 @@ constexpr auto kFadePoll       = std::chrono::milliseconds(5);
 /* Peak per bin is read through this many frames at a time. */
 constexpr uint32_t kWaveChunkFrames = 1024;
 
-/* The 0..127 pan the engine's helper takes has its centre here; kits store a
- * signed offset from it. */
-constexpr int kPanCentre = 64;
 /* Volume 100 is unity in a kit; what an audition asked at 0 plays at. */
 constexpr int kUnityVolume = 100;
 constexpr int kMaxSemitones = 24;
-
-// ── Where bytes come from ───────────────────────────────────────────────
-
-/* A WAV is parsed once per path, when the store loads its head, and kept
- * here: a read only gets a path and a frame number. Written by the loader,
- * read by the streaming thread -- one mutex, held for the copy only. */
-class PcSampleSource : public crosspad::ISampleSource {
-public:
-    struct Entry {
-        uint32_t dataOffset = 0;
-        uint32_t frames = 0;
-        uint32_t rate = 0;
-        uint8_t  channels = 0;
-    };
-
-    static bool parse(const char* path, Entry& e) {
-        FILE* f = std::fopen(path, "rb");
-        if (!f) return false;
-        crosspad::WavLayout lay;
-        const bool ok = lay.parse(f) && lay.pcm16();
-        std::fclose(f);
-        if (!ok) return false;
-        e.dataOffset = lay.dataOffset;
-        e.frames = lay.frames;
-        e.rate = lay.rate;
-        e.channels = static_cast<uint8_t>(lay.channels);
-        return true;
-    }
-
-    static uint32_t readEntry(const char* path, const Entry& e, uint32_t first, uint32_t frames,
-                              int16_t* dst) {
-        if (frames == 0 || first >= e.frames) return 0;
-        if (first + frames > e.frames) frames = e.frames - first;
-        FILE* f = std::fopen(path, "rb");
-        if (!f) return 0;
-        const uint32_t frameBytes = e.channels * sizeof(int16_t);
-        uint32_t got = 0;
-        if (std::fseek(f, static_cast<long>(e.dataOffset + first * frameBytes), SEEK_SET) == 0) {
-            got = static_cast<uint32_t>(std::fread(dst, frameBytes, frames, f));
-        }
-        std::fclose(f);
-        return got;
-    }
-
-    bool describe(const char* path, SampleDesc& out) override {
-        Entry e;
-        if (!parse(path, e)) return false;
-        {
-            std::lock_guard<std::mutex> lk(mu_);
-            table_[path] = e;
-        }
-        out.frames = e.frames;
-        out.sampleRate = e.rate;
-        out.channels = e.channels;
-        out.bits = 16;
-        return true;
-    }
-
-    uint32_t read(const char* path, uint32_t first, uint32_t frames, int16_t* dst) override {
-        Entry e;
-        {
-            std::lock_guard<std::mutex> lk(mu_);
-            const auto it = table_.find(path);
-            if (it == table_.end()) return 0;
-            e = it->second;
-        }
-        return readEntry(path, e, first, frames, dst);
-    }
-
-    void forget() {
-        std::lock_guard<std::mutex> lk(mu_);
-        table_.clear();
-    }
-
-private:
-    std::mutex mu_;
-    std::map<std::string, Entry> table_;
-};
 
 /* The audition's: one file outside the kit, described and read on the
  * streaming thread only. */
@@ -321,9 +240,6 @@ struct State {
      * finds no kit held takes one first. */
     std::recursive_mutex loader;
 
-    std::mutex  rootMu;
-    std::string root;
-
     uint32_t headBytes = 0;
     uint64_t retired = 0;   ///< store slots no pad names, each waiting for its last voice
     std::atomic<int> kitId{-1};
@@ -338,125 +254,22 @@ State& st() {
     return *s;
 }
 
-void* heap_alloc(size_t bytes, void*) { return std::malloc(bytes); }
-void  heap_free(void* p, void*)       { std::free(p); }
 
 uint16_t slots_incomplete() {
     const auto s = st().store.stats();
     return static_cast<uint16_t>(s.slots - s.completeSlots);
 }
 
-// ── Which file a layer plays ────────────────────────────────────────────
-
-/* Pitch the engine does itself; filters and reverse it does not, and the
- * sampler renders a copy with them (crosspad::renderedSamplePath) -- that
- * copy is what plays when it is there, with the step baked in. Reversed, the
- * trim's end is where the copy starts. The board's layer_file(), on stdio. */
-struct LayerFile {
-    std::string path;
-    uint32_t    start = 0;
-    uint32_t    end   = 0;
-    bool        pitchInFile = false;
-};
-
-LayerFile layer_file(const char* kitPath, const TakePad& pad, const TakeLayer& layer) {
-    LayerFile f;
-    const std::string logical = crosspad::takeLayerLogical(kitPath, layer);
-    f.path  = native_sampler_fs_path(logical.c_str());
-    f.start = layer.start;
-    f.end   = layer.end;
-
-    const std::string copyLogical = crosspad::takeLayerCopy(pad, logical);
-    if (copyLogical.empty()) return f;
-    const std::string copy = native_sampler_fs_path(copyLogical.c_str());
-    struct stat sb;
-    if (::stat(copy.c_str(), &sb) != 0) return f;
-
-    if (pad.reverse) {
-        SampleDesc d;
-        if (!st().source.describe(f.path.c_str(), d) || d.frames == 0) return f;
-        const uint32_t n = d.frames;
-        const uint32_t e = (f.end && f.end < n) ? f.end : n;
-        const uint32_t b = f.start < e ? f.start : e;
-        f.start = n - e;
-        f.end   = b ? n - b : 0;
-    }
-    f.path = copy;
-    f.pitchInFile = true;
-    return f;
-}
-
-/* One pad from a copy of the kit model into @p kp, its samples loaded.
- * @return layers that found their file. */
 uint16_t build_pad(const char* kitPath, const TakePad& tp, const TakeLayer* layers, uint8_t p,
                    uint32_t headBytes, KitPad& kp) {
-    State& s = st();
-    kp = KitPad{};
-    kp.mode  = static_cast<PadMode>(tp.mode <= static_cast<uint8_t>(PadMode::Loop) ? tp.mode : 0);
-    kp.choke = static_cast<uint8_t>(tp.choke & 0x07);
-    kp.gain  = SamplerKit::volumeToGain(tp.volume);
-    kp.pan   = SamplerKit::panToBalance(tp.pan + kPanCentre);
-    kp.semitones = tp.pitch;
-    kp.roundRobin = tp.cycle;
-
-    uint16_t loaded = 0;
-    for (uint8_t i = 0; i < tp.layerCount && i < KitPad::kMaxLayers; ++i) {
-        const LayerFile lf = layer_file(kitPath, tp, layers[tp.firstLayer + i]);
-        SampleDesc d;
-        if (!s.source.describe(lf.path.c_str(), d)) {
-            std::printf("[sampler] pad %u layer %u: cannot use '%s'\n", (unsigned)p, (unsigned)i,
-                        lf.path.c_str());
-            continue;
-        }
-        const uint32_t frameBytes = d.channels * sizeof(int16_t);
-        const uint16_t slot = s.store.load(lf.path.c_str(), headBytes / frameBytes, lf.start, lf.end);
-        if (slot == SampleStore::kNoSlot) {
-            std::printf("[sampler] pad %u layer %u: no slot for '%s'\n", (unsigned)p, (unsigned)i,
-                        lf.path.c_str());
-            continue;
-        }
-        kp.layers[kp.layerCount].slot  = slot;
-        kp.layers[kp.layerCount].start = lf.start;
-        kp.layers[kp.layerCount].end   = lf.end;
-        ++kp.layerCount;
-        ++loaded;
-        if (lf.pitchInFile) kp.semitones = 0;
-    }
-    return loaded;
+    return kit_load::build_pad(st().source, st().store, kitPath, tp, layers, p, headBytes, kp);
 }
 
-/* Head size for a kit, from every sample's length: what HeadPlan makes of
- * kHeadBytes a sample within kHeadsBudget. */
 uint32_t plan_heads(const char* kitPath, const TakePad* pads, const TakeLayer* layers) {
-    HeadPlan plan;
-    plan.headBytes   = kHeadBytes;
-    plan.budgetBytes = kHeadsBudget;
-    uint32_t sizes[SampleStore::kMaxSlots];
-    uint16_t n = 0;
-    for (uint8_t p = 0; p < SamplerKit::kPads && n < SampleStore::kMaxSlots; ++p) {
-        const TakePad& tp = pads[p];
-        for (uint8_t i = 0; i < tp.layerCount && n < SampleStore::kMaxSlots; ++i) {
-            const LayerFile lf = layer_file(kitPath, tp, layers[tp.firstLayer + i]);
-            SampleDesc d;
-            if (!st().source.describe(lf.path.c_str(), d)) continue;
-            const uint32_t from = SampleStore::trimStart(lf.start, lf.end, d.frames);
-            sizes[n++] = (d.frames - from) * d.channels * sizeof(int16_t);
-        }
-    }
-    return plan.resolve(sizes, n);
+    return kit_load::plan_heads(st().source, kitPath, pads, layers);
 }
 
 // ── Teardown ────────────────────────────────────────────────────────────
-
-template <class Pred>
-bool wait_for(Pred done, std::chrono::milliseconds bound, std::chrono::milliseconds poll) {
-    const auto until = Clock::now() + bound;
-    while (!done()) {
-        if (Clock::now() >= until) return false;
-        std::this_thread::sleep_for(poll);
-    }
-    return true;
-}
 
 /* The audition's ring is pool blocks, so it is back before the pool's pages
  * go: its fade is the render's, and one the render never played is ended
@@ -723,24 +536,6 @@ bool holds_current(uint8_t pad) {
 } // namespace
 
 // ── Public ──────────────────────────────────────────────────────────────
-
-void native_sampler_set_root(const std::string& root) {
-    State& s = st();
-    std::lock_guard<std::mutex> lk(s.rootMu);
-    s.root = root;
-}
-
-std::string native_sampler_fs_path(const char* path) {
-    if (!path || !path[0]) return {};
-    std::string p(path);
-    for (char& c : p) { if (c == '\\') c = '/'; }
-    State& s = st();
-    std::lock_guard<std::mutex> lk(s.rootMu);
-    if (s.root.empty()) return p;
-    if (p.compare(0, s.root.size(), s.root) == 0) return p;
-    if (p[0] != '/') return s.root + "/" + p;
-    return s.root + p;
-}
 
 crosspad::IAudioNode* native_sampler_node() {
     ensure_started();

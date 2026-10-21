@@ -68,6 +68,17 @@ set(CORE_TEST_SOURCES
     ${PROJECT_SOURCE_DIR}/src/apps/crosspad-sampler/src/port/SamplerRtos.cpp
     ${PROJECT_SOURCE_DIR}/src/apps/crosspad-sampler/src/waveform/waveform_cache.cpp
     ${PROJECT_SOURCE_DIR}/src/apps/crosspad-sampler/src/waveform/waveform_loader.cpp
+
+    # The simulator's second kit: core's sampler engine and the readers the
+    # pads' engine shares with it (test_SecondKit). LVGL-free by construction.
+    ${PROJECT_SOURCE_DIR}/lib/crosspad-core/src/sampler/BlockPool.cpp
+    ${PROJECT_SOURCE_DIR}/lib/crosspad-core/src/sampler/KitTake.cpp
+    ${PROJECT_SOURCE_DIR}/lib/crosspad-core/src/sampler/SampleStore.cpp
+    ${PROJECT_SOURCE_DIR}/lib/crosspad-core/src/sampler/SamplerEngine.cpp
+    ${PROJECT_SOURCE_DIR}/lib/crosspad-core/src/sampler/SamplerKit.cpp
+    ${PROJECT_SOURCE_DIR}/lib/crosspad-core/src/sampler/StreamWindow.cpp
+    ${PROJECT_SOURCE_DIR}/src/audio/sampler/PcKitLoad.cpp
+    ${PROJECT_SOURCE_DIR}/src/audio/sampler/PcSecondKit.cpp
 )
 
 # ── Audio pipeline sources (Tier 2 & 3 tests) ──
@@ -107,6 +118,7 @@ set(AUDIO_TEST_FILES
     audio/test_PcAudioModule.cpp
     audio/test_MixerGoldens.cpp
     audio/test_PitchedEngine.cpp
+    audio/test_SecondKit.cpp
 )
 
 # ── Native PipeWire backend tests (only when CMake detected usable headers) ──
