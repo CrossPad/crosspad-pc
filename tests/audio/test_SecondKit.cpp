@@ -10,6 +10,7 @@
 #include <catch2/catch_test_macros.hpp>
 
 #include "wav_io.hpp"
+#include "audio/sampler/PcKitLoad.hpp"
 #include "audio/sampler/PcSecondKit.hpp"
 #include "crosspad/dsp/DspMath.hpp"
 
@@ -74,7 +75,8 @@ void writeTone(const std::filesystem::path& path, double hz) {
     REQUIRE(wavWrite(path.string(), w));
 }
 
-/// Two kits on disk, pad 0 of each a tone, and the manager that reads them.
+/// Two kits on a virtual card, pad 0 of each a tone, and the manager that
+/// reads them. Kits name their files by card path, as in the simulator.
 struct Fixture {
     std::filesystem::path dir;
     FakeKitManager        mgr;
@@ -87,6 +89,7 @@ struct Fixture {
                    static_cast<unsigned long long>(
                        std::chrono::steady_clock::now().time_since_epoch().count())));
         std::filesystem::create_directories(dir);
+        crosspad_pc::native_sampler_set_root(dir.generic_string());
         kitA = make("a", 220.0);
         kitB = make("b", 880.0);
         auto& svc = crosspad::getPlatformServices();
@@ -95,19 +98,19 @@ struct Fixture {
     }
     ~Fixture() {
         crosspad::getPlatformServices().kitManager = previous;
+        crosspad_pc::native_sampler_set_root("");
         std::error_code ec;
         std::filesystem::remove_all(dir, ec);
     }
 
     std::string make(const std::string& name, double hz) {
-        const auto wav = dir / (name + ".wav");
-        writeTone(wav, hz);
+        writeTone(dir / (name + ".wav"), hz);
         crosspad::KitInfo k;
-        k.path = (dir / (name + "_kit.json")).string();
+        k.path = "/" + name + "_kit.json";
         k.name = "KIT " + name;
         k.parsed = true;
-        // Absolute: the kit's own layout is not what is under test.
-        k.pads[0].AddSample(wav.string());
+        // Card-absolute: the kit's own layout is not what is under test.
+        k.pads[0].AddSample("/" + name + ".wav");
         mgr.kits[k.path] = k;
         return k.path;
     }
