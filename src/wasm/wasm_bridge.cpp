@@ -72,6 +72,10 @@ extern crosspad::CrosspadStatus status;
 #include "sequencer/PcSequencer.hpp"
 #include "crosspad/sequencer/PatternSequencer.hpp"
 #endif
+#if __has_include("crosspad-gui/components/ui_probe.h")   // crosspad-gui 2.3: the GUI map's probe
+#include "crosspad-gui/components/ui_probe.h"
+#define TWIN_UI_TREE 1
+#endif
 
 // The asset loader resolves its folder in a static constructor, long before
 // main(): point it at the preloaded /assets (CrossPad.data) ahead of those.
@@ -889,6 +893,20 @@ EMSCRIPTEN_KEEPALIVE const char* wasm_ui_apps() {
         if (a && a->getName() && *a->getName()) { out += a->getName(); out += '\n'; }
     return out.c_str();
 }
+#ifdef TWIN_UI_TREE
+/** The widgets on the LCD as JSON (crosspad_gui::ui_tree_json), for the GUI map. Laid out
+ *  first: a screen shown a moment ago has not had its pass yet. Valid until the next call. */
+EMSCRIPTEN_KEEPALIVE const char* wasm_ui_tree() {
+    static crosspad_gui::UiNode nodes[512];
+    static std::string out;
+    lv_obj_update_layout(lv_screen_active());
+    lv_obj_update_layout(lv_layer_top());
+    const uint16_t n = crosspad_gui::ui_tree_probe(nodes, 512);
+    out.clear();
+    crosspad_gui::ui_tree_json(nodes, n, running_name().c_str(), out);
+    return out.c_str();
+}
+#endif
 /** The twin's running app ("-" on the launcher). */
 EMSCRIPTEN_KEEPALIVE const char* wasm_ui_app() {
     static std::string name;
