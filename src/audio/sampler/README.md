@@ -129,3 +129,19 @@ Four things about the bench, each of which cost an hour to learn:
   `KIT_LOAD`, the reply means the load *started* — `kit_status` is the honest
   answer, and `[sampler] kit ready: … N pads, M layers` on stdout says the
   samples reached the engine.
+
+## A song's second kit
+
+`PcSecondKit` implements core's `ISecondKit` for a song's second kit track: a
+`SamplerEngine` of its own on the mixer channel "Kit 2" (OUT1 and the capture
+bus), published as `PlatformServices::secondKit`. A worker reads the kit named
+by `hold()` with the same readers and pad builders as the pads' engine
+(`PcKitLoad`), a streaming thread of its own services its rings, and a note
+reaches it by `noteOn()`/`noteOff()` only. The kit picker is the sampler's kit
+gate (`PlatformServices::kitPicker`), installed with the pads' engine.
+
+A release never frees what the audio thread may be reading: the node counts the
+render passes and notes inside the engine, a release closes the gate and waits
+for the count to reach zero, then gives the samples back (the board waits a
+fixed 10 ms instead). `tests/audio/test_SecondKit.cpp` holds and releases kits
+under a running render thread.
