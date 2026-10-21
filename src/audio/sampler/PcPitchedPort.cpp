@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: MIT
+// SPDX-License-Identifier: GPL-3.0-or-later
 
 #include "PcPitchedPort.hpp"
 
@@ -114,7 +114,7 @@ crosspad::IAudioNode* pitched_port_init(uint32_t engineRate) {
 
 crosspad::PitchedInstrument& pitched_port_instrument() { return s_instrument; }
 
-bool pitched_port_load(const crosspad::KitInfo& kit) {
+bool pitched_port_load(const crosspad::KitInfo& kit, const PitchedPortOptions& options) {
     crosspad::PitchedLoadEnv env;
     env.alloc       = bankAlloc;
     env.free        = bankFree;
@@ -126,6 +126,10 @@ bool pitched_port_load(const crosspad::KitInfo& kit) {
     // seen on hardware. The board's engine arena is ~5 MB of PSRAM minus the
     // resampler's transient, so the simulator stops where the board stops.
     env.maxBankBytes = kMaxBankBytes;
+    env.maxZoneFrames = options.maxZoneSeconds > 0.0f
+                      ? static_cast<uint32_t>(options.maxZoneSeconds * static_cast<float>(env.engineRate)) : 0;
+    env.convertRate  = options.convertRate;
+    env.normalize    = options.normalize;
 
     s_report = crosspad::PitchedLoadReport{};
     crosspad::SampleBank* bank = nullptr;

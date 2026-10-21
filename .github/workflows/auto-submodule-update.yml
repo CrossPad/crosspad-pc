@@ -23,8 +23,8 @@ jobs:
       SHA: ${{ github.event.client_payload.sha }}
       SHORT_SHA: ${{ github.event.client_payload.short_sha }}
       REF: ${{ github.event.client_payload.ref }}
-      # Submodule path matches the lib name in this repo (root level)
-      SUBMODULE_PATH: ${{ github.event.client_payload.lib }}
+      # The dispatcher sends the bare name (crosspad-core, crosspad-gui); both live under lib/
+      SUBMODULE_PATH: lib/${{ github.event.client_payload.lib }}
 
     steps:
       - name: Checkout

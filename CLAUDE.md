@@ -4,46 +4,46 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Default Tools
 
-**Always prefer CrossPad MCP tools** over manual bash commands for building, running, testing, and interacting with the simulator. The MCP server handles MSVC/GCC environment setup, paths, and simulator communication automatically.
-
-Key tools:
-- `crosspad_build` — build/run/check simulator (`action: pc/pc_run/pc_check/pc_log`) and ESP-IDF firmware (`action: idf`)
-- `crosspad_test` — run Catch2 tests (`action: run/scaffold`)
-- `crosspad_sim` — screenshots, input, stats, settings (`action: screenshot/input/stats/settings_get/settings_set`)
-- `crosspad_repo` — git status and submodule diffs (`action: status/diff`)
-- `crosspad_code` — search symbols, query interfaces, list apps, scaffold (`action: search/interfaces/apps/scaffold`)
-- `crosspad_apps` — app package manager (`action: list/install/remove/update/sync`)
+**Prefer the CrossPad MCP tools** over raw shell for building, running, testing and driving the simulator. They live in the separate [crosspad-mcp](https://github.com/CrossPad/crosspad-mcp) repo (it used to sit here under `tools/mcp-server/`); its `crosspad` skill maps the tool set. The tools resolve this repo through `CROSSPAD_PC_ROOT`.
 
 ## Project Overview
 
-CrossPad PC — a desktop simulator for the CrossPad embedded device. Runs the same LVGL GUI + crosspad-core/crosspad-gui libraries on desktop via SDL2, with MIDI I/O (RtMidi), audio output (RtAudio/WASAPI), and an STM32 hardware emulator window (4x4 pad grid + rotary encoder). Used for rapid development before deploying to ESP32-S3 hardware.
+CrossPad PC — a desktop simulator for the CrossPad embedded device. Runs the same LVGL GUI + crosspad-core/crosspad-gui libraries on desktop via SDL2 and FreeRTOS, with MIDI I/O (RtMidi), BLE MIDI (SimpleBLE), audio in/out (RtAudio; PipeWire virtual sinks on Linux), and an STM32 hardware emulator window (4x4 pad grid, rotary encoder, power button). Used for rapid development before deploying to the ESP32-S3 board (firmware: [platform-idf](https://github.com/CrossPad/platform-idf)).
 
 ## Build
 
-Windows with MSVC (Visual Studio 2022 Community):
+Linux (Debian/Ubuntu):
+```bash
+sudo apt install build-essential cmake ninja-build pkg-config libsdl2-dev libasound2-dev libpulse-dev libdbus-1-dev
+sudo apt install libpipewire-0.3-dev   # optional, native PipeWire backend
+cmake -B build -G Ninja -DCMAKE_BUILD_TYPE=Debug
+cmake --build build
 ```
-build.bat
-```
-This calls `vcvarsall.bat x64`, then cmake+ninja with vcpkg toolchain. Enables FreeRTOS by default. Output: `bin/main.exe`.
+Run: `bin/CrossPad` (or `scripts/run.sh`, which rebuilds when sources changed). `bin/CrossPad --versions` prints the core/gui/app commits it was built with.
 
-Manual build (incremental — without wiping build dir):
+Windows with MSVC (Visual Studio 2022 Community): `build.bat` calls `vcvarsall.bat x64`, wipes `build/`, then cmake+ninja with the vcpkg toolchain. Incremental:
 ```bash
 cmake -B build -G Ninja -DCMAKE_TOOLCHAIN_FILE=C:/vcpkg/scripts/buildsystems/vcpkg.cmake -DCMAKE_BUILD_TYPE=Debug
 cmake --build build
 ```
+Run: `bin/CrossPad.exe`. SDL2 via vcpkg (`vcpkg install sdl2:x64-windows`), vcpkg at `C:\vcpkg`.
 
-Run: `bin/main.exe`
+macOS: the simulator runs, but CDC/MIDI/audio are not well tested — see `docs/building-macos.md`.
 
-**Dependencies:** SDL2 via vcpkg (`vcpkg install sdl2:x64-windows`), vcpkg at `C:\vcpkg`.
+Tests: `ctest --test-dir build --output-on-failure -LE gui` (`-LE gui` skips the tests that need a display).
 
 ### CMake Options
 
+FreeRTOS is always on (there is no `USE_FREERTOS` option any more).
+
 | Option | Default | Description |
 |---|---|---|
-| `USE_FREERTOS` | OFF | FreeRTOS multitasking (recommended ON for full app init) |
 | `USE_MIDI` | ON | MIDI I/O via RtMidi (FetchContent) |
-| `USE_AUDIO` | ON | Audio output via RtAudio + FM synth (FetchContent) |
+| `USE_AUDIO` | ON | Audio via RtAudio + FM synth (FetchContent) |
+| `USE_BLE` | ON | BLE MIDI via SimpleBLE (FetchContent; `libdbus-1-dev` on Linux) |
+| `USE_VIRTUAL_AUDIO` | ON | OS-visible virtual audio sinks (system mixer) |
 | `USE_PIPEWIRE` | ON (Linux) | Native PipeWire virtual sinks/source; falls back to `pactl` at runtime when the daemon or dev headers are unavailable |
+| `BUILD_TESTING` | ON | Catch2 tests (`crosspad_tests`, `gui_tests`) |
 | `LV_USE_DRAW_SDL` | OFF | SDL GPU-accelerated drawing |
 | `LV_USE_LIBPNG` | OFF | PNG decoding |
 | `LV_USE_LIBJPEG_TURBO` | OFF | JPEG decoding |
@@ -71,62 +71,66 @@ the LCD alone.
 
 ### Compile Defines
 
-The `main` target gets: `PLATFORM_PC=1`, `USE_LVGL=1`, `CP_LCD_HOR_RES=320`, `CP_LCD_VER_RES=240`, plus `USE_MIDI=1` and `USE_AUDIO=1` when those options are ON.
+The `CrossPad` target gets: `PLATFORM_PC=1`, `USE_LVGL=1`, `USE_FREERTOS=1`, `CP_LCD_HOR_RES=320`, `CP_LCD_VER_RES=240`, plus `USE_MIDI=1`, `USE_AUDIO=1`, `USE_BLE=1`, `USE_VIRTUAL_AUDIO=1` when those options are ON.
+
+### Core / GUI version gate
+
+`src/crosspad_deps.hpp` declares the crosspad-core / crosspad-gui versions this simulator was written against (major mismatch is `#error`, minor/patch drift a `#warning`). Bump it together with the `lib/` submodules, after building and running against them. Keep the pins in step with what platform-idf's `main` uses.
 
 ## Architecture
 
 ### Entry Points & Init Flow
 
-- **Standard mode** (`USE_FREERTOS=OFF`): `src/main.cpp` — single-threaded `lv_timer_handler()` loop. Note: `crosspad_app_init()` is currently commented out in this mode.
-- **FreeRTOS mode** (`USE_FREERTOS=ON`): `src/freertos_main.cpp` — creates LVGL task (priority 1), calls `crosspad_app_init()`, then starts scheduler.
+`src/freertos_main.cpp` is the only entry point: it handles `--versions`, starts the remote control server, creates the LVGL task (priority 1), which calls `crosspad_app_init()`, then starts the scheduler.
 
-Both modes share `crosspad_app_init()` in `src/crosspad_app.cpp`, which orchestrates the full init sequence:
+`crosspad_app_init()` in `src/crosspad_app.cpp` orchestrates the full init sequence:
 1. `pc_platform_init()` — creates singletons (EventBus, Clock, PadManager, LedController, Settings, GuiPlatform)
 2. `stm32Emu.init()` — builds emulator window, returns 320x240 LCD container
 3. MIDI setup — auto-connect to "CrossPad" port, route NoteOn/Off → PadManager, CC → Encoder, SysEx → Stm32MessageHandler
 4. Audio setup — RtAudio init, FM synth thread, VU meter timer
 5. App registration — enumerate `AppRegistry`, create `App` wrappers
 6. `initStyles()` + `LoadMainScreen()` — crosspad-gui theme and launcher
+7. `boot_splash_start()` — crosspad-gui's cold-boot splash over the launcher (~2 s, the emulated pads go along); `CROSSPAD_NO_SPLASH=1` in the environment skips it, as the GUI test harness does
 
 ### Source Layout
 
 ```
 src/
-  main.cpp / freertos_main.cpp  — entry points
+  freertos_main.cpp             — entry point (LVGL task + scheduler)
   crosspad_app.cpp              — shared init (MIDI, audio, apps, launcher)
-  hal/hal.c                     — SDL2 HAL (display 490x660, mouse, keyboard, mousewheel)
-  stm32_emu/                    — device body visualization
-    Stm32EmuWindow.cpp          — LCD (320x240), encoder, pad grid layout
-    EmuEncoder.cpp              — rotary encoder knob (mouse wheel + middle click)
-    EmuPadGrid.cpp              — 4x4 clickable pads with LED color readback
-  midi/PcMidi.cpp               — RtMidi wrapper, IMidiOutput impl, auto-connect
-  audio/
-    PcAudio.cpp                 — RtAudio/WASAPI output, AudioRingBuffer, peak metering
-    pipewire/                   — native Linux PipeWire backend (primary virtual-audio path, see docs/virtual-audio.md)
+  crosspad_deps.hpp             — required crosspad-core / crosspad-gui versions
+  hal/hal.c                     — SDL2 HAL (display, mouse as the touch panel -- its own driver, so crosspad-gui's touch_gesture can wrap it --, keyboard, mousewheel)
+  freertos/                     — FreeRTOS port glue (POSIX, Win32)
+  stm32_emu/                    — device body: LCD, encoder, pads, jack panel, SD slot, keyboard capture
+  midi/                         — PcMidi (RtMidi, auto-connect), PcBleMidi (SimpleBLE)
+  audio/                        — RtAudio output/input, audio module, sampler port,
+                                  pipewire/ (Linux virtual-audio backend, see docs/virtual-audio.md), virtual/
   synth/MlPianoSynth.cpp        — ISynthEngine impl wrapping ML_SynthTools FM engine
-  apps/ml_piano/                — ML Piano app (pad grid, preset selector, param controls)
-  remote/
-    RemoteControl.cpp           — TCP server (localhost:19840) for MCP integration
+  sequencer/, song/             — PC ports of the pattern sequencer and core's song engine
+  uart/, updater/               — PC stand-ins for the STM32 link and the updater
+  remote/RemoteControl.cpp      — TCP server (localhost:19840, `CROSSPAD_REMOTE_PORT`) for MCP integration
   pc_stubs/
     PcPlatformStubs.cpp         — PC impls: PcClock, PcLedStrip, PcKeyValueStore, PcGuiPlatform, etc.
-    PcEventBus.cpp              — synchronous event dispatch (vs. ESP-IDF's async queue)
     PcApp.cpp                   — lightweight App class for launcher (no sequencer/CLI)
+    PcHttpClient.cpp            — HTTP for the App Store / updater
     pc_platform.h               — public API: pc_platform_init(), set_midi/audio/synth
+  apps/settings, citest, update — built-in apps
+  apps/crosspad-*/              — installed apps (submodules)
 lib/ml_synth/                   — vendored ML_SynthTools FM synth engine
 lib/crosspad-core/              — submodule: portable C++ library
 lib/crosspad-gui/               — submodule: shared LVGL UI components
 scripts/
   app_manager.py                — Python app manager (wrapper for crosspad-apps core)
   run.sh                        — Smart build+run script
-tools/mcp-server/               — MCP development server (TypeScript, 16 tools)
+tests/                          — Catch2 tests (ctest labels: gui, flaky)
 ```
 
 ### Submodules
 
 **Shared libraries** (in `lib/`):
 
-- **crosspad-core**: Portable C++ library — AppRegistry, IEventBus, PadManager, PadLedController, CrosspadSettings (IKeyValueStore), Stm32MessageHandler, platform interfaces (IClock, IMidiOutput, ILedStrip, IAudioOutput, ISynthEngine). Originally an ESP-IDF component; sources are listed manually in CMakeLists.txt.
-- **crosspad-gui**: LVGL UI components — theme, styles, launcher, status bar, widgets (keypad buttons, spinbox, radial menu, VU meter, file explorer, DFU panel, modals/toasts). Originally an ESP-IDF component; sources listed manually.
+- **crosspad-core**: Portable C++ library — AppRegistry, IEventBus, PadManager, PadLedController, CrosspadSettings (IKeyValueStore), Stm32MessageHandler, platform interfaces (IClock, IMidiOutput, ILedStrip, IAudioOutput, ISynthEngine). Originally an ESP-IDF component; sources are auto-discovered (`file(GLOB_RECURSE)`) in CMakeLists.txt.
+- **crosspad-gui**: LVGL UI components — theme, styles, launcher, status bar, widgets (keypad buttons, spinbox, radial menu, VU meter, file explorer, DFU panel, modals/toasts). Originally an ESP-IDF component; `.cpp` and `.c` sources (fonts, icons) auto-discovered.
 - **lvgl**: LVGL v9.x graphics library
 - **FreeRTOS**: FreeRTOS Kernel (MSVC-MingW port on Windows, GCC POSIX on Linux/Mac)
 
@@ -162,7 +166,7 @@ crosspad-core defines portable interfaces; this repo provides PC implementations
 | Interface | PC Implementation | Notes |
 |---|---|---|
 | `IClock` | `PcClock` (std::chrono) | |
-| `IEventBus` | `PcEventBus` | Synchronous dispatch (not queued) |
+| `IEventBus` | `FreeRtosEventBus` (src/pc_stubs) | `post*()` queued to a dispatch task, `send*()` synchronous |
 | `ILedStrip` | `PcLedStrip` | 16 virtual RGB pixels, readable via `pc_get_led_color()` |
 | `IMidiOutput` | `PcMidi` / `NullMidiOutput` | Swappable at runtime via `pc_platform_set_midi_output()` |
 | `IAudioOutput` | `PcAudioOutput` / `NullAudioOutput` | Swappable via `pc_platform_set_audio_output()` |
@@ -216,9 +220,47 @@ App noteOn/noteOff → MlPianoSynth (ISynthEngine)
   → VU meter timer: pcAudio.getOutputLevel() → crosspad_gui::vu_set_levels()
 ```
 
+A generator put on the node chain with `IAudioModule::addNode()` (DOOM's
+sound effects) plays on OUT1 also when the mixer engine renders the buses.
+
+### Firmware kits, the library and slots A/B
+
+The board's firmware library and A/B switch, played by simulator binaries
+(`src/fw/`). A kit (`config/fw_kits/<kit>.json`, `-DCROSSPAD_FW_KIT=<kit>`)
+is one binary: `bin/CrossPad` for `full`, `bin/CrossPad-<kit>` otherwise
+(build dir `build-<kit>`, e.g. `cmake -B build-doom -G Ninja
+-DCROSSPAD_FW_KIT=doom -DBUILD_TESTING=OFF`). Its descriptor
+(`src/fw/PcFwDesc.cpp`, `CPFI-PC1;kit=…`) is what a package is judged by.
+`python3 scripts/make_fw_package.py bin/CrossPad-doom` puts it on the mounted
+card as `crosspad/firmware/<kit>-<version>/` (`CrossPad.pc`, `icon.bin` from
+`config/fw_kits/icons/<kit>.png`, `manifest.json` with the kit's text); the
+Firmware app's Library installs it into the slot not running and switches,
+which starts that slot's binary (`--fw-slot=A|B`) and ends this process.
+
+- Slots live in `<profile>/fw/slots.json` (+ `slot_a|slot_b/CrossPad.pc`); a
+  binary started by hand is slot A, "flashed over USB".
+- `bin/CrossPad --boot` is the power button and bootloader: it starts the boot
+  slot, and rolls back one that was started on trial and never confirmed
+  itself (crashed, killed) -- the card then offers *Try this slot again* /
+  *Reinstall*, and the slot booted instead shows a toast.
+- A switched-into slot confirms itself 5 s after its boot; a switch away from
+  an unconfirmed one is refused, as on the board.
+- Each firmware keeps its own `preferences.json` (`fw/settings/<package>.json`,
+  saved on a switch, taken back by the slot started); `device_preferences.json`
+  (card, audio devices) is shared, as the board shares its list.
+- The assets are shared too: a slot's binary gets the starting one's through
+  `CROSSPAD_ASSETS`, as both board slots read one assets partition.
+- Pad 16 held through the boot (or `--recovery`) switches to the slot holding
+  the `full` kit, before the firmware's own app starts.
+- A kit with `standalone` starts into that app with no launcher (Escape is the
+  power click there); `"top_bar": false` gives it the whole panel.
+
+Switching on Windows goes through `CreateProcessW` and is not tried on a
+Windows machine yet.
+
 ## Compatibility with ESP32-S3
 
-This simulator must stay compatible with the ESP32-S3 target (`C:\Users\Mateusz\GIT\ESP32-S3`). Key constraints:
+This simulator must stay compatible with the ESP32-S3 firmware ([platform-idf](https://github.com/CrossPad/platform-idf)). Key constraints:
 
 - **App interface:** All apps implement crosspad-core's `IApp` interface (business-logic callbacks: `onNoteOn`, `onPadPressed`, etc.). The PC `App` class can be simpler than ESP32's (no sequencer/CLI), but must support the same lifecycle and AppRegistry pattern.
 - **PadManager is the single source of truth** for pad state, note mapping, and LED coordination. Always route pad events through PadManager, not directly to apps.
@@ -228,105 +270,36 @@ This simulator must stay compatible with the ESP32-S3 target (`C:\Users\Mateusz\
 
 ### Remote Control Server
 
-The simulator includes a built-in TCP server (`src/remote/RemoteControl.cpp`) on `localhost:19840` for external automation. Started automatically with the simulator. Protocol: newline-delimited JSON.
+The simulator includes a built-in TCP server (`src/remote/RemoteControl.cpp`) on `localhost:19840` (`CROSSPAD_REMOTE_PORT` overrides) for external automation. Started automatically once the boot has built the launcher (the splash is up before it; a client connecting earlier gets refused, so poll `ping`). Protocol: newline-delimited JSON, one object with a `cmd` per line (anything else gets `malformed request`). If the port cannot be bound (another simulator owns it) the window title reads `NO CONTROL PORT (<port> busy)` and stderr says so; `CROSSPAD_REMOTE_REQUIRED=1` makes that exit code 3. Up to 8 clients at once, each on its own thread; the LVGL thread never waits on a socket (a command not answered in 10 s returns `timeout` and is skipped; `ping` and the `audio_*` list/set verbs run on the client's thread, never the LVGL one). `screenshot` reads LVGL's own framebuffer, not the SDL back buffer (which came back black now and then after a present).
 
-Commands: `ping`, `screenshot`, `click`, `pad_press`, `pad_release`, `encoder_rotate`, `encoder_press`, `encoder_release`, `key`, `stats`, `settings_get`, `settings_set`.
+Commands include `ping`, `screenshot`, `click`, `drag` (`x1`,`y1`,`x2`,`y2` in `lcd` space by default, `ms`, optional `steps`, `rest_ms` held still before release -- longer than LVGL's momentum window lets go without a flick; the reply comes at once, the drag takes `ms`+`rest_ms`), `top_bar` (which of the transport/status bars is the page, the row's scroll, the drawer, the encoder's focus and where, the last screen-wide swipe), `pad_press`/`pad_release`, `pad_pressure` (`pad`, `pressure` 0-255, the board's `PAD_PRESSURE`), `pad_pan` (`pad`, `value` 0 left .. 64 centred .. 127 right, the board's `PAD_PAN`; the reply's `pan` is what `onPadPan()` got, -64..63), `app_start` (`name`, case-insensitive, the board's `APP_START`), `app_list`, `power_click`/`power_hold`/`power_press`/`power_release`, `encoder_rotate`/`encoder_press`/`encoder_release`, `key`, `stats`, `settings_get`/`settings_set`, `midi_note_on`/`midi_note_off`, `kit_list`/`kit_load`/`kit_status`, audio device and level commands — the dispatch in `RemoteControl.cpp` is the full list. The verbs the board answers too (kit_*, led_state, mix_lvl, pitched_status, wave_status, audio_level, pad_*, app_start) read their state through crosspad-core `crosspad/control/`, the same readers the board's CDC verbs use; their JSON is rendered in `src/remote/ControlJson.cpp` and pinned by `tests/test_control_json.cpp` — a reply change there is a protocol change for the MCP.
 
-Used by the MCP server tools — see `tools/mcp-server/` below.
+Used by the [crosspad-mcp](https://github.com/CrossPad/crosspad-mcp) simulator tools.
+
+**Running a test instance beside a user's simulator** (all env, none changes a normal start):
+
+| Variable | Effect |
+|----------|--------|
+| `CROSSPAD_REMOTE_PORT` | control port (default 19840; never use that for a test) |
+| `CROSSPAD_INSTANCE=<id>` | suffix for the PipeWire/Pulse nodes (`crosspad_vin1_<id>`, `crosspad_out_<id>`); defaults to the port when that is not 19840. The pactl fallback's stale-sink cleanup removes only this instance's nodes |
+| `CROSSPAD_AUDIO=on\|isolated\|off` | `on` (default without an id): plain names + default-sink takeover. `isolated` (default with an id): real audio, suffixed names, no takeover. `off`: no audio device, no virtual sinks. Anything but `on` with no id uses id `test`. Only the primary `on` instance ever takes the default sink |
+| `CROSSPAD_PROFILE_DIR` | replaces `~/.crosspad` (preferences, device_preferences, mixer_state, cache; the SD card path comes from its `device_preferences.json`). The updater's version cache still lives under `$HOME` |
+| `CROSSPAD_NO_MIDI=1` | no MIDI ports touched |
+| `SDL_VIDEODRIVER=dummy SDL_RENDER_DRIVER=software` | headless; the control port's screenshot still works |
+
+`scripts/sim_start_stress.py N` starts an isolated instance N times and classifies each start OK / HANG / CRASH (gdb stacks for a hang, `--gdb` for a segfault); see its `--help`.
 
 ## MCP Development Server
 
-A Model Context Protocol server at `tools/mcp-server/` provides 16 tools for Claude Code integration. Configured in `.claude/settings.local.json`.
-
-### Setup
-
-```bash
-cd tools/mcp-server
-npm install
-npm run build
-```
-
-Restart Claude Code / VS Code after building to pick up the server.
-
-### Tools Reference
-
-**Build & Run:**
-
-| Tool | Description |
-|---|---|
-| `crosspad_build` | Build simulator (incremental / clean / reconfigure) |
-| `crosspad_run` | Launch `bin/main.exe`, return PID |
-| `crosspad_build_check` | Quick health check: stale exe, new source files, submodule drift |
-| `crosspad_log` | Launch exe, capture stdout/stderr for N seconds, kill it |
-
-**Testing:**
-
-| Tool | Description |
-|---|---|
-| `crosspad_test` | Build and run Catch2 test suite (with filter support) |
-| `crosspad_test_scaffold` | Generate test infrastructure (CMakeLists.txt + sample test) |
-
-**Repos & Submodules:**
-
-| Tool | Description |
-|---|---|
-| `crosspad_repos_status` | Git status across all 5 CrossPad repos, dev-mode detection |
-| `crosspad_diff_core` | Changes in crosspad-core/gui vs pinned commit (essential for dev-mode) |
-
-**Code & Architecture:**
-
-| Tool | Description |
-|---|---|
-| `crosspad_search_symbols` | Find class/function/macro/enum definitions across all repos |
-| `crosspad_scaffold_app` | Generate boilerplate for a new CrossPad app |
-| `crosspad_interfaces` | Query crosspad-core interfaces, implementations, capabilities |
-| `crosspad_apps` | List registered apps per platform |
-
-**Simulator Interaction (requires running simulator):**
-
-| Tool | Description |
-|---|---|
-| `crosspad_screenshot` | Capture simulator framebuffer → BMP file or base64 |
-| `crosspad_input` | Send click, pad press/release, encoder, key events |
-| `crosspad_stats` | Runtime diagnostics: pads, capabilities, apps, heap, settings |
-| `crosspad_settings` | Read/write CrossPad settings (auto-saves to preferences.json) |
-
-### Architecture
-
-```
-tools/mcp-server/
-  src/
-    index.ts              — tool registrations (McpServer)
-    config.ts             — paths: repos, vcvarsall, vcpkg, build dir
-    utils/
-      exec.ts             — runCommand(), runWithMsvc(), spawnDetached()
-      git.ts              — getRepoStatus(), getSubmodulePin(), getHead()
-      remote-client.ts    — TCP client for simulator remote control
-    tools/
-      build.ts            — crosspad_build, crosspad_run
-      build-check.ts      — crosspad_build_check
-      repos.ts            — crosspad_repos_status
-      diff-core.ts        — crosspad_diff_core
-      symbols.ts          — crosspad_search_symbols
-      scaffold.ts         — crosspad_scaffold_app
-      architecture.ts     — crosspad_interfaces, crosspad_apps
-      log.ts              — crosspad_log
-      test.ts             — crosspad_test, crosspad_test_scaffold
-      screenshot.ts       — crosspad_screenshot
-      input.ts            — crosspad_input
-      settings.ts         — crosspad_settings (get/set)
-      stats.ts            — crosspad_stats
-```
-
-The MCP server communicates with the simulator via TCP (`localhost:19840`). Static tools (build, repos, symbols) work without the simulator running. Interactive tools (screenshot, input, stats, settings) require it.
+Moved out of this repo to [crosspad-mcp](https://github.com/CrossPad/crosspad-mcp) (install and tool reference there). It talks to a running simulator over the TCP control port above; build, repo and code-search tools work without one.
 
 ## Important Notes
 
-- crosspad-core and crosspad-gui use `idf_component_register()` in their own CMakeLists.txt (ESP-IDF build system). This project bypasses that by listing their sources manually in the top-level CMakeLists.txt.
+- crosspad-core and crosspad-gui use `idf_component_register()` in their own CMakeLists.txt (ESP-IDF build system). This project bypasses that by globbing their sources in the top-level CMakeLists.txt.
 - Third-party code (LVGL, RtMidi, RtAudio, ml_synth) is compiled with warnings suppressed (`/w` on MSVC). Project code uses default warning levels.
 - `LV_USE_FS_WIN32` is enabled with driver letter `'C'` for Windows file system access.
-- FreeRTOS heap is 512 MB (desktop simulation). The MSVC-MingW port uses Windows threads under the hood.
-- FetchContent pulls ArduinoJson 7.3.0 (required by crosspad-core settings), RtMidi 6.0.0, and RtAudio 6.0.0.
+- FreeRTOS heap is 32 MB (`config/FreeRTOSConfig.h`). The MSVC-MingW port uses Windows threads under the hood.
+- FetchContent pulls ArduinoJson 7.3.0 (required by crosspad-core settings), RtMidi 6.0.0, RtAudio 6.0.0, SimpleBLE and Catch2.
 
 ## CrossPad Manifesto
 

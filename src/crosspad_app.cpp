@@ -9,8 +9,10 @@
 #include "crosspad_app.hpp"
 
 #include <cstdio>
+#include <cctype>
 #include <cstring>
 #include <cmath>
+#include <cstdlib>
 #include <vector>
 #include <atomic>
 #include <thread>
@@ -27,10 +29,12 @@
 
 #include "pc_stubs/pc_platform.h"
 #include "pc_stubs/PcApp.hpp"
+#include "pc_stubs/GuiThread.hpp"
 #include "updater/PcUpdater.hpp"
 
 // crosspad-core
 #include "crosspad/app/AppRegistry.hpp"
+#include "crosspad/control/AppName.hpp"
 #include "crosspad/pad/PadManager.hpp"
 #include "crosspad/platform/PlatformServices.hpp"
 #include "crosspad/platform/PlatformCapabilities.hpp"
@@ -44,14 +48,19 @@
 #include "crosspad-gui/styles/styles.h"
 #include "crosspad-gui/components/status_bar.h"
 #include "crosspad-gui/components/app_launcher.h"
-#ifdef CP_UX2000
-#include "crosspad-gui/components/mode_overlay.h"
-#endif
 #include "crosspad-gui/components/main_screen.h"
 #include "crosspad-gui/components/app_orchestrator.h"
 #include "crosspad-gui/platform/IGuiPlatform.h"
 #include "crosspad-gui/components/volume_overlay.h"
 #include "crosspad-gui/components/power_gesture.h"
+#include "crosspad-gui/fw/IFwViewService.h"
+#ifdef __EMSCRIPTEN__
+void fw_view_service_install(void);   // the board's (platform-idf main/fw_view_service.cpp)
+#else
+#include "fw/PcFirmware.hpp"
+#include "fw/PcFwViewService.hpp"
+#endif
+#include "crosspad-gui/components/boot_splash.h"
 
 #ifdef USE_MIDI
 #include "midi/PcMidi.hpp"
@@ -69,11 +78,13 @@
 #ifdef USE_AUDIO
 #include "audio/PcAudio.hpp"
 #include "audio/PcAudioInput.hpp"
-#include "sampletools/SampleToolsPort.hpp"
 #include "audio/PcAudioModule.hpp"
+#include "InstanceEnv.hpp"
 #include "audio/audio_platform.hpp"
+#include "audio/sampler/PcInstrumentHost.hpp"
 #include "audio/sampler/PcPitchedPort.hpp"
 #include "audio/sampler/PcSamplerPort.hpp"
+#include <crosspad-sampler/logic/kit_gate.hpp>
 #ifdef USE_VIRTUAL_AUDIO
 #include "audio/virtual/IVirtualSinkManager.hpp"
 #ifdef USE_PIPEWIRE
@@ -82,7 +93,6 @@
 #include "audio/pipewire/PwVirtualSource.hpp"
 #include "audio/pipewire/PwVirtualSinkCapture.hpp"
 #endif
-#include <csignal>
 #endif
 #include "crosspad-gui/components/vu_meter.h"
 #include "crosspad/audio/PeakMeter.hpp"
@@ -92,6 +102,8 @@
 #include "crosspad-mixer/AudioMixerEngine.hpp"
 #include "sequencer/PcSequencer.hpp"
 #include "song/PcSongEnginePort.hpp"
+#include "song/PcSongSounds.hpp"
+#include "sampletools/PcSampleToolsPort.hpp"
 #define HAS_MIXER 1
 #endif
 #include <RtAudio.h>
@@ -100,14 +112,25 @@
 #include "uart/PcUart.hpp"
 #include <ArduinoJson.h>
 
+#include "FreeRTOS.h"
+#include "semphr.h"
+#include "task.h"
+
 /* ── Constants ────────────────────────────────────────────────────────── */
 
 #define APP_BUTTON_SIZE 64
 #define APP_BUTTON_NAME_VISIBLE true
 
-/* ── State ────────────────────────────────────────────────────────────── */
+/// Pad animation tick, the board's pad_anim worker period.
+static constexpr uint32_t kPadAnimTickMs = 10;
 
-extern lv_obj_t* status_c;
+/// The boot worker (see "Boot" below): the LVGL task's priority, so the two
+/// share the CPU while the splash plays, and its stack depth -- the code it
+/// runs ran on the LVGL task until now.
+static constexpr uint32_t    kBootTaskStack    = 8192;
+static constexpr UBaseType_t kBootTaskPriority = 1;
+
+/* ── State ────────────────────────────────────────────────────────────── */
 
 /* The app container, by the name the board's gui.h gives it (its views open apps in it). */
 lv_obj_t* app_c = nullptr;
@@ -159,29 +182,16 @@ static std::string s_pendingPin[2];
 static AudioMixerEngine s_mixerEngine;
 // Adapters registered as mixer channels in IN1, IN2, SYNTH order so
 // MixerInput::IN1=0, IN2=1, SYNTH=2 stay valid against the dynamic API.
-// The indexed getter form picks up hot-swapped virtual inputs every cycle.
-
-/* A native virtual input seen by the Recorder too: the ISampleTools port takes its
- * MIC / LINE blocks from the input the mixer reads, whichever backend it is. */
-class ToolsTapInput : public crosspad::IAudioInput {
-public:
-    ToolsTapInput(crosspad::IAudioInput* in, int codec) : in_(in), codec_(codec) {}
-    uint32_t read(int16_t* buf, uint32_t frames) override {
-        const uint32_t got = in_->read(buf, frames);
-        if (got && crosspad::sample_tools_wants_codec(codec_)) crosspad::sample_tools_rt_input(codec_, buf, got);
-        return got;
-    }
-    uint32_t getSampleRate() const override { return in_->getSampleRate(); }
-    uint32_t getBufferSize() const override { return in_->getBufferSize(); }
-    void getInputLevel(int16_t& l, int16_t& r) const override { in_->getInputLevel(l, r); }
-private:
-    crosspad::IAudioInput* in_;
-    int codec_;
-};
-static ToolsTapInput* s_toolsTap[2] = {nullptr, nullptr};
-static crosspad::AudioInputNode s_in1Node{&pc_platform_get_audio_input, 0, "Input 1"};
-static crosspad::AudioInputNode s_in2Node{&pc_platform_get_audio_input, 1, "Input 2"};
+// The indexed getter form picks up hot-swapped virtual inputs every cycle;
+// the sample tools' getter hands every block read to them as well.
+static crosspad::AudioInputNode s_in1Node{&crosspad_pc::sample_tools_input, 0, "Input 1"};
+static crosspad::AudioInputNode s_in2Node{&crosspad_pc::sample_tools_input, 1, "Input 2"};
 static crosspad::SynthEngineNode s_mixerSynthNode;
+/// The capture bus after every render: a bounce's, and a PADS take's.
+static void capture_tap(const float* bus, uint32_t frames) {
+    crosspad_pc::song_engine_rt_capture(bus, frames);
+    crosspad_pc::sample_tools_rt_bus(bus, frames);
+}
 #endif
 #ifdef USE_VIRTUAL_AUDIO
 static std::unique_ptr<crosspad_pc::IVirtualSinkManager> s_virtualSinkManager;
@@ -231,6 +241,21 @@ struct DevicePreferences {
 };
 
 static DevicePreferences s_devicePrefs;
+/* The preferences are written from the LVGL thread (jack panel, SD slot,
+ * BLE), the audio-device workers and the control port's thread (device
+ * picks), the boot worker and the shutdown. Every write and every save
+ * holds this; a save that read a string another thread was assigning, or
+ * two saves writing the file at once, was a crash or a torn JSON that
+ * dropped every preference at the next start. */
+static std::recursive_mutex s_prefsMutex;
+
+/// Change the preferences in memory, from any thread; saveDevicePrefs()
+/// writes them out.
+template <typename F>
+static void setDevicePrefs(F&& change) {
+    std::lock_guard<std::recursive_mutex> lock(s_prefsMutex);
+    change(s_devicePrefs);
+}
 
 static std::string getDevicePrefsPath() {
     const char* dir = pc_platform_get_profile_dir();
@@ -282,6 +307,7 @@ static void loadDevicePrefs() {
 }
 
 static void saveDevicePrefs() {
+    std::lock_guard<std::recursive_mutex> lock(s_prefsMutex);
     std::string path = getDevicePrefsPath();
     JsonDocument doc;
     doc["audio_out1"] = s_devicePrefs.audioOut1;
@@ -300,12 +326,26 @@ static void saveDevicePrefs() {
     doc["pw_takeover_default"]  = s_devicePrefs.pwTakeoverDefault;
     doc["pw_prev_default_sink"] = s_devicePrefs.pwPrevDefaultSink;
 
-    std::ofstream f(path);
-    if (!f.is_open()) {
-        printf("[DevPrefs] Failed to write %s\n", path.c_str());
+    // Beside it, then over it: a process killed mid-write leaves the old file.
+    const std::string tmp = path + ".tmp";
+    {
+        std::ofstream f(tmp);
+        if (!f.is_open()) {
+            printf("[DevPrefs] Failed to write %s\n", tmp.c_str());
+            return;
+        }
+        serializeJsonPretty(doc, f);
+        if (!f.flush()) {
+            printf("[DevPrefs] Failed to write %s\n", tmp.c_str());
+            return;
+        }
+    }
+    std::error_code ec;
+    std::filesystem::rename(tmp, path, ec);
+    if (ec) {
+        printf("[DevPrefs] Failed to replace %s: %s\n", path.c_str(), ec.message().c_str());
         return;
     }
-    serializeJsonPretty(doc, f);
     printf("[DevPrefs] Saved to %s\n", path.c_str());
 }
 
@@ -512,8 +552,10 @@ static bool appAudioOutSelectIdx(int slot, int uiIndex, std::string& outLabel) {
     if (uiIndex <= 0) {
         output.end();
         outLabel.clear();
-        if (slot == 0) { s_devicePrefs.audioOut1.clear(); s_devicePrefs.audioOut1Pa.clear(); }
-        else           { s_devicePrefs.audioOut2.clear(); s_devicePrefs.audioOut2Pa.clear(); }
+        setDevicePrefs([&](DevicePreferences& p) {
+            if (slot == 0) { p.audioOut1.clear(); p.audioOut1Pa.clear(); }
+            else           { p.audioOut2.clear(); p.audioOut2Pa.clear(); }
+        });
         saveDevicePrefs();
         return false;
     }
@@ -525,8 +567,10 @@ static bool appAudioOutSelectIdx(int slot, int uiIndex, std::string& outLabel) {
         output.switchDevice(sel.rtAudioId);
         connected = output.isOpen();
         outLabel = output.getCurrentDeviceName();
-        if (slot == 0) { s_devicePrefs.audioOut1 = outLabel; s_devicePrefs.audioOut1Pa.clear(); }
-        else           { s_devicePrefs.audioOut2 = outLabel; s_devicePrefs.audioOut2Pa.clear(); }
+        setDevicePrefs([&](DevicePreferences& p) {
+            if (slot == 0) { p.audioOut1 = outLabel; p.audioOut1Pa.clear(); }
+            else           { p.audioOut2 = outLabel; p.audioOut2Pa.clear(); }
+        });
     }
 #if defined(USE_VIRTUAL_AUDIO)
     else {
@@ -544,8 +588,10 @@ static bool appAudioOutSelectIdx(int slot, int uiIndex, std::string& outLabel) {
         if (crosspad_pc::movePulseOutputToSink(slot, sel.paSinkName)) {
             connected = true;
             outLabel = sel.label;
-            if (slot == 0) { s_devicePrefs.audioOut1 = sel.label; s_devicePrefs.audioOut1Pa = sel.paSinkName; }
-            else           { s_devicePrefs.audioOut2 = sel.label; s_devicePrefs.audioOut2Pa = sel.paSinkName; }
+            setDevicePrefs([&](DevicePreferences& p) {
+                if (slot == 0) { p.audioOut1 = sel.label; p.audioOut1Pa = sel.paSinkName; }
+                else           { p.audioOut2 = sel.label; p.audioOut2Pa = sel.paSinkName; }
+            });
         }
     }
 #endif
@@ -566,7 +612,9 @@ static bool appAudioInSelectIdx(int slot, int uiIndex, std::string& outLabel) {
     if (uiIndex <= 0) {
         outLabel.clear();
         pc_platform_set_audio_input(slot, nullptr);
-        if (slot == 0) s_devicePrefs.audioIn1.clear(); else s_devicePrefs.audioIn2.clear();
+        setDevicePrefs([&](DevicePreferences& p) {
+            if (slot == 0) p.audioIn1.clear(); else p.audioIn2.clear();
+        });
         saveDevicePrefs();
         return false;
     }
@@ -579,7 +627,9 @@ static bool appAudioInSelectIdx(int slot, int uiIndex, std::string& outLabel) {
         connected = input.isOpen();
         if (connected) pc_platform_set_audio_input(slot, &input);
         outLabel = sel.label;   // store the shown label, not the raw device id
-        if (slot == 0) s_devicePrefs.audioIn1 = sel.label; else s_devicePrefs.audioIn2 = sel.label;
+        setDevicePrefs([&](DevicePreferences& p) {
+            if (slot == 0) p.audioIn1 = sel.label; else p.audioIn2 = sel.label;
+        });
     }
     else if (sel.isVirtual) {
         uint32_t rate = pcAudio.isOpen() ? pcAudio.getSampleRate() : 44100;
@@ -588,7 +638,9 @@ static bool appAudioInSelectIdx(int slot, int uiIndex, std::string& outLabel) {
             connected = true;
             outLabel = sel.label;
             pc_platform_set_audio_input(slot, cap);
-            if (slot == 0) s_devicePrefs.audioIn1 = sel.label; else s_devicePrefs.audioIn2 = sel.label;
+            setDevicePrefs([&](DevicePreferences& p) {
+                if (slot == 0) p.audioIn1 = sel.label; else p.audioIn2 = sel.label;
+            });
         }
     }
     saveDevicePrefs();
@@ -653,10 +705,6 @@ static int findMidiPortByName(const std::string& name, bool isOutput) {
 /* ── App Orchestrator setup ───────────────────────────────────────────── */
 
 static void LoadMainScreen(lv_obj_t* parent);
-#ifdef CP_UX2000
-/* A home the last LoadMainScreen() has still to put up (crosspad_app_settle_home()). */
-static bool s_homePending = false;
-#endif
 
 /// Resolve short icon names (e.g. "info.png") to full asset paths.
 /// Icons that already contain a path separator are left unchanged.
@@ -674,6 +722,19 @@ static const char* pc_icon_resolver(size_t /*index*/, const char* icon) {
     return s_resolvedIcons.back().c_str();
 }
 
+#ifdef USE_AUDIO
+/* What crosspad-sampler's kit gate asks of the simulator. The kit scan runs
+ * inside the mount, so there is no "still scanning" here. */
+static crosspad_sampler::KitGateHost kit_gate_host() {
+    crosspad_sampler::KitGateHost host;
+    host.appContainer = []() { return app_c; };
+    host.cardPresent  = []() { return !pc_platform_get_sdcard_path().empty(); };
+    host.log          = [](const char* line) { printf("[sampler] %s\n", line); };
+    host.selectorIcon = "notepick.png";
+    return host;
+}
+#endif
+
 static void InitializeOrchestrator() {
     crosspad_gui::OrchestratorConfig config;
     config.app_factory = crosspad_gui::defaultAppFactory<App>;
@@ -681,7 +742,7 @@ static void InitializeOrchestrator() {
 #ifdef USE_AUDIO
     // An app that needs a kit and has none gets the kit selector first — the
     // same gate the device puts in front of the sampler.
-    config.pre_launch = crosspad_pc::sampler_port_pre_launch;
+    config.pre_launch = crosspad_sampler::kit_gate_pre_launch;
 #endif
     crosspad_gui::AppOrchestrator::getInstance().init(config);
 }
@@ -700,163 +761,93 @@ static void LoadMainScreen(lv_obj_t* parent) {
     config.show_names     = APP_BUTTON_NAME_VISIBLE;
     config.style          = crosspad::CrosspadSettings::getInstance()->launcherStyle;
     config.bg_color       = lv_color_black();
-#ifdef CP_UX2000
-    config.transport_bar  = true;
-    config.launcher       = false;   // as the board's gui.cpp: home is the MODE map
+    // REC/DUB/PLAY/STOP live on the transport bar since the mini-daw merge;
+    // without it the Sequencer and Arrange cannot take or play anything here.
+    // A kit without a top bar (a game) gives its app the whole panel.
+    config.transport_bar  = CROSSPAD_FW_TOP_BAR;
+
+#ifdef USE_AUDIO
+    // The rebuild below cleans the whole screen, kit-selector overlay
+    // included; a launch that was waiting behind that gate must not land on
+    // the launcher that replaces it.
+    crosspad_sampler::kit_gate_reset();
 #endif
-
     auto result = orch.loadMainScreen(parent, config);
+    // Built all the same (its drawer and timers keep working), only not shown.
+    if (!CROSSPAD_FW_TOP_BAR && result.status_bar) lv_obj_add_flag(result.status_bar, LV_OBJ_FLAG_HIDDEN);
 
-    status_c = result.status_bar;
     app_c    = result.app_container;
 
     crosspad_app_update_pad_icon();
     printf("[GUI] Main screen loaded with %zu apps\n", orch.getAppInfos().size());
-#ifdef CP_UX2000
-    /* Home is the MODE map, with nothing under it -- later, as the board does
-     * it: this runs from whatever destroyed the last screen. */
-    s_homePending = true;
-    lv_async_call([](void*) { crosspad_app_settle_home(); }, nullptr);
-#endif
 }
-
-#ifdef CP_UX2000
-void crosspad_app_settle_home()
-{
-    if (!s_homePending) return;
-    s_homePending = false;
-    crosspad_gui::mode_overlay_go_home();
-}
-#else
-void crosspad_app_settle_home() {}
-#endif
 
 /* ── Public API ───────────────────────────────────────────────────────── */
 
-void crosspad_app_init()
+/* ── Boot ──────────────────────────────────────────────────────────────
+ *
+ * The devices take seconds to come up -- RtAudio opens and enumerates every
+ * card, the virtual sinks go through PipeWire or pactl, a saved output pin
+ * waits up to 4 s per output for its stream, BLE starts an adapter, the
+ * sampler scans the card's kits -- and all of it ran on the LVGL task before
+ * its first frame, so the window stayed black until it was over and only then
+ * did the splash play. Now the splash is on the panel at once and plays while
+ * a worker task brings the devices up; the launcher is built once they are,
+ * and the splash leaves when both that and its own sequence are done.
+ *
+ * The worker is a FreeRTOS task, as the LVGL task is, so everything it calls
+ * runs where it always ran. It holds s_bootLock, which the LVGL task takes
+ * for each lv_timer_handler() pass while booting, except around the calls
+ * that only wait on devices (BootUnlocked): there the splash animates. Under
+ * the lock nothing of LVGL, the pads or the platform services moves under the
+ * worker's feet -- the splash, the pad tick and a key or click on the device
+ * body all run inside lv_timer_handler(). */
+
+static SemaphoreHandle_t  s_bootLock = nullptr;
+static std::atomic<bool>  s_devicesUp{false};
+static bool               s_booted = false;
+static lv_obj_t*          s_splashHolder = nullptr;
+#ifdef USE_AUDIO
+static std::vector<std::string> s_bootOutNames;
+static std::vector<std::string> s_bootInNames;
+#endif
+
+/// The worker's lock let go for a scope that only waits on devices.
+class BootUnlocked {
+public:
+    BootUnlocked() { xSemaphoreGive(s_bootLock); }
+    ~BootUnlocked() { xSemaphoreTake(s_bootLock, portMAX_DELAY); }
+    BootUnlocked(const BootUnlocked&) = delete;
+    BootUnlocked& operator=(const BootUnlocked&) = delete;
+};
+
+/* Over the LCD's content area, on the top layer: LoadMainScreen() cleans the
+ * LCD container, and the splash must outlive that. Not clickable, as the
+ * splash itself is not: a click goes to whatever is under it. */
+static void boot_splash_begin()
 {
-#if defined(USE_AUDIO) && defined(USE_VIRTUAL_AUDIO)
-    /* Make sure virtual sinks get unloaded whatever the exit path.
-       SDL_QUIT calls crosspad_app_shutdown() directly; atexit and signals
-       catch the remaining cases (normal return, SIGINT, SIGTERM).
-       kill -9 is unrecoverable — sinks will be cleaned up at next launch
-       by LinuxPipewireSinks::cleanupStaleSinks(). */
-    std::atexit(crosspad_app_shutdown);
-    auto sigHandler = [](int sig) { crosspad_app_shutdown(); std::signal(sig, SIG_DFL); std::raise(sig); };
-    std::signal(SIGINT,  sigHandler);
-    std::signal(SIGTERM, sigHandler);
-#endif
+    lv_obj_update_layout(s_lcdContainer);
+    lv_area_t a;
+    lv_obj_get_content_coords(s_lcdContainer, &a);
+    s_splashHolder = lv_obj_create(lv_layer_top());
+    lv_obj_remove_style_all(s_splashHolder);
+    lv_obj_set_pos(s_splashHolder, a.x1, a.y1);
+    lv_obj_set_size(s_splashHolder, lv_area_get_width(&a), lv_area_get_height(&a));
+    lv_obj_remove_flag(s_splashHolder, (lv_obj_flag_t)(LV_OBJ_FLAG_CLICKABLE | LV_OBJ_FLAG_SCROLLABLE));
+    boot_splash_start(s_splashHolder, crosspad::CrosspadSettings::getInstance()->LCDbrightness,
+                      nullptr, false);
+}
 
-    /* Platform stubs (event bus, settings, pad manager, GUI) */
-    pc_platform_init();
-
-    /* Register go-home callback for shared Settings UI */
-    pc_platform_set_go_home([]() { LoadMainScreen(s_lcdContainer); });
-
-    /* Load saved device preferences */
-    loadDevicePrefs();
-
-    /* STM32 emulator window — returns 320x240 LCD container. With --lcd the
-     * display is the LCD itself: the GUI takes the active screen as the board's
-     * does, and the body is built on a screen never shown (its jacks and card
-     * slot are still what the rest of the simulator talks to). */
-    lv_obj_t* lcdContainer = s_lcdOnly ? (stm32Emu.init(lv_obj_create(nullptr)), lv_screen_active())
-                                       : stm32Emu.init();
-    s_lcdContainer = lcdContainer;
-
-    /* Wire keyboard shortcuts: Escape→go home, Space/Ctrl→power button
-     * (tap = contextual back, hold 0.5 s = quick settings), V→volume overlay */
-    stm32Emu.getKeyboardCapture().setEscapeCallback(crosspad_app_go_home);
-    stm32Emu.getKeyboardCapture().setPowerCallback(crosspad_gui::powerButtonPress);
-    stm32Emu.getKeyboardCapture().setPowerReleaseCallback(crosspad_gui::powerButtonRelease);
-    stm32Emu.getKeyboardCapture().setVolumeCallback(crosspad_gui::volume_overlay_toggle);
-
-    /* Virtual SD card slot — auto-mount from saved preferences */
-#ifdef __EMSCRIPTEN__
-    // The page mounts the card (IndexedDB) at /sdcard (crosspad-web-twin web/simtwin.js).
-    if (s_devicePrefs.sdcardPath.empty()) s_devicePrefs.sdcardPath = "/sdcard";
-#endif
-    if (!s_devicePrefs.sdcardPath.empty()) {
-        namespace fs = std::filesystem;
-        std::error_code ec;
-        if (fs::exists(s_devicePrefs.sdcardPath, ec)) {
-            pc_platform_set_sdcard_path(s_devicePrefs.sdcardPath);
-#ifdef USE_AUDIO
-            crosspad_pc::sampler_port_set_sdcard(s_devicePrefs.sdcardPath);
-#endif
-            stm32Emu.getSdCardSlot().setMounted(true, s_devicePrefs.sdcardPath);
-            printf("[SDCard] Auto-mounted from saved prefs: %s\n", s_devicePrefs.sdcardPath.c_str());
-        } else {
-            printf("[SDCard] Saved path no longer exists: %s\n", s_devicePrefs.sdcardPath.c_str());
-            s_devicePrefs.sdcardPath.clear();
-            saveDevicePrefs();
-        }
-    }
-
-    /* Wire SD card slot mount/unmount callbacks */
-    stm32Emu.getSdCardSlot().setOnMount([](const std::string& path) {
-        pc_platform_set_sdcard_path(path);
-#ifdef USE_AUDIO
-        // Kits and samples live on the card; rescanning here is what makes a
-        // card mounted mid-session show up in the kit selector.
-        crosspad_pc::sampler_port_set_sdcard(path);
-#endif
-        s_devicePrefs.sdcardPath = path;
-        saveDevicePrefs();
-    });
-    stm32Emu.getSdCardSlot().setOnUnmount([]() {
-        pc_platform_set_sdcard_path("");
-#ifdef USE_AUDIO
-        crosspad_pc::sampler_port_set_sdcard("");
-#endif
-        s_devicePrefs.sdcardPath.clear();
-        saveDevicePrefs();
-    });
-
-    /* Overlay layer on lv_layer_top(), over the LCD area. With --lcd the top
-     * layer is the LCD already, as on the board. */
-    if (!s_lcdOnly) {
-        lv_obj_t* overlayLayer = lv_obj_create(lv_layer_top());
-        lv_obj_remove_style_all(overlayLayer);
-        lv_obj_set_pos(overlayLayer, Stm32EmuWindow::LCD_X, Stm32EmuWindow::LCD_Y);
-        lv_obj_set_size(overlayLayer, Stm32EmuWindow::LCD_W, Stm32EmuWindow::LCD_H);
-        lv_obj_remove_flag(overlayLayer, (lv_obj_flag_t)(LV_OBJ_FLAG_CLICKABLE | LV_OBJ_FLAG_SCROLLABLE));
-        crosspad_gui::setOverlayParent(overlayLayer);
-    }
-
-    // Init MidiInputHandler — central routing brain (same pattern as ESP32).
-    // Routes pad output to USB + BLE + STM32 based on KeypadSettings flags.
-    s_midiHandler.init(crosspad::getPadManager(), crosspad::getEventBus(),
-                       crosspad::CrosspadSettings::getInstance());
-    crosspad::getPlatformServices().setMidiOutput(&s_midiHandler);
-
+static void boot_devices()
+{
 #ifdef USE_MIDI
-    // Initialize STM32 message handler
-    stm32Handler.init(crosspad::getPadManager(), status);
-    /* DAW Control takes host frames through the platform's catalog decoder,
-     * as on the board. */
-    crosspad::getPlatformServices().stm32MessageHandler = &stm32Handler;
-
-    // Auto-connect MIDI from saved preferences or fall back to "CrossPad" keyword
-    {
-        int outPort = findMidiPortByName(s_devicePrefs.midiOut, true);
-        int inPort  = findMidiPortByName(s_devicePrefs.midiIn, false);
-
-        if (outPort >= 0 && inPort >= 0) {
-            midi.begin((unsigned)outPort, (unsigned)inPort);
-            midi.setAutoConnectKeyword("CrossPad");
-            printf("[MIDI] Connected from saved prefs: out=%d in=%d\n", outPort, inPort);
-        } else {
-            midi.beginAutoConnect("CrossPad");
-        }
-        s_midiHandler.setUsbOutput(&midi);
-    }
-
+    // The handlers before the ports open: RtMidi's thread calls them from the
+    // first message on.
     midi.setHandleNoteOn([](uint8_t channel, uint8_t note, uint8_t velocity) {
         printf("[MIDI IN] NoteOn  ch=%u note=%u vel=%u\n", channel + 1, note, velocity);
         struct D { uint8_t ch, note, vel; };
         auto* d = new D{channel, note, velocity};
-        lv_async_call([](void* ud) {
+        pc_gui::post([](void* ud) {
             auto* n = static_cast<D*>(ud);
             auto& pm = crosspad::getPadManager();
             uint8_t padIdx = pm.getPadForMidiNote(n->note);
@@ -869,7 +860,7 @@ void crosspad_app_init()
         printf("[MIDI IN] NoteOff ch=%u note=%u vel=%u\n", channel + 1, note, velocity);
         struct D { uint8_t ch, note; };
         auto* d = new D{channel, note};
-        lv_async_call([](void* ud) {
+        pc_gui::post([](void* ud) {
             auto* n = static_cast<D*>(ud);
             auto& pm = crosspad::getPadManager();
             uint8_t padIdx = pm.getPadForMidiNote(n->note);
@@ -878,41 +869,44 @@ void crosspad_app_init()
             delete n;
         }, d);
     });
+    /* Like the notes, on the LVGL thread: the encoder's state is what the
+     * emulator's timer draws and turns into LVGL key events, and a SysEx frame
+     * drives the PadManager, its LEDs and the event bus -- a FreeRTOS queue,
+     * which a thread outside the scheduler must not touch at all. */
     midi.setHandleControlChange([](uint8_t channel, uint8_t cc, uint8_t value) {
         printf("[MIDI IN] CC      ch=%u cc=%u  val=%u\n", channel + 1, cc, value);
-        if (channel == 0 && cc == 1) {
-            stm32Emu.handleEncoderCC(value, 31, 18);
-        } else if (channel == 0 && cc == 64) {
-            stm32Emu.handleEncoderPress(value >= 64);
-        }
+        if (channel != 0 || (cc != 1 && cc != 64)) return;
+        struct D { uint8_t cc, value; };
+        pc_gui::post([](void* ud) {
+            auto* d = static_cast<D*>(ud);
+            if (d->cc == 1) stm32Emu.handleEncoderCC(d->value, 31, 18);
+            else            stm32Emu.handleEncoderPress(d->value >= 64);
+            delete d;
+        }, new D{cc, value});
     });
     midi.setHandleSystemExclusive([](uint8_t* data, unsigned size) {
-        stm32Handler.handleMessage(data, size);
+        auto* frame = new std::vector<uint8_t>(data, data + size);
+        pc_gui::post([](void* ud) {
+            auto* f = static_cast<std::vector<uint8_t>*>(ud);
+            stm32Handler.handleMessage(f->data(), static_cast<unsigned>(f->size()));
+            delete f;
+        }, frame);
     });
 
-    // Periodic MIDI reconnect check (3s).
-    // IMPORTANT: RtMidi port enumeration is BLOCKING (100-500ms on Windows).
-    // We only check connection state on the LVGL thread — the actual reconnect
-    // (with its blocking enumeration) runs on a background thread.
-    static std::atomic<bool> s_midiReconnecting{false};
-    lv_timer_create([](lv_timer_t*) {
-        // Reconnect if output died, OR if we don't have a keyword match
-        // (a new CrossPad device may have appeared). reconnect() itself
-        // short-circuits if nothing changed, so this is cheap.
-        bool needsReconnect = !midi.isOutputOpen() || !midi.isKeywordConnected();
-        if (needsReconnect && !s_midiReconnecting.load()) {
-            s_midiReconnecting.store(true);
-            std::thread([]() {
-                midi.reconnect();
-                s_midiReconnecting.store(false);
-            }).detach();
-        }
+    {
+        BootUnlocked unlocked;
+        int outPort = findMidiPortByName(s_devicePrefs.midiOut, true);
+        int inPort  = findMidiPortByName(s_devicePrefs.midiIn, false);
 
-        // Update jack panel from current MIDI state (no enumeration — just read cached names)
-        auto& jp = stm32Emu.getJackPanel();
-        jp.setConnected(EmuJackPanel::MIDI_OUT, midi.isOutputOpen());
-        jp.setConnected(EmuJackPanel::MIDI_IN, midi.isInputOpen());
-    }, 3000, nullptr);
+        if (outPort >= 0 && inPort >= 0) {
+            midi.begin((unsigned)outPort, (unsigned)inPort);
+            midi.setAutoConnectKeyword("CrossPad");
+            printf("[MIDI] Connected from saved prefs: out=%d in=%d\n", outPort, inPort);
+        } else {
+            midi.beginAutoConnect("CrossPad");
+        }
+    }
+    s_midiHandler.setUsbOutput(&midi);
 #endif
 
 #ifdef USE_BLE
@@ -927,13 +921,16 @@ void crosspad_app_init()
             ? crosspad::BleMidiMode::Host : crosspad::BleMidiMode::Server;
 
         bleMidi.setNoteOffset(settings->wireless.bleMidiNoteOffset);
-        bleMidi.begin(mode);
+        {
+            BootUnlocked unlocked;
+            bleMidi.begin(mode);
+        }
 
         // Wire into routing system
         crosspad::getPlatformServices().setBleMidi(&bleMidi);
         s_midiHandler.setBleOutput(&bleMidi);  // Route pad output to BLE
 
-        // Input callbacks — dispatch to LVGL thread via lv_async_call.
+        // Input callbacks — dispatch to LVGL thread via pc_gui::post().
         // RtMidi callbacks run on a separate thread, but PadManager/LED updates
         // touch LVGL which is NOT thread-safe. Must dispatch to the LVGL task.
         // Echo is already filtered by PcBleMidi's anti-loopback ring buffer.
@@ -943,7 +940,7 @@ void crosspad_app_init()
 
             struct NoteData { uint8_t ch; uint8_t note; uint8_t vel; };
             auto* d = new NoteData{channel, note, velocity};
-            lv_async_call([](void* ud) {
+            pc_gui::post([](void* ud) {
                 auto* n = static_cast<NoteData*>(ud);
                 auto& pm = crosspad::getPadManager();
                 uint8_t padIdx = pm.getPadForMidiNote(n->note);
@@ -960,7 +957,7 @@ void crosspad_app_init()
 
             struct NoteData { uint8_t ch; uint8_t note; };
             auto* d = new NoteData{channel, note};
-            lv_async_call([](void* ud) {
+            pc_gui::post([](void* ud) {
                 auto* n = static_cast<NoteData*>(ud);
                 auto& pm = crosspad::getPadManager();
                 uint8_t padIdx = pm.getPadForMidiNote(n->note);
@@ -977,17 +974,23 @@ void crosspad_app_init()
         });
 
         // Connection state → status bar bluetooth icon + persist device address
+        // On SimpleBLE's thread; the status bar reads the flag on the LVGL
+        // thread, and the preferences are written from there too.
         bleMidi.setOnConnectionChanged([](bool connected, const crosspad::BleMidiDevice& dev) {
             printf("[BLE MIDI] %s: %s (%s)\n",
                    connected ? "Connected" : "Disconnected",
                    dev.name.c_str(), dev.address.c_str());
-            auto* st = crosspad::getPlatformServices().status;
-            if (st) st->bluetoothConnected = connected;
-
-            if (connected) {
-                s_devicePrefs.bleDevice = dev.address;
-                saveDevicePrefs();
-            }
+            struct D { bool connected; std::string address; };
+            pc_gui::post([](void* ud) {
+                auto* d = static_cast<D*>(ud);
+                auto* st = crosspad::getPlatformServices().status;
+                if (st) st->bluetoothConnected = d->connected;
+                if (d->connected) {
+                    setDevicePrefs([&](DevicePreferences& p) { p.bleDevice = d->address; });
+                    saveDevicePrefs();
+                }
+                delete d;
+            }, new D{connected, dev.address});
         });
     }
 #endif
@@ -1047,8 +1050,22 @@ void crosspad_app_init()
         }
     };
 
-    openOutputSlot(pcAudio,  0, s_devicePrefs.audioOut1, s_devicePrefs.audioOut1Pa);
-    openOutputSlot(pcAudio2, 1, s_devicePrefs.audioOut2, s_devicePrefs.audioOut2Pa);
+    // CROSSPAD_AUDIO=off: no device is opened at all (see InstanceEnv.hpp).
+    if (crosspad_pc::instance::audioEnabled()) {
+        // On copies: the opens take a while and the preferences are not
+        // held across them (setDevicePrefs).
+        DevicePreferences prefs;
+        setDevicePrefs([&](DevicePreferences& p) { prefs = p; });
+        {
+            BootUnlocked unlocked;
+            openOutputSlot(pcAudio,  0, prefs.audioOut1, prefs.audioOut1Pa);
+            openOutputSlot(pcAudio2, 1, prefs.audioOut2, prefs.audioOut2Pa);
+        }
+        setDevicePrefs([&](DevicePreferences& p) {
+            p.audioOut1 = prefs.audioOut1; p.audioOut1Pa = prefs.audioOut1Pa;
+            p.audioOut2 = prefs.audioOut2; p.audioOut2Pa = prefs.audioOut2Pa;
+        });
+    }
     pc_platform_set_audio_output_2(&pcAudio2);
 
     // ── Audio IN1/IN2: auto-connect saved devices ──
@@ -1061,16 +1078,20 @@ void crosspad_app_init()
     // Create OS-visible virtual sinks ("CrossPad virtual IN#1/#2") that other
     // apps and DAWs can route audio to. RtAudio's monitor-source discovery
     // runs afterwards — the sinks must exist before enumerateAudioInputDevices.
-    s_virtualSinkManager = crosspad_pc::makeVirtualSinkManager();
-    if (s_virtualSinkManager) {
-        if (!s_virtualSinkManager->setup(2)) {
-            printf("[VirtSink] Virtual sinks not available: %s\n",
-                   s_virtualSinkManager->errorHint().c_str());
+    if (crosspad_pc::instance::audioEnabled()) {
+        BootUnlocked unlocked;
+        s_virtualSinkManager = crosspad_pc::makeVirtualSinkManager();
+        if (s_virtualSinkManager) {
+            if (!s_virtualSinkManager->setup(2)) {
+                printf("[VirtSink] Virtual sinks not available: %s\n",
+                       s_virtualSinkManager->errorHint().c_str());
+            }
         }
     }
 #endif
 
     {
+        BootUnlocked unlocked;
 #if defined(USE_VIRTUAL_AUDIO)
         // Prefer virtual sinks over saved physical inputs — the whole point of
         // the feature is that CrossPad becomes a system-wide mixer by default.
@@ -1087,9 +1108,8 @@ void crosspad_app_init()
             crosspad::IAudioInput* nativeIn1 = s_virtualSinkManager->input(0);
             crosspad::IAudioInput* nativeIn2 = s_virtualSinkManager->input(1);
             if (nativeIn1) {
-                printf("[Audio] IN1 connected to native virtual sink (crosspad_vin1)\n");
-                s_toolsTap[0] = new ToolsTapInput(nativeIn1, 0);
-                pc_platform_set_audio_input(0, s_toolsTap[0]);
+                printf("[Audio] IN1 connected to native virtual sink (%s)\n", crosspad_pc::instance::nodeName("crosspad_vin1").c_str());
+                pc_platform_set_audio_input(0, nativeIn1);
                 in1Virtual = true;
             } else if (sinks.size() >= 1) {
                 if (auto* cap = crosspad_pc::audio_platform::startVirtualCapture(
@@ -1101,9 +1121,8 @@ void crosspad_app_init()
                 }
             }
             if (nativeIn2) {
-                printf("[Audio] IN2 connected to native virtual sink (crosspad_vin2)\n");
-                s_toolsTap[1] = new ToolsTapInput(nativeIn2, 1);
-                pc_platform_set_audio_input(1, s_toolsTap[1]);
+                printf("[Audio] IN2 connected to native virtual sink (%s)\n", crosspad_pc::instance::nodeName("crosspad_vin2").c_str());
+                pc_platform_set_audio_input(1, nativeIn2);
                 in2Virtual = true;
             } else if (sinks.size() >= 2) {
                 if (auto* cap = crosspad_pc::audio_platform::startVirtualCapture(
@@ -1125,7 +1144,9 @@ void crosspad_app_init()
         const bool in2Skip = false;
 #endif
 
-        auto inDevices = enumerateAudioInputDevices();
+        auto inDevices = crosspad_pc::instance::audioEnabled()
+                             ? enumerateAudioInputDevices()
+                             : decltype(enumerateAudioInputDevices()){};
         // Restore a saved IN pick. New prefs store the UI label (a PipeWire
         // description); prefs written before that stored the raw RtAudio name.
         // Try the raw match first for back-compat, then resolve the label
@@ -1151,41 +1172,51 @@ void crosspad_app_init()
                 return;
             }
         };
-        if (!in1Skip) restoreInSlot(pcAudioIn1, 0, s_devicePrefs.audioIn1);
-        if (!in2Skip) restoreInSlot(pcAudioIn2, 1, s_devicePrefs.audioIn2);
+        if (crosspad_pc::instance::audioEnabled()) {
+            if (!in1Skip) restoreInSlot(pcAudioIn1, 0, s_devicePrefs.audioIn1);
+            if (!in2Skip) restoreInSlot(pcAudioIn2, 1, s_devicePrefs.audioIn2);
+        }
     }
 
 #ifdef USE_PIPEWIRE
     // Make CrossPad IN#1 the system default sink so audio from other apps
     // flows into the mixer without manual routing. Only when the native PW
     // backend is active (input(0) != nullptr) and the pref allows it.
-    const bool pwTakeoverWillRun = s_devicePrefs.pwTakeoverDefault &&
-                                   s_virtualSinkManager &&
-                                   s_virtualSinkManager->input(0) != nullptr;
-    if (pwTakeoverWillRun) {
-        // Crash recovery: a leftover pwPrevDefaultSink means the previous run
-        // died before restore — that value, not the current default (which is
-        // still our own sink), is what we must eventually restore.
-        if (!s_devicePrefs.pwPrevDefaultSink.empty())
-            s_pwGuard.setPreviousSink(s_devicePrefs.pwPrevDefaultSink);
-        if (s_pwGuard.takeover("crosspad_vin1")) {
-            s_devicePrefs.pwPrevDefaultSink = s_pwGuard.previousSink();
-            saveDevicePrefs();
-            printf("[Audio] system default sink -> CrossPad IN#1 (was: %s)\n",
-                   s_devicePrefs.pwPrevDefaultSink.c_str());
-        }
-    } else if (!s_devicePrefs.pwPrevDefaultSink.empty()) {
-        // Takeover is NOT running this launch (pref off, or native PW backend
-        // unavailable) but a previous run left a crash-recovery marker — the
-        // configured default sink is still pointed at our virtual sink. Do a
-        // one-shot restore of that stale marker so we don't strand the user's
-        // default on crosspad_vin1. Only clear the marker on success; if the
-        // daemon is unreachable, keep it and retry next launch.
-        if (s_pwGuard.restoreStale(s_devicePrefs.pwPrevDefaultSink)) {
-            printf("[Audio] restored stale default sink -> %s (no takeover)\n",
-                   s_devicePrefs.pwPrevDefaultSink.c_str());
-            s_devicePrefs.pwPrevDefaultSink.clear();
-            saveDevicePrefs();
+    {
+        BootUnlocked unlocked;
+        // Only the primary instance takes the desktop's default sink: a test
+        // instance (CROSSPAD_INSTANCE / CROSSPAD_AUDIO) must leave it, and the
+        // crash-recovery marker, alone.
+        const bool pwMayTouchDefault = crosspad_pc::instance::defaultSinkTakeoverAllowed();
+        const bool pwTakeoverWillRun = pwMayTouchDefault &&
+                                       s_devicePrefs.pwTakeoverDefault &&
+                                       s_virtualSinkManager &&
+                                       s_virtualSinkManager->input(0) != nullptr;
+        if (pwTakeoverWillRun) {
+            // Crash recovery: a leftover pwPrevDefaultSink means the previous run
+            // died before restore — that value, not the current default (which is
+            // still our own sink), is what we must eventually restore.
+            if (!s_devicePrefs.pwPrevDefaultSink.empty())
+                s_pwGuard.setPreviousSink(s_devicePrefs.pwPrevDefaultSink);
+            if (s_pwGuard.takeover(crosspad_pc::instance::nodeName("crosspad_vin1").c_str())) {
+                setDevicePrefs([](DevicePreferences& p) { p.pwPrevDefaultSink = s_pwGuard.previousSink(); });
+                saveDevicePrefs();
+                printf("[Audio] system default sink -> CrossPad IN#1 (was: %s)\n",
+                       s_devicePrefs.pwPrevDefaultSink.c_str());
+            }
+        } else if (pwMayTouchDefault && !s_devicePrefs.pwPrevDefaultSink.empty()) {
+            // Takeover is NOT running this launch (pref off, or native PW backend
+            // unavailable) but a previous run left a crash-recovery marker — the
+            // configured default sink is still pointed at our virtual sink. Do a
+            // one-shot restore of that stale marker so we don't strand the user's
+            // default on crosspad_vin1. Only clear the marker on success; if the
+            // daemon is unreachable, keep it and retry next launch.
+            if (s_pwGuard.restoreStale(s_devicePrefs.pwPrevDefaultSink)) {
+                printf("[Audio] restored stale default sink -> %s (no takeover)\n",
+                       s_devicePrefs.pwPrevDefaultSink.c_str());
+                setDevicePrefs([](DevicePreferences& p) { p.pwPrevDefaultSink.clear(); });
+                saveDevicePrefs();
+            }
         }
     }
 #endif
@@ -1216,7 +1247,7 @@ void crosspad_app_init()
      * channels by both. No host plays into a simulator: the USB channel is
      * there, silent. */
     static crosspad::AudioInputNode s_usbNode{static_cast<crosspad::IAudioInput*>(nullptr), "USB"};
-    s_samplerNode = crosspad_pc::sampler_port_init();
+    s_samplerNode = crosspad_pc::sampler_port_init(kit_gate_host());
     if (s_samplerNode) {
         const auto ch = s_mixerEngine.addChannel(s_samplerNode, "Sampler");
         for (uint8_t o = 0; o < crosspad_pc::PcAudioModule::NUM_BUSES; ++o) s_mixerEngine.setRouteEnabled(ch, o, true);
@@ -1250,7 +1281,7 @@ void crosspad_app_init()
     // MixerInput::IN1/IN2/SYNTH pin down. Registered before loadState() so a
     // saved routing for it is applied rather than dropped — loadState only
     // patches slots that already exist.
-    s_samplerNode = crosspad_pc::sampler_port_init();
+    s_samplerNode = crosspad_pc::sampler_port_init(kit_gate_host());
     if (s_samplerNode) {
         s_mixerEngine.addChannel(s_samplerNode, "Sampler");
         s_mixerEngine.setRouteEnabled(static_cast<MixerInput>(3), MixerOutput::OUT1, true);
@@ -1272,6 +1303,8 @@ void crosspad_app_init()
 #endif
     crosspad_pc::song_engine_init(s_mixerEngine, crosspad_pc::PcAudioModule::NUM_OUTPUTS,
                                   crosspad_pc::PcAudioModule::CAPTURE_BUS);
+    // The Recorder's and the Slicer's: takes, auditions, kits from a loop.
+    crosspad_pc::sample_tools_init(s_mixerEngine, crosspad_pc::PcAudioModule::NUM_OUTPUTS);
 
     // Load mixer state AFTER channel slots exist so saved per-channel routing
     // applies; loadState only patches existing slots, never creates them.
@@ -1289,7 +1322,6 @@ void crosspad_app_init()
         s_mixerEngine.setRouteEnabled(static_cast<MixerInput>(4),
                                       static_cast<MixerOutput>(crosspad_pc::PcAudioModule::CAPTURE_BUS), true);
     }
-
 #endif
 
     // Engine-level state-changed sink — MixerApp.cpp (cross-platform) calls
@@ -1328,25 +1360,21 @@ void crosspad_app_init()
         s_audioModule.setup(cfg);
 #ifdef HAS_MIXER
         s_audioModule.setMixerEngine(&s_mixerEngine);
-        /* The pads-only bus feeds a song bounce and a Recorder resample alike. */
-        s_audioModule.setCaptureTap([](const float* bus, uint32_t frames) {
-            crosspad_pc::song_engine_rt_capture(bus, frames);
-            crosspad::sample_tools_rt_bus(bus, frames);
-        });
-        crosspad::sample_tools_init(s_mixerEngine);
-        pcAudioIn1.setToolsCodec(0);   // IN1 = the board's mics
-        pcAudioIn2.setToolsCodec(1);   // IN2 = the line-in jack
+        s_audioModule.setCaptureTap(capture_tap);
 #else
         s_synthNode.setEngine(&fmSynth);
         s_audioModule.addNode(&s_synthNode);
         // Without the mixer component the sampler is a plain generator on the
         // node chain; it is brought up here because there is no addChannel().
-        s_samplerNode = crosspad_pc::sampler_port_init();
+        s_samplerNode = crosspad_pc::sampler_port_init(kit_gate_host());
         if (s_samplerNode) s_audioModule.addNode(s_samplerNode);
         s_pitchedNode = crosspad_pc::pitched_port_init(cfg.sampleRate);
         if (s_pitchedNode) s_audioModule.addNode(s_pitchedNode);
 #endif
         crosspad::getPlatformServices().setAudioModule(&s_audioModule);
+        // Apps borrow the pitched engine through it (an Arrange Pitch track, a
+        // song's instrument): after the sampler and the pitched engine.
+        crosspad_pc::instrument_host_init();
         s_audioModule.start();
 
 #if defined(USE_VIRTUAL_AUDIO) && defined(__linux__)
@@ -1354,14 +1382,17 @@ void crosspad_app_init()
         // sound server and can be pinned. This matters most when the
         // virtual-sink takeover is on: the default sink is then CrossPad's own
         // input, so an unpinned output would feed straight back into it.
-        for (uint8_t s = 0; s < 2; ++s) {
-            if (s_pendingPin[s].empty()) continue;
-            if (crosspad_pc::movePulseOutputToSinkWithin(s, s_pendingPin[s], 4000)) {
-                printf("[Audio] OUT%u pinned to sink '%s'\n",
-                       unsigned(s + 1), s_pendingPin[s].c_str());
-            } else {
-                printf("[Audio] OUT%u could not be pinned to '%s' — it will follow "
-                       "the default sink\n", unsigned(s + 1), s_pendingPin[s].c_str());
+        {
+            BootUnlocked unlocked;
+            for (uint8_t s = 0; s < 2; ++s) {
+                if (s_pendingPin[s].empty()) continue;
+                if (crosspad_pc::movePulseOutputToSinkWithin(s, s_pendingPin[s], 4000)) {
+                    printf("[Audio] OUT%u pinned to sink '%s'\n",
+                           unsigned(s + 1), s_pendingPin[s].c_str());
+                } else {
+                    printf("[Audio] OUT%u could not be pinned to '%s' — it will follow "
+                           "the default sink\n", unsigned(s + 1), s_pendingPin[s].c_str());
+                }
             }
         }
 #endif
@@ -1371,19 +1402,78 @@ void crosspad_app_init()
         // capture directly. Attach as the module's aux stream (OUT1 tap) only
         // after the source connects; setAuxStream stores a non-owning pointer
         // read by the audio thread.
-        if (s_pwSource.start("crosspad_out", "CrossPad Out", cfg.sampleRate)) {
-            s_audioModule.setAuxStream(&s_pwSource);
-            printf("[Audio] OUT1 tap -> virtual source 'CrossPad Out' @ %u Hz\n",
-                   cfg.sampleRate);
-        } else {
-            printf("[Audio] virtual source 'CrossPad Out' unavailable\n");
+        if (crosspad_pc::instance::audioEnabled()) {
+            BootUnlocked unlocked;
+            if (s_pwSource.start(crosspad_pc::instance::nodeName("crosspad_out").c_str(),
+                                 crosspad_pc::instance::description("CrossPad Out").c_str(),
+                                 cfg.sampleRate)) {
+                s_audioModule.setAuxStream(&s_pwSource);
+                printf("[Audio] OUT1 tap -> virtual source 'CrossPad Out' @ %u Hz\n",
+                       cfg.sampleRate);
+            } else {
+                printf("[Audio] virtual source 'CrossPad Out' unavailable\n");
+            }
         }
 #endif
     }
 
     // Save preferences now that we know actual connected device names
     saveDevicePrefs();
+
+    // What the jack panel's dropdowns offer: an enumeration that opens every
+    // device, so here rather than on the LVGL thread. CROSSPAD_AUDIO=off opens
+    // none, so it offers none.
+    if (crosspad_pc::instance::audioEnabled()) {
+        BootUnlocked unlocked;
+        s_bootOutNames = refreshOutUiCache();
+        s_bootInNames  = refreshInUiCache();
+    }
 #endif
+}
+
+static void boot_devices_run()
+{
+    xSemaphoreTake(s_bootLock, portMAX_DELAY);
+    boot_devices();
+    xSemaphoreGive(s_bootLock);
+    s_devicesUp.store(true);
+}
+
+static void boot_devices_task(void*)
+{
+    boot_devices_run();
+    vTaskDelete(nullptr);
+}
+
+/// The rest of the boot, on the LVGL thread once the devices are up.
+static void boot_finish()
+{
+#ifdef USE_MIDI
+    // Periodic MIDI reconnect check (3s).
+    // IMPORTANT: RtMidi port enumeration is BLOCKING (100-500ms on Windows).
+    // We only check connection state on the LVGL thread — the actual reconnect
+    // (with its blocking enumeration) runs on a background thread.
+    static std::atomic<bool> s_midiReconnecting{false};
+    lv_timer_create([](lv_timer_t*) {
+        // Reconnect if output died, OR if we don't have a keyword match
+        // (a new CrossPad device may have appeared). reconnect() itself
+        // short-circuits if nothing changed, so this is cheap.
+        bool needsReconnect = !midi.isOutputOpen() || !midi.isKeywordConnected();
+        if (needsReconnect && !s_midiReconnecting.load()) {
+            s_midiReconnecting.store(true);
+            std::thread([]() {
+                midi.reconnect();
+                s_midiReconnecting.store(false);
+            }).detach();
+        }
+
+        // Update jack panel from current MIDI state (no enumeration — just read cached names)
+        auto& jp = stm32Emu.getJackPanel();
+        jp.setConnected(EmuJackPanel::MIDI_OUT, midi.isOutputOpen());
+        jp.setConnected(EmuJackPanel::MIDI_IN, midi.isInputOpen());
+    }, 3000, nullptr);
+#endif
+
 
     /* Register all apps (auto-generated by cmake/generate_registry.cmake) */
     {
@@ -1396,11 +1486,39 @@ void crosspad_app_init()
     initStyles();
     InitializeOrchestrator();
     crosspad_gui::AppOrchestrator::getInstance().populateApps(app_c);
-    LoadMainScreen(lcdContainer);
+#ifdef HAS_MIXER
+    // The open song's kit and instrument, now that the orchestrator can say
+    // which app is in front.
+    crosspad_pc::song_sounds_start();
+#endif
+    LoadMainScreen(s_lcdContainer);
+
+    /* Wire keyboard shortcuts: Escape→go home, Space/Ctrl→power button
+     * (tap = contextual back, hold 0.5 s = quick settings), V→volume overlay.
+     * Once there is a launcher to go home to: the splash takes keys while
+     * the devices come up, and Escape then rebuilt a launcher whose
+     * orchestrator did not exist yet. */
+    stm32Emu.getKeyboardCapture().setEscapeCallback(
+        CROSSPAD_FW_STANDALONE_APP[0] ? [] { crosspad_gui::powerBack(); } : crosspad_app_go_home);
+    stm32Emu.getKeyboardCapture().setPowerCallback(crosspad_gui::powerButtonPress);
+    stm32Emu.getKeyboardCapture().setPowerReleaseCallback(crosspad_gui::powerButtonRelease);
+    stm32Emu.getKeyboardCapture().setVolumeCallback(crosspad_gui::volume_overlay_toggle);
+
+    /* The board's boot-time decisions, made here as its platform makes them,
+     * whatever app the firmware is: pad 16 held through the boot goes back
+     * to the main firmware, a trial slot confirms itself. */
+#ifndef __EMSCRIPTEN__   /* a twin's slots are the board's (TWIN_FW) */
+    if (pc_fw::bootFinished(crosspad::getPadManager().isPadPressed(pc_fw::kRecoveryPad))) return;
+#endif
+
+    /* A single-app kit (DOOM) starts into its app; there is no launcher to
+     * go back to, Escape is the power click. */
+    if (CROSSPAD_FW_STANDALONE_APP[0] && !crosspad_app_start(CROSSPAD_FW_STANDALONE_APP))
+        printf("[CrossPad] kit %s: app %s is not registered\n", CROSSPAD_FW_KIT_ID, CROSSPAD_FW_STANDALONE_APP);
 
     /* ── Auto-check for updates (background) ─────────────────────────── */
 #ifdef __EMSCRIPTEN__
-    if (false) {   // no threads and no GitHub in the browser
+    if (false) {   // no GitHub in the browser: the board checks for itself
 #else
     if (pc_platform_get_auto_check_updates()) {
 #endif
@@ -1452,13 +1570,13 @@ void crosspad_app_init()
         // fill the caches the selection callback resolves against, so the
         // list shown and the list clicked are byte-for-byte the same.
         {
-            auto outNames = refreshOutUiCache();
+            const auto& outNames = s_bootOutNames;
             jp.setDeviceList(EmuJackPanel::AUDIO_OUT1, outNames,
                              findDropdownIndex(outNames, pcAudio.getCurrentDeviceName()));
             jp.setDeviceList(EmuJackPanel::AUDIO_OUT2, outNames,
                              findDropdownIndex(outNames, pcAudio2.getCurrentDeviceName()));
 
-            auto inNames = refreshInUiCache();
+            const auto& inNames = s_bootInNames;
             // IN prefs store the shown label (a PipeWire description), so the
             // selected index is matched against the saved label, not the raw
             // RtAudio device name getCurrentDeviceName() would return.
@@ -1553,7 +1671,7 @@ void crosspad_app_init()
                     PcUart::CROSSPAD_VID, PcUart::CROSSPAD_PID);
                 for (auto& port : crosspadPorts) {
                     if (pcUart.open(port, baud)) {
-                        s_devicePrefs.uartPort = port;
+                        setDevicePrefs([&](DevicePreferences& p) { p.uartPort = port; });
                         saveDevicePrefs();
                         printf("[USB] Auto-connected CrossPad on %s\n", port.c_str());
                         connected = true;
@@ -1582,7 +1700,7 @@ void crosspad_app_init()
                 // Opening an ALSA/PulseAudio device blocks for 100–500 ms; doing
                 // it inline here froze the whole UI (this callback runs on the
                 // LVGL thread). Run the switch on a worker thread and push the
-                // result back with lv_async_call so only widget mutation — which
+                // result back with pc_gui::post() so only widget mutation — which
                 // must stay on the LVGL thread — happens there. Selection
                 // resolves against the cached list the dropdown was built from,
                 // never a fresh enumeration whose indices may have shifted.
@@ -1596,7 +1714,7 @@ void crosspad_app_init()
                     bool connected = isOut ? appAudioOutSelectIdx(slot, uiIndex, label)
                                            : appAudioInSelectIdx(slot, uiIndex, label);
                     auto* res = new AudioJackUiResult{jackId, connected, std::move(label)};
-                    lv_async_call([](void* ud) {
+                    pc_gui::post([](void* ud) {
                         auto* r = static_cast<AudioJackUiResult*>(ud);
                         auto& jp = stm32Emu.getJackPanel();
                         jp.setConnected(static_cast<EmuJackPanel::JackId>(r->jackId),
@@ -1616,7 +1734,7 @@ void crosspad_app_init()
                     printf("[JackPanel] MIDI OUT disconnected\n");
                     jp.setConnected(EmuJackPanel::MIDI_OUT, false);
                     jp.setDeviceName(EmuJackPanel::MIDI_OUT, "");
-                    s_devicePrefs.midiOut.clear();
+                    setDevicePrefs([&](DevicePreferences& p) { p.midiOut.clear(); });
                 } else {
                     unsigned int newOut = deviceIndex - 1;
                     // Preserve current input port
@@ -1627,7 +1745,7 @@ void crosspad_app_init()
                     if (midi.isOutputOpen()) {
                         std::string name = midi.getOutputPortName(newOut);
                         jp.setDeviceName(EmuJackPanel::MIDI_OUT, name);
-                        s_devicePrefs.midiOut = name;
+                        setDevicePrefs([&](DevicePreferences& p) { p.midiOut = name; });
                     }
                 }
                 saveDevicePrefs();
@@ -1638,7 +1756,7 @@ void crosspad_app_init()
                     printf("[JackPanel] MIDI IN disconnected\n");
                     jp.setConnected(EmuJackPanel::MIDI_IN, false);
                     jp.setDeviceName(EmuJackPanel::MIDI_IN, "");
-                    s_devicePrefs.midiIn.clear();
+                    setDevicePrefs([&](DevicePreferences& p) { p.midiIn.clear(); });
                 } else {
                     unsigned int newIn = deviceIndex - 1;
                     // Preserve current output port
@@ -1649,7 +1767,7 @@ void crosspad_app_init()
                     if (midi.isInputOpen()) {
                         std::string name = midi.getInputPortName(newIn);
                         jp.setDeviceName(EmuJackPanel::MIDI_IN, name);
-                        s_devicePrefs.midiIn = name;
+                        setDevicePrefs([&](DevicePreferences& p) { p.midiIn = name; });
                     }
                 }
                 saveDevicePrefs();
@@ -1663,7 +1781,7 @@ void crosspad_app_init()
                     pcUart.close();
                     jp.setConnected(EmuJackPanel::USB, false);
                     jp.setDeviceName(EmuJackPanel::USB, "");
-                    s_devicePrefs.uartPort.clear();
+                    setDevicePrefs([&](DevicePreferences& p) { p.uartPort.clear(); });
                     crosspad::removePlatformCapability(crosspad::Capability::Usb);
                 } else {
                     auto comPorts = PcUart::enumeratePorts();
@@ -1674,7 +1792,7 @@ void crosspad_app_init()
                         if (pcUart.open(comPorts[portIdx], baud)) {
                             jp.setConnected(EmuJackPanel::USB, true);
                             jp.setDeviceName(EmuJackPanel::USB, comPorts[portIdx]);
-                            s_devicePrefs.uartPort = comPorts[portIdx];
+                            setDevicePrefs([&](DevicePreferences& p) { p.uartPort = comPorts[portIdx]; });
                             crosspad::addPlatformCapability(crosspad::Capability::Usb);
                         } else {
                             jp.setConnected(EmuJackPanel::USB, false);
@@ -1801,7 +1919,7 @@ void crosspad_app_init()
                 auto& jp = stm32Emu.getJackPanel();
                 jp.setConnected(EmuJackPanel::USB, true);
                 jp.setDeviceName(EmuJackPanel::USB, port);
-                s_devicePrefs.uartPort = port;
+                setDevicePrefs([&](DevicePreferences& p) { p.uartPort = port; });
                 saveDevicePrefs();
                 crosspad::addPlatformCapability(crosspad::Capability::Usb);
                 printf("[USB] Auto-reconnected CrossPad on %s\n", port.c_str());
@@ -1813,9 +1931,178 @@ void crosspad_app_init()
     printf("[CrossPad] App init complete\n");
 }
 
+void crosspad_app_init()
+{
+#if defined(USE_AUDIO) && defined(USE_VIRTUAL_AUDIO)
+    /* Make sure virtual sinks get unloaded whatever the exit path.
+       SDL_QUIT, Power off and the updater call crosspad_app_shutdown()
+       directly; SIGINT/SIGTERM go through pc_install_shutdown_signals()
+       (main()), atexit catches a normal return.
+       kill -9 is unrecoverable — sinks will be cleaned up at next launch
+       by LinuxPipewireSinks::cleanupStaleSinks(). */
+    std::atexit(crosspad_app_shutdown);
+#endif
+
+#ifndef __EMSCRIPTEN__
+    /* Which slot this binary runs, and that firmware's own settings in place
+     * before they are read. */
+    pc_fw::boot();
+#endif
+
+    /* Platform stubs (event bus, settings, pad manager, GUI) */
+    pc_platform_init();
+
+    /* The Firmware views and an app that leaves the firmware (DOOM's Quit)
+     * switch through the one service. */
+#ifdef __EMSCRIPTEN__
+    /* The board's own service, over what the twin answers for its ESP half
+     * (src/wasm/twin_*.cpp: TWIN_FW, an idle WiFi link, an updater that
+     * leaves the work to the board). */
+    fw_view_service_install();
+#else
+    crosspad_gui::setFwViewService(&pcFwViewService());
+#endif
+
+    /* The pads' animations (progress bars, showFrame) and the LED controller
+     * advance on this tick, as on the board's pad_anim worker. On the LVGL
+     * thread: the pad clicks and the marshalled MIDI input that also drive the
+     * LEDs run here too. */
+    lv_timer_create([](lv_timer_t*) { crosspad::getPadManager().update(); },
+                    kPadAnimTickMs, nullptr);
+
+    /* Register go-home callback for shared Settings UI */
+    pc_platform_set_go_home([]() { LoadMainScreen(s_lcdContainer); });
+
+    /* Load saved device preferences */
+    loadDevicePrefs();
+
+    /* STM32 emulator window — returns 320x240 LCD container. With --lcd the
+     * display is the LCD itself: the GUI takes the active screen as the board's
+     * does, and the body is built on a screen never shown (its jacks and card
+     * slot are still what the rest of the simulator talks to). */
+    s_lcdContainer = s_lcdOnly ? (stm32Emu.init(lv_obj_create(nullptr)), lv_screen_active())
+                               : stm32Emu.init();
+
+    /* Virtual SD card slot — auto-mount from saved preferences */
+#ifdef __EMSCRIPTEN__
+    // The page mounts the card (IndexedDB) at /sdcard (crosspad-web-twin web/simtwin.js).
+    if (s_devicePrefs.sdcardPath.empty()) s_devicePrefs.sdcardPath = "/sdcard";
+#endif
+    if (!s_devicePrefs.sdcardPath.empty()) {
+        namespace fs = std::filesystem;
+        std::error_code ec;
+        if (fs::exists(s_devicePrefs.sdcardPath, ec)) {
+            pc_platform_set_sdcard_path(s_devicePrefs.sdcardPath);
+#ifdef USE_AUDIO
+            crosspad_pc::sampler_port_set_sdcard(s_devicePrefs.sdcardPath);
+#endif
+            stm32Emu.getSdCardSlot().setMounted(true, s_devicePrefs.sdcardPath);
+            printf("[SDCard] Auto-mounted from saved prefs: %s\n", s_devicePrefs.sdcardPath.c_str());
+        } else {
+            printf("[SDCard] Saved path no longer exists: %s\n", s_devicePrefs.sdcardPath.c_str());
+            setDevicePrefs([&](DevicePreferences& p) { p.sdcardPath.clear(); });
+            saveDevicePrefs();
+        }
+    }
+
+    /* Wire SD card slot mount/unmount callbacks */
+    stm32Emu.getSdCardSlot().setOnMount([](const std::string& path) {
+        pc_platform_set_sdcard_path(path);
+#ifdef USE_AUDIO
+        // Kits and samples live on the card; rescanning here is what makes a
+        // card mounted mid-session show up in the kit selector.
+        crosspad_pc::sampler_port_set_sdcard(path);
+#endif
+        setDevicePrefs([&](DevicePreferences& p) { p.sdcardPath = path; });
+        saveDevicePrefs();
+    });
+    stm32Emu.getSdCardSlot().setOnUnmount([]() {
+        pc_platform_set_sdcard_path("");
+#ifdef USE_AUDIO
+        crosspad_pc::sampler_port_set_sdcard("");
+#endif
+        setDevicePrefs([&](DevicePreferences& p) { p.sdcardPath.clear(); });
+        saveDevicePrefs();
+    });
+
+    /* Overlay layer on lv_layer_top(), exactly over the LCD area. It sat at
+     * y = 20 while the panel is drawn at LCD_Y, so every overlay -- the MODE
+     * map, dialogs, the kit loader -- landed 38 px high, and one aligned to
+     * the panel lost its bottom 38 px to the layer's clip. With --lcd the top
+     * layer is the LCD already, as on the board. */
+    if (!s_lcdOnly) {
+        lv_obj_t* overlayLayer = lv_obj_create(lv_layer_top());
+        lv_obj_remove_style_all(overlayLayer);
+        lv_obj_set_pos(overlayLayer, Stm32EmuWindow::LCD_X, Stm32EmuWindow::LCD_Y);
+        lv_obj_set_size(overlayLayer, Stm32EmuWindow::LCD_W, Stm32EmuWindow::LCD_H);
+        lv_obj_remove_flag(overlayLayer, (lv_obj_flag_t)(LV_OBJ_FLAG_CLICKABLE | LV_OBJ_FLAG_SCROLLABLE));
+        crosspad_gui::setOverlayParent(overlayLayer);
+    }
+
+    /* The board's cold-boot splash, the first thing on the panel: the devices
+     * come up behind it, the launcher is built behind it, and it leaves once
+     * both are done and it has played. CROSSPAD_NO_SPLASH skips it (the GUI
+     * test harness starts at the launcher). */
+    if (!std::getenv("CROSSPAD_NO_SPLASH")) boot_splash_begin();
+
+    // Init MidiInputHandler — central routing brain (same pattern as ESP32).
+    // Routes pad output to USB + BLE + STM32 based on KeypadSettings flags.
+    s_midiHandler.init(crosspad::getPadManager(), crosspad::getEventBus(),
+                       crosspad::CrosspadSettings::getInstance());
+    crosspad::getPlatformServices().setMidiOutput(&s_midiHandler);
+
+#ifdef USE_MIDI
+    // Initialize STM32 message handler
+    stm32Handler.init(crosspad::getPadManager(), status);
+    /* DAW Control takes host frames through the platform's catalog decoder,
+     * as on the board. */
+    crosspad::getPlatformServices().stm32MessageHandler = &stm32Handler;
+#endif
+
+    s_bootLock = xSemaphoreCreateMutex();
+    if (xTaskCreate(boot_devices_task, "boot_dev", kBootTaskStack, nullptr,
+                    kBootTaskPriority, nullptr) != pdPASS) {
+        printf("[CrossPad] boot worker not created; bringing the devices up here\n");
+        boot_devices_run();
+    }
+}
+
+bool crosspad_app_tick()
+{
+    if (s_booted) {
+        lv_timer_handler();
+        if (s_splashHolder && !boot_splash_active()) {
+            lv_obj_delete(s_splashHolder);
+            s_splashHolder = nullptr;
+            boot_splash_reveal();
+        }
+        return false;
+    }
+    xSemaphoreTake(s_bootLock, portMAX_DELAY);
+    lv_timer_handler();
+    const bool up = s_devicesUp.load();
+    if (up) {
+        boot_finish();
+        s_booted = true;
+    }
+    xSemaphoreGive(s_bootLock);
+    return up;
+}
+
 void crosspad_app_go_home()
 {
     LoadMainScreen(s_lcdContainer);
+}
+
+bool crosspad_app_start(const char* name)
+{
+    for (const auto& app : crosspad_gui::AppOrchestrator::getInstance().getApps()) {
+        if (app && crosspad::control::appNameMatches(app->getName(), name)) {
+            crosspad_gui::AppOrchestrator::onAppSelected(app.get(), app_c);
+            return true;
+        }
+    }
+    return false;
 }
 
 void crosspad_app_update_pad_icon()
@@ -1885,7 +2172,7 @@ void crosspad_app_shutdown()
     // pwPrevDefaultSink behind. Detach the aux stream (non-owning pointer read
     // by the audio thread) BEFORE stopping/destroying the source.
     s_pwGuard.restore();
-    s_devicePrefs.pwPrevDefaultSink.clear();
+    setDevicePrefs([&](DevicePreferences& p) { p.pwPrevDefaultSink.clear(); });
     saveDevicePrefs();
     s_audioModule.setAuxStream(nullptr);
     s_pwSource.stop();

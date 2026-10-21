@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: MIT
+// SPDX-License-Identifier: GPL-3.0-or-later
 #pragma once
 
 /**
@@ -30,12 +30,22 @@ namespace crosspad_pc {
 /// converted to it at load time.
 crosspad::IAudioNode* pitched_port_init(uint32_t engineRate);
 
+/// How a bank is built beyond what the kit says (the board's PitchedLoadOptions).
+struct PitchedPortOptions {
+    /// A zone longer than this is cut to it; 0 leaves the bank budget the limit.
+    float maxZoneSeconds = 0.0f;
+    /// Convert zones at another rate when loading (PitchedLoadEnv::convertRate).
+    bool convertRate = true;
+    /// Bring every zone's peak to -1 dBFS (PitchedLoadEnv::normalize).
+    bool normalize = false;
+};
+
 /// Build and install the bank described by @p kit.
 ///
 /// A failed load leaves **nothing** installed: whatever was playing is
 /// unloaded too. The caller has already moved on to the new kit's pad_notes,
 /// so a surviving bank would sound its zones under the wrong note map.
-bool pitched_port_load(const crosspad::KitInfo& kit);
+bool pitched_port_load(const crosspad::KitInfo& kit, const PitchedPortOptions& options = {});
 
 /// Silence the engine and free the bank. Safe when nothing is loaded.
 void pitched_port_unload();

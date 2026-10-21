@@ -9,9 +9,8 @@
 #include <cstdint>
 #include <cstdio>
 #include <chrono>
-#include "crosspad/app/AppVersions.hpp"
+#include "crosspad/settings/InfoRowTable.hpp"
 
-#include <cstdarg>
 #include <string>
 #include <vector>
 #include <map>
@@ -41,6 +40,8 @@
 
 // crosspad-core interfaces (BEFORE Windows.h to avoid ERROR macro conflict)
 #include "crosspad/platform/CrosspadPlatformInit.hpp"
+#include "pc_stubs/GuiThread.hpp"
+#include "crosspad_app.hpp"
 #include "crosspad/platform/PlatformServices.hpp"
 #include "crosspad/platform/PlatformCapabilities.hpp"
 #include "crosspad/platform/IClock.hpp"
@@ -71,14 +72,13 @@
 // crosspad-gui interfaces
 #include "crosspad-gui/platform/IGuiPlatform.h"
 #include "hal/hal.h"
-#include "crosspad-gui/platform/IFileSystem.h"
 
-#include "crosspad/event/FreeRtosEventBus.hpp"
+#include "pc_stubs/FreeRtosEventBus.hpp"
 
 using namespace crosspad;
 
 // =============================================================================
-// Global variables required by crosspad-gui (extern in status_bar.cpp etc.)
+// The simulator's settings and status, handed to crosspad_platform_init()
 // =============================================================================
 
 #ifdef __EMSCRIPTEN__
@@ -89,7 +89,6 @@ extern "C" bool wasm_twin_stm_config(void);
 #endif
 CrosspadSettings* settings = nullptr;
 CrosspadStatus status;
-lv_obj_t* status_c = nullptr;
 
 // Forward declarations — defined after anonymous namespace
 std::string pc_platform_resolve_sdcard_path(const std::string& virtualPath);
@@ -204,15 +203,7 @@ private:
         return std::string(ns) + "/" + key;
     }
 
-    static std::string resolveProfileDir() {
-#ifdef _MSC_VER
-        const char* userProfile = std::getenv("USERPROFILE");
-        if (userProfile) return std::string(userProfile) + "/.crosspad";
-#endif
-        const char* home = std::getenv("HOME");
-        if (home) return std::string(home) + "/.crosspad";
-        return ".crosspad";
-    }
+    static std::string resolveProfileDir() { return pc_platform_resolve_profile_dir(); }
 
     void load() {
         std::ifstream f(filePath_);
@@ -309,6 +300,17 @@ public:
         return assetPrefix_.c_str();
     }
 
+    // The explorer's card paths, under the folder mounted as the SD card.
+    std::string storagePath(const std::string& path) override {
+        return pc_platform_resolve_sdcard_path(path);
+    }
+
+    // LVGL has no OS layer here: a call from another thread is queued for
+    // the LVGL thread, never let into lv_async_call() itself.
+    void postToGui(lv_async_cb_t cb, void* user_data) override {
+        pc_gui::post(cb, user_data);
+    }
+
     lv_indev_t* getNavigationEncoder() override {
         return sdl_hal_get_encoder();
     }
@@ -324,9 +326,11 @@ public:
     void sendPowerOff() override {
         printf("[PC] Power off requested (exiting)\n");
         fflush(stdout);
+        // What the OS does not clean up -- the desktop's default sink, the
+        // pactl null-sinks -- before going, as the window's close does.
+        crosspad_app_shutdown();
         // _exit() skips CRT cleanup (atexit, thread join, static destructors)
         // which avoids abort() when detached std::threads are still running.
-        // OS cleans up all resources on process exit anyway.
         _exit(0);
     }
 
@@ -412,35 +416,6 @@ private:
 };
 
 // =============================================================================
-// PcFileSystem — IFileSystem using Win32 / POSIX
-// =============================================================================
-
-class PcFileSystem : public crosspad_gui::IFileSystem {
-public:
-    bool listDirectory(const std::string& path, std::vector<crosspad_gui::FileItem>& outEntries) override {
-        outEntries.clear();
-
-        // Resolve virtual SD card paths to real filesystem paths
-        std::string resolvedPath = pc_platform_resolve_sdcard_path(path);
-
-        std::error_code ec;
-        for (auto& entry : std::filesystem::directory_iterator(resolvedPath, ec)) {
-            if (ec) break;
-            crosspad_gui::FileItem item;
-            item.path = entry.path().string();
-            item.name = entry.path().filename().string();
-            item.isFolder = entry.is_directory(ec);
-            // Normalize backslashes to forward slashes for LVGL
-            for (char& c : item.path) {
-                if (c == '\\') c = '/';
-            }
-            outEntries.push_back(std::move(item));
-        }
-        return !outEntries.empty();
-    }
-};
-
-// =============================================================================
 // Static singletons
 // =============================================================================
 
@@ -449,7 +424,6 @@ static PcLedStrip       s_ledStrip;
 static FreeRtosEventBus s_eventBus;
 static PcKeyValueStore  s_kvStore;
 static PcGuiPlatform    s_guiPlatform;
-static PcFileSystem     s_fileSystem;
 
 static PadLedController s_padLedController;
 static PadAnimator      s_padAnimator;
@@ -493,57 +467,30 @@ public:
         return root.empty() ? nullptr : root.c_str();
     }
 
-    int getInfoRowCount() override { buildInfoRows(); return s_infoCount; }
+    int getInfoRowCount() override { buildInfoRows(); return s_info.count(); }
 
     bool getInfoRow(int idx, const char** label, const char** value) override {
         buildInfoRows();
-        if (idx < 0 || idx >= s_infoCount) return false;
-        *label = s_infoRows[idx].label;
-        *value = s_infoRows[idx].value;
-        return true;
+        return s_info.get(idx, label, value);
     }
 
 private:
-    struct InfoRow { const char* label; char value[64]; };
-    static constexpr int kMaxInfoRows = 24;
-    static inline InfoRow s_infoRows[kMaxInfoRows] = {};
-    static inline int s_infoCount = 0;
-    static inline bool s_infoBuilt = false;
-
-    static void addRow(const char* label, const char* fmt, ...) {
-        if (s_infoCount >= kMaxInfoRows) return;
-        InfoRow& row = s_infoRows[s_infoCount];
-        row.label = label;
-        va_list ap;
-        va_start(ap, fmt);
-        vsnprintf(row.value, sizeof(row.value), fmt, ap);
-        va_end(ap);
-        s_infoCount++;
-    }
+    static inline crosspad::InfoRowTable s_info;
 
     static void buildInfoRows() {
-        if (s_infoBuilt) return;
-        s_infoBuilt = true;
-        s_infoCount = 0;
-        addRow("Simulator", "%s", CROSSPAD_PC_VERSION);
-        addRow("Built", "%s %s", __DATE__, __TIME__);
-        addRow("crosspad-core", "%s", CROSSPAD_CORE_REV);
-        addRow("crosspad-gui", "%s", CROSSPAD_GUI_REV);
-        addRow("LVGL", "%d.%d.%d", LVGL_VERSION_MAJOR, LVGL_VERSION_MINOR,
-               LVGL_VERSION_PATCH);
+        if (!s_info.beginBuild()) return;
+        s_info.add("Simulator", "%s", CROSSPAD_PC_VERSION);
+        s_info.add("Built", "%s %s", __DATE__, __TIME__);
+        s_info.add("crosspad-core", "%s", CROSSPAD_CORE_REV);
+        s_info.add("crosspad-gui", "%s", CROSSPAD_GUI_REV);
+        s_info.add("LVGL", "%d.%d.%d", LVGL_VERSION_MAJOR, LVGL_VERSION_MINOR,
+                   LVGL_VERSION_PATCH);
         // Installed apps with the commit and pin they were built from — same
         // table the --versions flag prints and the firmware reports over CDC.
-        for (std::size_t i = 0; i < crosspad::appVersionCount(); ++i) {
-            const crosspad::AppVersion* v = crosspad::appVersionGet(i);
-            if (!v || !v->appId || !v->appId[0]) continue;  // core/gui above
-            addRow(v->component, "%s%s%s%s", v->commit,
-                   v->ref && v->ref[0] ? " @" : "",
-                   v->ref && v->ref[0] ? v->ref : "",
-                   v->dirty ? " *" : "");
-        }
+        s_info.addAppVersions();
 
         const std::string& sd = pc_platform_get_sdcard_path();
-        addRow("SD slot", "%s", sd.empty() ? "not mounted" : sd.c_str());
+        s_info.add("SD slot", "%s", sd.empty() ? "not mounted" : sd.c_str());
     }
 };
 
@@ -587,9 +534,15 @@ extern "C" void pc_platform_init() {
 
     crosspad::crosspad_platform_init(config);
 
+    // While an animation owns the pads the LED controller stands aside, and
+    // repaints them when it ends -- the board's wiring (CrosspadPlatform.cpp).
+    s_padAnimator.setAnimationStateCallback([](bool active) {
+        if (active) s_padLedController.setAnimating(true);
+        else        s_padLedController.stopAnimation();
+    });
+
     // Register GUI platform (crosspad-gui specific, not in crosspad-core)
     crosspad_gui::setGuiPlatform(&s_guiPlatform);
-    crosspad_gui::setFileSystem(&s_fileSystem);
 
     // Register settings UI callback
     crosspad::setSettingsUI(&s_pcSettingsUI);
@@ -634,6 +587,21 @@ void pc_platform_save_settings() {
     if (settings) {
         settings->saveTo(s_kvStore);
     }
+}
+
+/// CROSSPAD_PROFILE_DIR names the whole profile directory (preferences,
+/// device_preferences, mixer_state, cache): a test instance points it at a
+/// scratch directory and never rewrites the user's files.
+std::string pc_platform_resolve_profile_dir() {
+    if (const char* dir = std::getenv("CROSSPAD_PROFILE_DIR"); dir && *dir)
+        return dir;
+#ifdef _MSC_VER
+    const char* userProfile = std::getenv("USERPROFILE");
+    if (userProfile) return std::string(userProfile) + "/.crosspad";
+#endif
+    const char* home = std::getenv("HOME");
+    if (home) return std::string(home) + "/.crosspad";
+    return ".crosspad";
 }
 
 // Get user profile directory (~/.crosspad)

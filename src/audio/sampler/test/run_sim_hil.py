@@ -10,8 +10,11 @@ What is measured is the audio module's own output level (`audio_level`), read
 back at ~100 Hz. That is the same shape as reading SMPL_PEAK off a board over
 CDC, and it is past everything that matters here: pad logic → event bus →
 sample engine → mixer channel → module bus. It says whether the wiring carries
-sound; the engine bench under src/audio/sampler/test says whether the samples
-themselves come out intact.
+sound; whether the samples themselves come out intact is core's SamplerEngine
+host tests' to say.
+
+CROSSPAD_REMOTE_PORT picks the simulator (19840 unless set), CP_KIT the kit the
+pad scenarios load (an index into kit_list, 0 unless set).
 
 (The PipeWire virtual source the module taps OUT1 into would give a real
 waveform, but `crosspad_out` exposes no capture ports on this build — pw-link
@@ -21,6 +24,9 @@ gap in the virtual-audio path, not something the sampler introduced.)
 import json, os, re, socket, sys, time
 
 OUT = os.path.dirname(os.path.abspath(__file__))
+PORT = int(os.environ.get("CROSSPAD_REMOTE_PORT", "19840"))
+# The kit the pad scenarios play: one with a sample on every pad.
+KIT = int(os.environ.get("CP_KIT", "0"))
 fails = []
 
 
@@ -33,7 +39,7 @@ def check(ok, what, detail=""):
 
 class Sim:
     def __init__(self):
-        self.s = socket.create_connection(("127.0.0.1", 19840), timeout=20)
+        self.s = socket.create_connection(("127.0.0.1", PORT), timeout=20)
         self.f = self.s.makefile("rw")
 
     def cmd(self, **kw):
@@ -169,7 +175,7 @@ def wait_for_log(marker, since, timeout):
     return None
 
 
-def sc_open_sampler(sim, kit_id=0):
+def sc_open_sampler(sim, kit_id=KIT):
     """Load a kit, then open the sampler app.
 
     The kit goes in over the control port, not by clicking through a browser of
@@ -212,7 +218,7 @@ def sc_open_sampler(sim, kit_id=0):
     print("      kit '%s' (%d of %d), parsed=%s"
           % (st.get("name"), st.get("current"), st.get("count"), st.get("parsed")))
 
-    sim.cmd(cmd="click", x=134, y=263)              # Sampler tile
+    sim.cmd(cmd="app_start", name="Sampler")
     time.sleep(2.0)
     apl = sim.stats().get("active_pad_logic")
     check(apl == "Sampler", "the sampler app owns the pads", apl)
@@ -609,6 +615,140 @@ def sc_led(sim):
           "each colour is a 6-hex string", cols[:3])
 
 
+def sc_loop(sim):
+    """A Loop pad (platform-idf#82) on the LOOPTEST kit (make_loop_kit.py).
+
+    Its sample is a bar whose level ramps with the bar's phase, so the level
+    heard says where the voice is: launched on the bar line, or unmuted after
+    a mute, it follows the metronome's phase -- smpl_peak against seq's
+    to_bar. The dim of a waiting or muted loop is read from led_state's strip.
+    """
+    print("\n[loop] launch on the bar, mute/unmute in phase, transport stop")
+    kits = sim.cmd(cmd="kit_list").get("kits", [])
+    kit = next((k["id"] for k in kits if k["name"] == "LOOPTEST"), None)
+    if kit is None:
+        skip("loop", "no LOOPTEST kit on the card (make_loop_kit.py)")
+        return
+    sc_open_sampler(sim, kit)
+
+    bar = 2.0 * 44100            # one bar at 120 BPM at the engine's rate
+    full = 32000 / 32767         # make_loop_kit.py's full scale
+    tol = 0.06
+
+    def tap(pad=0, hold=0.05):
+        sim.hit(pad)
+        time.sleep(hold)
+        sim.rel(pad)
+
+    def peak(window=0.15):
+        sim.cmd(cmd="smpl_peak")
+        time.sleep(window)
+        return sim.cmd(cmd="smpl_peak")
+
+    def state():
+        return sim.cmd(cmd="smpl_loops")["pads"][0]
+
+    def strip():
+        return sim.cmd(cmd="led_state").get("strip", [""])[0]
+
+    def wait_state(want, timeout):
+        t0 = time.monotonic()
+        while time.monotonic() - t0 < timeout:
+            if state() == want:
+                return True
+            time.sleep(0.005)
+        return False
+
+    def after_bar_line():
+        while sim.cmd(cmd="seq", action="state")["to_bar"] < bar * 0.6:
+            time.sleep(0.005)
+
+    def in_phase(n=12, gap=0.06):
+        errs = []
+        for _ in range(n):
+            sim.cmd(cmd="smpl_peak")
+            time.sleep(gap)
+            p = sim.cmd(cmd="smpl_peak")["peak"]
+            ph = (bar - sim.cmd(cmd="seq", action="state")["to_bar"]) / bar
+            if ph < 0.1:
+                continue          # a window over the wrap holds the last bar's top
+            errs.append(round(p - full * (0.05 + 0.9 * ph), 3))
+        return errs
+
+    sim.cmd(cmd="seq", action="stop", bpm=120, countin=0)
+    time.sleep(0.3)
+    tap(hold=0.12)
+    check(wait_state("P", 1.0), "stopped: a hit starts the loop at once")
+    check(peak(0.3)["peak"] > 0.05, "stopped: it sounds")
+    tap(); time.sleep(0.1)
+    p = peak(0.2)
+    check(state() == "." and p["peak"] < 0.01, "stopped: the next hit stops it", p)
+    sim.hit(0); time.sleep(0.4); sim.rel(0); time.sleep(0.2)
+    check(state() == "P", "stopped: a release is ignored")
+    tap(); time.sleep(0.2)
+    check(state() == ".", "stopped: and the next hit stops it again")
+
+    sim.cmd(cmd="seq", action="play")
+    time.sleep(0.2)
+    after_bar_line()
+    tap()
+    check(state() == "q", "running: a hit waits for the bar")
+    check(peak(0.1)["peak"] < 0.01, "running: silent while it waits")
+    dim_wait = strip()
+    check(wait_state("P", 2.5), "running: launched on the bar")
+    time.sleep(0.05)
+    lit = strip()
+    check(dim_wait != lit, "LED: waiting shows the playing colour dimmed", (dim_wait, lit))
+    errs = in_phase()
+    check(errs and max(abs(e) for e in errs) < tol, "running: the level follows the bar's phase", errs)
+
+    tap()
+    p = peak(0.2)
+    check(state() == "m" and p["peak"] < 0.01 and p["active_voices"] >= 1,
+          "mute: silent, the voice still running", p)
+    check(strip() == dim_wait, "LED: muted is dimmed", strip())
+    time.sleep(1.3)               # not a whole bar: an unmute at the old phase would show
+    tap()
+    check(state() == "P", "unmute: at once")
+    time.sleep(0.05)
+    errs = in_phase()
+    check(errs and max(abs(e) for e in errs) < tol, "unmute: in phase (it kept advancing)", errs)
+
+    sim.cmd(cmd="seq", action="stop")
+    time.sleep(0.2)
+    p = peak(0.2)
+    check(state() == "." and p["active_voices"] == 0 and p["peak"] < 0.01,
+          "transport stop ends the loop", p)
+
+    sim.cmd(cmd="seq", action="play")
+    time.sleep(0.2)
+    after_bar_line()
+    launched = sim.cmd(cmd="smpl_loops")["launched"]
+    tap()
+    waiting = state()
+    tap()
+    time.sleep(1.4)
+    l = sim.cmd(cmd="smpl_loops")
+    check(waiting == "q" and l["pads"][0] == "." and l["launched"] == launched,
+          "a hit on a waiting launch cancels it", l)
+    sim.cmd(cmd="seq", action="stop")
+
+    tap(1, hold=0.03)
+    time.sleep(0.02)
+    check(peak(0.1)["peak"] > 0.1, "one-shot: a tap sounds")
+    time.sleep(0.5)
+    check(peak(0.1)["active_voices"] == 0, "one-shot: ends by itself")
+    sim.hit(2)
+    time.sleep(0.5)
+    check(peak(0.1)["peak"] > 0.1, "hold: sounds while held")
+    sim.rel(2)
+    time.sleep(0.15)
+    p = peak(0.1)
+    check(p["active_voices"] == 0 and p["peak"] < 0.01, "hold: stops on release", p)
+    p = sim.cmd(cmd="smpl_peak")
+    check(p["underrun"] == 0 and p["dropped_notes"] == 0, "no underruns, no dropped notes", p)
+
+
 if __name__ == "__main__":
     which = sys.argv[1] if len(sys.argv) > 1 else "all"
     sim = Sim()
@@ -628,6 +768,8 @@ if __name__ == "__main__":
         sc_storm(sim)
     if which in ("all", "churn"):
         sc_kit_churn(sim)
+    if which in ("all", "loop"):
+        sc_loop(sim)
     if which in ("all", "audio"):
         sc_audio_devices(sim)
     if which in ("all", "mixer"):

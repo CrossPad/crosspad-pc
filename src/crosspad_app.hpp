@@ -6,21 +6,23 @@
  *
  * Initializes platform stubs, STM32 emulator window, MIDI, audio,
  * styles, app registry, and loads the launcher screen.
- * Call after lv_init() + sdl_hal_init().
  */
 
 #include "lvgl/lvgl.h"
 
-/* UX 2000 (a board firmware whose crosspad-gui has the MODE map): no launcher,
- * the transport bar over every app and the MODE map as home, as the board's
- * gui.cpp builds it. The desktop simulator keeps its launcher. */
-#if defined(CROSSPAD_BOARD_FIRMWARE) && __has_include("crosspad-gui/components/mode_overlay.h")
-#define CP_UX2000 1
-#endif
-
 class PcUart;
 
+/// Start the boot on the LVGL task, after lv_init() + sdl_hal_init(): the
+/// device body and the boot splash at once, the devices on a worker task
+/// behind it. Returns without waiting for them; crosspad_app_tick() does
+/// the rest.
 void crosspad_app_init();
+
+/// One pass of the LVGL task's loop: lv_timer_handler(), and the boot's
+/// remaining steps as they come due (the launcher once the devices are up,
+/// the splash's exit once it has played). True on the one pass that built
+/// the launcher -- from then on the simulator is up.
+bool crosspad_app_tick();
 
 /**
  * @brief The display is the board's LCD alone (320x240, the GUI on the active
@@ -37,18 +39,17 @@ bool crosspad_app_lcd_only();
 lv_obj_t* crosspad_app_container();
 
 /// Release platform resources that must be cleaned up before exit
-/// (virtual audio sinks, RtAudio streams, etc.). Safe to call from
-/// signal handlers and atexit; idempotent.
+/// (virtual audio sinks, RtAudio streams, etc.). From any thread and from
+/// atexit, never from a signal handler (it locks, allocates and talks to
+/// PipeWire); idempotent.
 void crosspad_app_shutdown();
 
-/// Return to the launcher main screen (destroys running app, reloads launcher).
-/// UX 2000: the screen is rebuilt now and the MODE map comes up as home on the
-/// next LVGL pass, as on the board.
+/// Return to the launcher main screen (destroys running app, reloads launcher)
 void crosspad_app_go_home();
 
-/// UX 2000: put up now the home the last go-home left for the next LVGL pass
-/// (before opening an app, which that pass would otherwise close). No-op else.
-void crosspad_app_settle_home();
+/// Open the app with this launcher name (case-insensitive) as a tap on its
+/// tile does. False when no app has that name. LVGL thread.
+bool crosspad_app_start(const char* name);
 
 /// Update the status bar icon showing which pad logic is currently active
 void crosspad_app_update_pad_icon();

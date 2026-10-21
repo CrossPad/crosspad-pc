@@ -1,0 +1,11 @@
+{
+  "kit": "pong",
+  "display_name": "Pong",
+  "version": "0.1.0",
+  "apps": [
+    "crosspad-pong"
+  ],
+  "standalone": "Pong",
+  "top_bar": false,
+  "description": "Pong: beat the CPU over nine levels or play a friend. Encoder and pads move the paddles, the pads light the court. Quit in the pause menu goes back."
+}

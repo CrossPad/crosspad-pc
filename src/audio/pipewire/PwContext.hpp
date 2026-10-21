@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: MIT
+// SPDX-License-Identifier: GPL-3.0-or-later
 // Singleton owning the one pw_thread_loop + pw_core connection used by the
 // native PipeWire virtual-audio backend. Do NOT include pipewire headers
 // here — this header must stay includable from non-PipeWire TUs.
