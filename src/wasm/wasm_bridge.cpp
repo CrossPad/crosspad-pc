@@ -72,7 +72,7 @@ extern crosspad::CrosspadStatus status;
 #include "sequencer/PcSequencer.hpp"
 #include "crosspad/sequencer/PatternSequencer.hpp"
 #endif
-#if __has_include("crosspad-gui/components/ui_probe.h")   // crosspad-gui 2.3: the GUI map's probe
+#if __has_include("crosspad-gui/components/ui_probe.h")   // the GUI map's probe, in crosspad-gui 2.5.0 and later
 #include "crosspad-gui/components/ui_probe.h"
 #define TWIN_UI_TREE 1
 #endif
