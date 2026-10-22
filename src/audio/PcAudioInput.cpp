@@ -4,7 +4,6 @@
  */
 
 #include "PcAudioInput.hpp"
-#include "sampletools/SampleToolsPort.hpp"
 #include <cstdio>
 #include <cstring>
 #include <vector>
@@ -100,7 +99,7 @@ bool PcAudioInput::begin(unsigned int inputDevice, uint32_t sampleRate,
         &PcAudioInput::rtAudioCallback, this, &options);
 
     if (err != RTAUDIO_NO_ERROR) {
-        printf("[AudioIn] Failed to open stream: %s\n", rtAudio_->getErrorText());
+        printf("[AudioIn] Failed to open stream: %s\n", rtAudio_->getErrorText().c_str());
         rtAudio_.reset();
         return false;
     }
@@ -112,7 +111,7 @@ bool PcAudioInput::begin(unsigned int inputDevice, uint32_t sampleRate,
 
     err = rtAudio_->startStream();
     if (err != RTAUDIO_NO_ERROR) {
-        printf("[AudioIn] Failed to start stream: %s\n", rtAudio_->getErrorText());
+        printf("[AudioIn] Failed to start stream: %s\n", rtAudio_->getErrorText().c_str());
         rtAudio_->closeStream();
         streamOpen_ = false;
         currentDeviceName_.clear();
@@ -272,8 +271,6 @@ int PcAudioInput::handleCallback(const int16_t* inputBuffer, unsigned int nFrame
     // Write captured samples into ring buffer
     size_t sampleCount = static_cast<size_t>(nFrames) * 2;
     inputRing_.write(inputBuffer, sampleCount);
-    const int tc = toolsCodec_.load(std::memory_order_relaxed);
-    if (tc >= 0 && crosspad::sample_tools_wants_codec(tc)) crosspad::sample_tools_rt_input(tc, inputBuffer, nFrames);
 
     // Compute peak levels
     int16_t maxL = 0, maxR = 0;

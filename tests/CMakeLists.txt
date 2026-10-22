@@ -16,9 +16,11 @@ set(CORE_TEST_SOURCES
     ${PROJECT_SOURCE_DIR}/lib/crosspad-core/src/platform/CrosspadPlatformInit.cpp
     ${PROJECT_SOURCE_DIR}/lib/crosspad-core/src/platform/PlatformCapabilities.cpp
     ${PROJECT_SOURCE_DIR}/lib/crosspad-core/src/platform/PlatformServices.cpp
+    # The default PlatformServices::fileSystem.
+    ${PROJECT_SOURCE_DIR}/lib/crosspad-core/src/platform/PosixFileSystem.cpp
 
     # Event bus (FreeRTOS — same as main target)
-    ${PROJECT_SOURCE_DIR}/lib/crosspad-core/src/event/FreeRtosEventBus.cpp
+    ${PROJECT_SOURCE_DIR}/src/pc_stubs/FreeRtosEventBus.cpp
 
     # Pad system
     ${PROJECT_SOURCE_DIR}/lib/crosspad-core/src/pad/PadManager.cpp
@@ -42,17 +44,38 @@ set(CORE_TEST_SOURCES
     ${PROJECT_SOURCE_DIR}/lib/crosspad-core/src/dsp/PitchDetector.cpp
     ${PROJECT_SOURCE_DIR}/lib/crosspad-core/src/dsp/FftResampler.cpp
     ${PROJECT_SOURCE_DIR}/lib/crosspad-core/src/instrument/WavPcm.cpp
+    ${PROJECT_SOURCE_DIR}/lib/crosspad-core/src/audio/WavLayout.cpp
     ${PROJECT_SOURCE_DIR}/lib/crosspad-core/src/instrument/SampleBank.cpp
     ${PROJECT_SOURCE_DIR}/lib/crosspad-core/src/instrument/PitchedInstrument.cpp
     ${PROJECT_SOURCE_DIR}/lib/crosspad-core/src/instrument/PitchedKitLoader.cpp
     # PitchedKitLoader falls back to resolveKitSamplePath() when the env
     # supplies no resolver.
     ${PROJECT_SOURCE_DIR}/lib/crosspad-core/src/kit/KitPathUtils.cpp
+
+    # Device-control verbs: core's readers, the control port's JSON of them
+    ${PROJECT_SOURCE_DIR}/lib/crosspad-core/src/control/AppName.cpp
+    ${PROJECT_SOURCE_DIR}/lib/crosspad-core/src/control/AudioLevel.cpp
+    ${PROJECT_SOURCE_DIR}/lib/crosspad-core/src/control/KitList.cpp
+    ${PROJECT_SOURCE_DIR}/lib/crosspad-core/src/control/KitStatus.cpp
+    ${PROJECT_SOURCE_DIR}/lib/crosspad-core/src/control/LedState.cpp
+    ${PROJECT_SOURCE_DIR}/lib/crosspad-core/src/control/PadInput.cpp
+    ${PROJECT_SOURCE_DIR}/lib/crosspad-core/src/control/PitchedStatus.cpp
+    ${PROJECT_SOURCE_DIR}/lib/crosspad-core/src/control/WaveStatus.cpp
+    ${PROJECT_SOURCE_DIR}/src/remote/ControlJson.cpp
+
+    # The sampler's waveform cache and loader (test_waveform_loader)
+    ${PROJECT_SOURCE_DIR}/src/apps/crosspad-sampler/src/SamplerPlatformCallbacks.cpp
+    ${PROJECT_SOURCE_DIR}/src/apps/crosspad-sampler/src/port/SamplerRtos.cpp
+    ${PROJECT_SOURCE_DIR}/src/apps/crosspad-sampler/src/waveform/waveform_cache.cpp
+    ${PROJECT_SOURCE_DIR}/src/apps/crosspad-sampler/src/waveform/waveform_loader.cpp
 )
 
 # ── Audio pipeline sources (Tier 2 & 3 tests) ──
 set(AUDIO_TEST_SOURCES
     ${PROJECT_SOURCE_DIR}/src/apps/crosspad-mixer/src/AudioMixerEngine.cpp
+    # The mixer's output EQ and its DSP kernels live in core.
+    ${PROJECT_SOURCE_DIR}/lib/crosspad-core/src/audio/OutputEq.cpp
+    ${PROJECT_SOURCE_DIR}/lib/crosspad-core/src/dsp/AudioKernels.cpp
     ${PROJECT_SOURCE_DIR}/src/audio/PcAudio.cpp
     ${PROJECT_SOURCE_DIR}/src/audio/PcAudioModule.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/audio/audio_test_stubs.cpp
@@ -67,7 +90,15 @@ set(TEST_SOURCES
     test_pad_manager.cpp
     test_settings.cpp
     test_e2e_scenarios.cpp
+    test_control_json.cpp
+    test_waveform_loader.cpp
 )
+
+# Child processes (POSIX): the helper and its test
+if(NOT WIN32)
+    list(APPEND TEST_SOURCES test_subprocess.cpp)
+    list(APPEND CORE_TEST_SOURCES ${PROJECT_SOURCE_DIR}/src/pc_stubs/PcSubprocess.cpp)
+endif()
 
 # ── Audio pipeline test sources (Tier 2 + Tier 3) ──
 set(AUDIO_TEST_FILES
@@ -111,6 +142,7 @@ target_include_directories(crosspad_tests PRIVATE
     ${PROJECT_SOURCE_DIR}/lib/crosspad-gui/include
     ${PROJECT_SOURCE_DIR}/src/apps/crosspad-mixer/include
     ${PROJECT_SOURCE_DIR}/src/apps/crosspad-mixer/include/crosspad-mixer
+    ${PROJECT_SOURCE_DIR}/src/apps/crosspad-sampler/include
     ${CMAKE_CURRENT_SOURCE_DIR}
     ${CMAKE_CURRENT_SOURCE_DIR}/audio
 )
@@ -149,7 +181,7 @@ if(MSVC OR MINGW)
     )
 else()
     target_sources(crosspad_tests PRIVATE
-        ${PROJECT_SOURCE_DIR}/src/freertos/freertos_posix_port.c
+        ${PROJECT_SOURCE_DIR}/FreeRTOS/portable/ThirdParty/GCC/Posix/utils/wait_for_event.c
     )
     target_include_directories(crosspad_tests PRIVATE
         ${PROJECT_SOURCE_DIR}/FreeRTOS/portable/ThirdParty/GCC/Posix
@@ -162,7 +194,7 @@ catch_discover_tests(crosspad_tests)
 
 # ── GUI integration tests (launches full simulator, talks via TCP) ──
 # Separate executable — no crosspad-core linkage, just TCP client + Catch2.
-# Requires bin/main.exe to be built first.
+# Requires bin/CrossPad.exe to be built first.
 
 add_executable(gui_tests test_gui_harness.cpp)
 # Hand the harness the simulator's absolute path. CTest runs gui_tests with a

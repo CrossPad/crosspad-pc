@@ -1,5 +1,6 @@
 # Ignore build folder
 build/
+build-*/
 bin/
 
 # Ignore all dot folders, with below exceptions
@@ -40,3 +41,5 @@ scripts/.cache/
 
 # Browser build (preset web-twin)
 /build-web/
+# Python byte code (scripts/ import each other)
+__pycache__/

@@ -7,6 +7,8 @@
  */
 
 #include "PcMidi.hpp"
+
+#include <cstdlib>
 #include <cstdio>
 #include <algorithm>
 #include <cctype>
@@ -24,9 +26,21 @@ PcMidi::~PcMidi()
 
 bool PcMidi::begin(unsigned int outPort, unsigned int inPort)
 {
+    /* A scripted run (Mucha, a HIL workflow) must not open any MIDI port:
+     * the keyword finds a real CrossPad on USB, whose pads then play every
+     * note the script sends, mid-test on a bench; and an empty keyword (the
+     * port watcher's reconnect) takes Midi Through, which feeds every note
+     * straight back in. */
+    if (std::getenv("CROSSPAD_NO_MIDI")) {
+        static bool said = false;
+        if (!said) { said = true; printf("[MIDI] off (CROSSPAD_NO_MIDI)\n"); }
+        return false;
+    }
+    std::lock_guard<std::recursive_mutex> life(lifeMutex_);
     bool anyOpen = false;
 
     // --- Output ---
+    std::unique_lock<std::mutex> out(outMutex_);
     try {
         midiOut_ = std::make_unique<RtMidiOut>();
     } catch (RtMidiError& e) {
@@ -60,6 +74,7 @@ bool PcMidi::begin(unsigned int outPort, unsigned int inPort)
             printf("[MIDI] No output ports available.\n");
         }
     }
+    out.unlock();
 
     // --- Input ---
     try {
@@ -113,6 +128,17 @@ bool PcMidi::begin(unsigned int outPort, unsigned int inPort)
 
 bool PcMidi::beginAutoConnect(const std::string& keyword)
 {
+    /* A scripted run (Mucha, a HIL workflow) must not open any MIDI port:
+     * the keyword finds a real CrossPad on USB, whose pads then play every
+     * note the script sends, mid-test on a bench; and an empty keyword (the
+     * port watcher's reconnect) takes Midi Through, which feeds every note
+     * straight back in. */
+    if (std::getenv("CROSSPAD_NO_MIDI")) {
+        static bool said = false;
+        if (!said) { said = true; printf("[MIDI] off (CROSSPAD_NO_MIDI)\n"); }
+        return false;
+    }
+    std::lock_guard<std::recursive_mutex> life(lifeMutex_);
     autoConnectKeyword_ = keyword;
     autoConnectFound_   = false;
 
@@ -170,6 +196,11 @@ bool PcMidi::beginAutoConnect(const std::string& keyword)
 
 bool PcMidi::reconnect()
 {
+    // begin() never opens a port under CROSSPAD_NO_MIDI, so the port lists it
+    // would compare against are never recorded: every poll saw "changed" and
+    // tore down nothing, once a second, forever.
+    if (std::getenv("CROSSPAD_NO_MIDI")) return false;
+
     // Check if port list changed since last connect — if not, skip the
     // expensive teardown/reopen cycle to avoid spamming logs.
     auto probeOutputs = [&]() {
@@ -194,6 +225,7 @@ bool PcMidi::reconnect()
     auto currentOut = probeOutputs();
     auto currentIn  = probeInputs();
 
+    std::lock_guard<std::recursive_mutex> life(lifeMutex_);
     bool portsChanged = (currentOut != lastOutputPorts_) || (currentIn != lastInputPorts_);
     bool outputLost   = !outputOpen_;
 
@@ -212,6 +244,7 @@ bool PcMidi::reconnect()
 
 void PcMidi::end()
 {
+    std::lock_guard<std::recursive_mutex> life(lifeMutex_);
     if (midiIn_) {
         if (inputOpen_) {
             midiIn_->cancelCallback();
@@ -221,6 +254,7 @@ void PcMidi::end()
         inputOpen_ = false;
     }
 
+    std::lock_guard<std::mutex> out(outMutex_);
     if (midiOut_) {
         if (outputOpen_) {
             midiOut_->closePort();
@@ -231,72 +265,41 @@ void PcMidi::end()
 
 }
 
-// ── Output (Arduino MIDI Library signature) ──────────────────────────────
+// ── Output (crosspad::IMidiOutput) ────────────────────────────────────────
 
-void PcMidi::sendNoteOn(uint8_t note, uint8_t velocity, uint8_t channel)
+bool PcMidi::sendMessage(const std::vector<unsigned char>& msg)
 {
-    if (!outputOpen_ || !midiOut_) return;
-
-    std::vector<unsigned char> msg = {
-        static_cast<unsigned char>(0x90 | (channel & 0x0F)),
-        static_cast<unsigned char>(note & 0x7F),
-        static_cast<unsigned char>(velocity & 0x7F)
-    };
-
     std::lock_guard<std::mutex> lock(outMutex_);
+    if (!outputOpen_ || !midiOut_) return false;
     try {
         midiOut_->sendMessage(&msg);
-        printf("[MIDI OUT] NoteOn  ch=%u note=%u vel=%u\n",
-               (channel & 0x0F) + 1, note, velocity);
+        return true;
     } catch (RtMidiError& e) {
         printf("[MIDI OUT] Send error: %s\n", e.what());
         outputOpen_ = false;  // trigger reconnect timer
+        return false;
+    }
+}
+
+void PcMidi::sendNoteOn(uint8_t note, uint8_t velocity, uint8_t channel)
+{
+    if (sendMessage({static_cast<unsigned char>(0x90 | (channel & 0x0F)),
+                     static_cast<unsigned char>(note & 0x7F),
+                     static_cast<unsigned char>(velocity & 0x7F)})) {
+        printf("[MIDI OUT] NoteOn  ch=%u note=%u vel=%u\n",
+               (channel & 0x0F) + 1, note, velocity);
     }
 }
 
 void PcMidi::sendNoteOff(uint8_t note, uint8_t velocity, uint8_t channel)
 {
-    if (!outputOpen_ || !midiOut_) return;
-
-    std::vector<unsigned char> msg = {
-        static_cast<unsigned char>(0x80 | (channel & 0x0F)),
-        static_cast<unsigned char>(note & 0x7F),
-        static_cast<unsigned char>(velocity & 0x7F)
-    };
-
-    std::lock_guard<std::mutex> lock(outMutex_);
-    try {
-        midiOut_->sendMessage(&msg);
+    if (sendMessage({static_cast<unsigned char>(0x80 | (channel & 0x0F)),
+                     static_cast<unsigned char>(note & 0x7F),
+                     static_cast<unsigned char>(velocity & 0x7F)})) {
         printf("[MIDI OUT] NoteOff ch=%u note=%u vel=%u\n",
                (channel & 0x0F) + 1, note, velocity);
-    } catch (RtMidiError& e) {
-        printf("[MIDI OUT] Send error: %s\n", e.what());
-        outputOpen_ = false;  // trigger reconnect timer
     }
 }
-
-void PcMidi::sendControlChange(uint8_t cc, uint8_t value, uint8_t channel)
-{
-    if (!outputOpen_ || !midiOut_) return;
-
-    std::vector<unsigned char> msg = {
-        static_cast<unsigned char>(0xB0 | (channel & 0x0F)),
-        static_cast<unsigned char>(cc & 0x7F),
-        static_cast<unsigned char>(value & 0x7F)
-    };
-
-    std::lock_guard<std::mutex> lock(outMutex_);
-    try {
-        midiOut_->sendMessage(&msg);
-        printf("[MIDI OUT] CC     ch=%u cc=%u val=%u\n",
-               (channel & 0x0F) + 1, cc, value);
-    } catch (RtMidiError& e) {
-        printf("[MIDI OUT] Send error: %s\n", e.what());
-        outputOpen_ = false;  // trigger reconnect timer
-    }
-}
-
-// ── crosspad::IMidiOutput overrides ──────────────────────────────────────
 
 void PcMidi::sendNoteOn(uint8_t note, uint8_t channel)
 {
@@ -306,6 +309,58 @@ void PcMidi::sendNoteOn(uint8_t note, uint8_t channel)
 void PcMidi::sendNoteOff(uint8_t note, uint8_t channel)
 {
     sendNoteOff(note, 0, channel);
+}
+
+void PcMidi::sendControlChange(uint8_t cc, uint8_t value, uint8_t channel)
+{
+    if (sendMessage({static_cast<unsigned char>(0xB0 | (channel & 0x0F)),
+                     static_cast<unsigned char>(cc & 0x7F),
+                     static_cast<unsigned char>(value & 0x7F)})) {
+        printf("[MIDI OUT] CC     ch=%u cc=%u val=%u\n",
+               (channel & 0x0F) + 1, cc, value);
+    }
+}
+
+void PcMidi::sendAftertouch(uint8_t note, uint8_t pressure, uint8_t channel)
+{
+    if (sendMessage({static_cast<unsigned char>(0xA0 | (channel & 0x0F)),
+                     static_cast<unsigned char>(note & 0x7F),
+                     static_cast<unsigned char>(pressure & 0x7F)})) {
+        printf("[MIDI OUT] PolyAT ch=%u note=%u val=%u\n",
+               (channel & 0x0F) + 1, note, pressure);
+    }
+}
+
+void PcMidi::sendProgramChange(uint8_t program, uint8_t channel)
+{
+    if (sendMessage({static_cast<unsigned char>(0xC0 | (channel & 0x0F)),
+                     static_cast<unsigned char>(program & 0x7F)})) {
+        printf("[MIDI OUT] PC     ch=%u prog=%u\n", (channel & 0x0F) + 1, program);
+    }
+}
+
+void PcMidi::sendPitchBend(int16_t value, uint8_t channel)
+{
+    // 14 bits on the wire, 0x2000 = centred: the Arduino MIDI library's
+    // sendPitchBend(int), which the board's outputs use.
+    constexpr int kBendCentre = 0x2000;
+    constexpr int kBendMax = 0x3FFF;
+    int wire = value + kBendCentre;
+    if (wire < 0) wire = 0;
+    if (wire > kBendMax) wire = kBendMax;
+    if (sendMessage({static_cast<unsigned char>(0xE0 | (channel & 0x0F)),
+                     static_cast<unsigned char>(wire & 0x7F),
+                     static_cast<unsigned char>((wire >> 7) & 0x7F)})) {
+        printf("[MIDI OUT] Bend   ch=%u val=%d\n", (channel & 0x0F) + 1, value);
+    }
+}
+
+void PcMidi::sendSysEx(const uint8_t* frame, size_t len)
+{
+    if (!frame || len < 2 || frame[0] != 0xF0 || frame[len - 1] != 0xF7) return;
+    if (sendMessage(std::vector<unsigned char>(frame, frame + len))) {
+        printf("[MIDI OUT] SysEx  %zu bytes\n", len);
+    }
 }
 
 // ── Input callbacks ──────────────────────────────────────────────────────
@@ -329,6 +384,7 @@ void PcMidi::setHandleSystemExclusive(SysExCallback cb)
 {
     sysExCb_ = std::move(cb);
     // Enable SysEx reception when a handler is set
+    std::lock_guard<std::recursive_mutex> life(lifeMutex_);
     if (midiIn_ && inputOpen_) {
         midiIn_->ignoreTypes(false, true, true);
     }
@@ -338,21 +394,25 @@ void PcMidi::setHandleSystemExclusive(SysExCallback cb)
 
 unsigned int PcMidi::getOutputPortCount() const
 {
+    std::lock_guard<std::recursive_mutex> life(lifeMutex_);
     return midiOut_ ? midiOut_->getPortCount() : 0;
 }
 
 unsigned int PcMidi::getInputPortCount() const
 {
+    std::lock_guard<std::recursive_mutex> life(lifeMutex_);
     return midiIn_ ? midiIn_->getPortCount() : 0;
 }
 
 std::string PcMidi::getOutputPortName(unsigned int index) const
 {
+    std::lock_guard<std::recursive_mutex> life(lifeMutex_);
     return midiOut_ ? midiOut_->getPortName(index) : "";
 }
 
 std::string PcMidi::getInputPortName(unsigned int index) const
 {
+    std::lock_guard<std::recursive_mutex> life(lifeMutex_);
     return midiIn_ ? midiIn_->getPortName(index) : "";
 }
 
@@ -368,6 +428,7 @@ bool PcMidi::isInputOpen() const
 
 void PcMidi::setAutoConnectKeyword(const std::string& keyword)
 {
+    std::lock_guard<std::recursive_mutex> life(lifeMutex_);
     autoConnectKeyword_ = keyword;
     // Mark as found if already connected (e.g. connected via saved prefs)
     autoConnectFound_ = (outputOpen_ || inputOpen_);

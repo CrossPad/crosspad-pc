@@ -204,17 +204,37 @@ void pc_http_client_init() {
 
 #else // Linux/Mac — use curl command-line
 
+#include "pc_stubs/PcSubprocess.hpp"
+
+#include <algorithm>
 #include <cstdlib>
 #include <fstream>
 #include <sstream>
+#include <string>
+#include <vector>
 #include <unistd.h>
 
 namespace {
 
+/* curl's own --max-time plus this before the child is killed: a curl stuck
+ * in a DNS lookup does not always honour its own limit. */
+constexpr unsigned kCurlGraceMs = 5000;
+
 class PcHttpClient : public crosspad::IHttpClient {
 public:
+    /* Looked up in PATH once, not a shell started per call: the updater asks
+     * before every request. */
     bool isAvailable() const override {
-        return system("command -v curl > /dev/null 2>&1") == 0;
+        static const bool available = [] {
+            const char* path = std::getenv("PATH");
+            std::istringstream dirs(path ? path : "");
+            std::string dir;
+            while (std::getline(dirs, dir, ':')) {
+                if (!dir.empty() && access((dir + "/curl").c_str(), X_OK) == 0) return true;
+            }
+            return false;
+        }();
+        return available;
     }
 
     crosspad::HttpResponse get(const crosspad::HttpRequest& request) override {
@@ -226,17 +246,8 @@ public:
     }
 
 private:
-    /// Shell-escape for single-quoted strings (replace ' with '\'')
-    static std::string shellEscape(const std::string& s) {
-        std::string out;
-        out.reserve(s.size() + 8);
-        for (char c : s) {
-            if (c == '\'') out += "'\\''";
-            else out += c;
-        }
-        return out;
-    }
-
+    /* curl with an argv, not a shell command line: nothing to quote, and
+     * the child is spawned the way pc_proc spawns every one. */
     crosspad::HttpResponse perform(const crosspad::HttpRequest& request,
                                     const char* method)
     {
@@ -251,53 +262,35 @@ private:
         }
         close(fd);
 
-        // Build curl command: body → temp file, status code → stdout
-        std::string cmd = "curl -s -L";
-        cmd += " -X ";
-        cmd += method;
-        cmd += " -o '";
-        cmd += tmpPath;
-        cmd += "' -w '%{http_code}'";
-        cmd += " --max-time ";
-        cmd += std::to_string(std::max(1u, request.timeoutMs / 1000));
-
+        // body → temp file, status code → stdout
+        const unsigned maxTimeS = std::max(1u, request.timeoutMs / 1000);
+        std::vector<std::string> argv = {
+            "curl", "-s", "-L", "-X", method, "-o", tmpPath,
+            "-w", "%{http_code}", "--max-time", std::to_string(maxTimeS),
+        };
         for (const auto& h : request.headers) {
-            cmd += " -H '";
-            cmd += shellEscape(h.first);
-            cmd += ": ";
-            cmd += shellEscape(h.second);
-            cmd += "'";
+            argv.push_back("-H");
+            argv.push_back(h.first + ": " + h.second);
         }
-
         if (!request.contentType.empty()) {
-            cmd += " -H 'Content-Type: ";
-            cmd += shellEscape(request.contentType);
-            cmd += "'";
+            argv.push_back("-H");
+            argv.push_back("Content-Type: " + request.contentType);
         }
-
         if (!request.body.empty()) {
-            cmd += " --data-raw '";
-            cmd += shellEscape(request.body);
-            cmd += "'";
+            argv.push_back("--data-raw");
+            argv.push_back(request.body);
         }
+        argv.push_back(request.url);
 
-        cmd += " '";
-        cmd += shellEscape(request.url);
-        cmd += "' 2>/dev/null";
-
-        FILE* pipe = popen(cmd.c_str(), "r");
-        if (!pipe) {
+        pc_proc::Options opt;
+        opt.timeoutMs = static_cast<int>(maxTimeS * 1000 + kCurlGraceMs);
+        const pc_proc::Result r = pc_proc::run(argv, opt);
+        if (!r.started) {
             unlink(tmpPath);
             resp.errorMessage = "Failed to execute curl";
             return resp;
         }
-
-        // curl -w '%{http_code}' prints the status code to stdout
-        char statusBuf[16] = {};
-        if (fgets(statusBuf, sizeof(statusBuf), pipe)) {
-            resp.statusCode = atoi(statusBuf);
-        }
-        pclose(pipe);
+        resp.statusCode = r.timedOut ? 0 : atoi(r.out.c_str());
 
         // Read body from temp file
         {
@@ -311,7 +304,7 @@ private:
         unlink(tmpPath);
 
         if (resp.statusCode == 0) {
-            resp.errorMessage = "curl request failed";
+            resp.errorMessage = r.timedOut ? "curl request timed out" : "curl request failed";
         }
 
         return resp;

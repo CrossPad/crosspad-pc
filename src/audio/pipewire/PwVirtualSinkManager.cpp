@@ -1,7 +1,9 @@
-// SPDX-License-Identifier: MIT
+// SPDX-License-Identifier: GPL-3.0-or-later
 #ifdef __linux__
 #include "PwVirtualSinkManager.hpp"
 #include "PwContext.hpp"
+
+#include "../../InstanceEnv.hpp"
 
 #include <cstdio>
 
@@ -22,8 +24,8 @@ bool PwVirtualSinkManager::setup(uint32_t sinkCount)
 
     uint32_t started = 0;
     for (uint32_t i = 0; i < sinkCount; ++i) {
-        std::string nodeName = "crosspad_vin" + std::to_string(i + 1);
-        if (caps_[i].start(nodeName.c_str(), kDescriptions[i], 48000))
+        std::string nodeName = instance::nodeName("crosspad_vin" + std::to_string(i + 1));
+        if (caps_[i].start(nodeName.c_str(), instance::description(kDescriptions[i]).c_str(), 48000))
             ++started;
         else
             printf("[PwVirtualSinkManager] failed to start '%s'\n", nodeName.c_str());
@@ -43,8 +45,8 @@ std::vector<IVirtualSinkManager::VirtualSink> PwVirtualSinkManager::list() const
     for (uint32_t i = 0; i < activeCount_ && i < kMaxSinks; ++i) {
         if (!caps_[i].isOpen()) continue;
         VirtualSink sink;
-        sink.displayName       = kDescriptions[i];
-        sink.captureDeviceName = "crosspad_vin" + std::to_string(i + 1) + ".monitor";
+        sink.displayName       = instance::description(kDescriptions[i]);
+        sink.captureDeviceName = instance::nodeName("crosspad_vin" + std::to_string(i + 1)) + ".monitor";
         sink.channelCount      = 2;
         out.push_back(std::move(sink));
     }

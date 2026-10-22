@@ -14,6 +14,7 @@
 #include <crosspad/midi/IMidiOutput.hpp>
 #include <RtMidi.h>
 
+#include <atomic>
 #include <functional>
 #include <memory>
 #include <mutex>
@@ -63,16 +64,17 @@ public:
     /// Close all ports and release resources
     void end();
 
-    // ── Output (Arduino MIDI Library signature) ──────────────────────────
+    // ── crosspad::IMidiOutput overrides (channel 0-based) ────────────────
 
-    void sendNoteOn(uint8_t note, uint8_t velocity, uint8_t channel);
-    void sendNoteOff(uint8_t note, uint8_t velocity, uint8_t channel);
-    void sendControlChange(uint8_t cc, uint8_t value, uint8_t channel);
-
-    // ── crosspad::IMidiOutput overrides ──────────────────────────────────
-
+    void sendNoteOn(uint8_t note, uint8_t velocity, uint8_t channel) override;
+    void sendNoteOff(uint8_t note, uint8_t velocity, uint8_t channel) override;
     void sendNoteOn(uint8_t note, uint8_t channel) override;   // velocity = 127
     void sendNoteOff(uint8_t note, uint8_t channel) override;  // velocity = 0
+    void sendControlChange(uint8_t cc, uint8_t value, uint8_t channel) override;
+    void sendAftertouch(uint8_t note, uint8_t pressure, uint8_t channel) override;   // polyphonic
+    void sendProgramChange(uint8_t program, uint8_t channel) override;
+    void sendPitchBend(int16_t value, uint8_t channel) override;   // -8192..8191, 0 centred
+    void sendSysEx(const uint8_t* frame, size_t len) override;     // whole frame, F0..F7
 
     // ── Input callbacks (Arduino-style setHandle*) ───────────────────────
 
@@ -101,11 +103,13 @@ private:
     std::unique_ptr<RtMidiOut> midiOut_;
     std::unique_ptr<RtMidiIn>  midiIn_;
 
-    bool outputOpen_ = false;
-    bool inputOpen_  = false;
+    /* Read on the LVGL thread (the reconnect timer, the jack panel) while the
+     * reconnect thread opens and closes the ports. */
+    std::atomic<bool> outputOpen_{false};
+    std::atomic<bool> inputOpen_{false};
 
     std::string autoConnectKeyword_;
-    bool autoConnectFound_ = false;   // true when keyword match was found
+    std::atomic<bool> autoConnectFound_{false};   // true when keyword match was found
 
     // Cached port lists — only log when devices change
     std::vector<std::string> lastOutputPorts_;
@@ -117,8 +121,19 @@ private:
     ControlChangeCallback ccCb_;
     SysExCallback         sysExCb_;
 
-    // Thread safety for output
+    /* begin/end/reconnect and everything that reads the RtMidi objects: the
+     * reconnect timer runs reconnect() on a thread of its own, the jack panel
+     * begin() and end() and the port lists on the LVGL thread. The RtMidiOut
+     * one of them was using was the one the other had just freed. */
+    mutable std::recursive_mutex lifeMutex_;
+
+    // midiOut_ and outputOpen_ between a send and the port being replaced;
+    // taken after lifeMutex_, never before it
     std::mutex outMutex_;
+
+    // One message to the output port, under outMutex_; false (and the port
+    // marked closed for the reconnect timer) when RtMidi refuses it.
+    bool sendMessage(const std::vector<unsigned char>& msg);
 
     // RtMidi static callback (dispatches to instance)
     static void rtMidiCallback(double timestamp, std::vector<unsigned char>* message, void* userData);

@@ -3,6 +3,7 @@
 #include <cstdint>
 
 class AudioMixerEngine;
+namespace crosspad { class AudioSong; }
 
 namespace crosspad_pc {
 
@@ -14,5 +15,8 @@ void song_engine_init(AudioMixerEngine& mixer, uint8_t audibleOutputs, uint8_t c
 
 /// The audio thread's capture-bus tap (PcAudioModule::setCaptureTap).
 void song_engine_rt_capture(const float* bus, uint32_t frames);
+
+/// @p fn runs on the engine's worker each time a song opens.
+void song_engine_set_open_handler(void (*fn)(const crosspad::AudioSong& song));
 
 } // namespace crosspad_pc

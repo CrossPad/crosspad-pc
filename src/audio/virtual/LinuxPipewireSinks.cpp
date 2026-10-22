@@ -7,7 +7,7 @@
  * PipeWire through pipewire-pulse. The sinks' auto-generated .monitor
  * sources are then captured by CrossPad as IN1/IN2.
  *
- * We shell out to `pactl` (via fork+execvp) instead of linking libpulse —
+ * We shell out to `pactl` (via pc_proc, posix_spawnp) instead of linking libpulse —
  * zero extra build deps and pactl ships on every distro with PA/PW.
  */
 
@@ -17,20 +17,21 @@
 #include <thread>
 
 #include "IVirtualSinkManager.hpp"
+#include "../../InstanceEnv.hpp"
 
-#include <cerrno>
 #include <cstdio>
 #include <cstdlib>
-#include <cstring>
 #include <array>
 #include <map>
 #include <mutex>
+#include <set>
 #include <sstream>
+#include <string>
+#include <vector>
 
-#include <fcntl.h>
-#include <unistd.h>
-#include <sys/wait.h>
-#include <sys/types.h>
+#include "pc_stubs/PcSubprocess.hpp"
+
+#include <unistd.h>   // getpid: whose sink-inputs are ours
 
 namespace crosspad_pc {
 
@@ -41,63 +42,41 @@ struct PactlResult {
     std::string stdoutText;
 };
 
+/// A pactl that has not answered by then never will: the sound server is
+/// wedged, and a start or a shutdown waiting on it hung with it.
+constexpr int kPactlTimeoutMs = 5000;
+
 /**
  * Run pactl with the given argv (argv[0] must be "pactl").
  * argv must end with nullptr. Captures stdout, returns exit code.
  */
 PactlResult runPactl(const char* const argv[]) {
+    /* Everything below parses pactl's human-readable output, which is
+     * translated. In Polish a sink-input block opens with
+     * "4685. odpływ wejścia" — no '#', and the id first — so the header
+     * matcher never fired and CrossPad's own output stream could never be
+     * found, let alone pinned. Ask for the untranslated output instead of
+     * trying to recognise every language. pc_proc builds that environment
+     * in the parent and spawns without running anything of ours in the
+     * child -- never fork(): this runs on a FreeRTOS task, and the POSIX
+     * port switches tasks by parking the pthread inside its SIGALRM tick
+     * handler. fork() holds every malloc arena lock across the clone; a tick
+     * landing there parked the LVGL task with those locks held, and the task
+     * the scheduler woke instead (a fresh one, still allocating in
+     * prvWaitForStart with signals blocked) waited on them forever. The
+     * simulator hung on about every other start that way (47f6c4b). */
+    std::vector<std::string> args;
+    for (const char* const* a = argv; *a; ++a) args.emplace_back(*a);
+    pc_proc::Options opt;
+    opt.unsetEnv  = {"LANGUAGE"};
+    opt.setEnv    = {"LC_ALL=C", "LANG=C"};
+    opt.timeoutMs = kPactlTimeoutMs;
+    const pc_proc::Result pr = pc_proc::run(args, opt);
+    if (pr.timedOut) printf("[VirtSink] pactl %s: no answer in %d ms\n",
+                            args.size() > 1 ? args[1].c_str() : "", kPactlTimeoutMs);
     PactlResult r;
-
-    int pipefd[2];
-    if (pipe(pipefd) != 0) return r;
-
-    pid_t pid = fork();
-    if (pid < 0) {
-        close(pipefd[0]);
-        close(pipefd[1]);
-        return r;
-    }
-
-    if (pid == 0) {
-        // Child — redirect stdout to pipe, discard stderr.
-        dup2(pipefd[1], STDOUT_FILENO);
-        int devnull = open("/dev/null", O_WRONLY);
-        if (devnull >= 0) { dup2(devnull, STDERR_FILENO); close(devnull); }
-        close(pipefd[0]);
-        close(pipefd[1]);
-        // Everything below parses pactl's human-readable output, which is
-        // translated. In Polish a sink-input block opens with
-        // "4685. odpływ wejścia" — no '#', and the id first — so the header
-        // matcher never fired and CrossPad's own output stream could never be
-        // found, let alone pinned. Ask for the untranslated output instead of
-        // trying to recognise every language.
-        setenv("LC_ALL", "C", 1);
-        setenv("LANG", "C", 1);
-        unsetenv("LANGUAGE");
-        execvp("pactl", const_cast<char* const*>(argv));
-        _exit(127);
-    }
-
-    // Parent — read child stdout, then reap. Retry on EINTR: the FreeRTOS
-    // POSIX port delivers SIGALRM/SIGUSR1 for thread scheduling and will
-    // interrupt blocking syscalls, which would otherwise leave stdoutText
-    // empty even when the child wrote a valid module ID.
-    close(pipefd[1]);
-    char buf[256];
-    for (;;) {
-        ssize_t n = read(pipefd[0], buf, sizeof(buf));
-        if (n > 0) { r.stdoutText.append(buf, buf + n); continue; }
-        if (n == 0) break;
-        if (errno == EINTR) continue;
-        break;
-    }
-    close(pipefd[0]);
-
-    int status = 0;
-    while (waitpid(pid, &status, 0) < 0) {
-        if (errno != EINTR) break;
-    }
-    if (WIFEXITED(status)) r.exitCode = WEXITSTATUS(status);
+    r.exitCode   = pr.exitCode;
+    r.stdoutText = pr.out;
     return r;
 }
 
@@ -132,8 +111,8 @@ public:
         previousDefaultSink_ = readDefaultSink();
 
         for (uint32_t i = 0; i < sinkCount; ++i) {
-            const std::string sinkName = "crosspad_vin" + std::to_string(i + 1);
-            const std::string displayName = "CrossPad virtual IN#" + std::to_string(i + 1);
+            const std::string sinkName = instance::nodeName("crosspad_vin" + std::to_string(i + 1));
+            const std::string displayName = instance::description("CrossPad virtual IN#" + std::to_string(i + 1));
 
             // pactl's sink_properties= parser splits the value on the first
             // ASCII space and silently discards the rest — neither double nor
@@ -239,8 +218,23 @@ public:
     }
 
 private:
+    /// True when the module's arguments name one of THIS instance's sinks:
+    /// "sink_name=crosspad_vin<N><suffix>" followed by a space or the end.
+    /// Another instance's sinks (a different suffix, or none) are not ours.
+    static bool ownsModuleLine(const std::string& line) {
+        for (uint32_t n = 1; n <= 2; ++n) {
+            const std::string want =
+                "sink_name=" + instance::nodeName("crosspad_vin" + std::to_string(n));
+            const size_t at = line.find(want);
+            if (at == std::string::npos) continue;
+            const size_t end = at + want.size();
+            if (end == line.size() || line[end] == ' ' || line[end] == '\t') return true;
+        }
+        return false;
+    }
+
     /**
-     * Remove any crosspad_vin* modules left over from a prior crashed run.
+     * Remove this instance's crosspad_vin* modules left over from a prior crashed run.
      * Parses `pactl list modules short` looking for module-null-sink rows
      * whose arguments reference a crosspad_vin sink_name.
      */
@@ -254,7 +248,7 @@ private:
         while (std::getline(ss, line)) {
             // Format: <id>\tmodule-null-sink\t<args>
             if (line.find("module-null-sink") == std::string::npos) continue;
-            if (line.find("crosspad_vin") == std::string::npos) continue;
+            if (!ownsModuleLine(line)) continue;
             size_t tab = line.find('\t');
             if (tab == std::string::npos) continue;
             std::string idStr = line.substr(0, tab);
@@ -407,6 +401,45 @@ std::vector<PulseSinkInfo> enumeratePulseSinks(bool includeUnavailable) {
 
 static bool tryMovePulseOutputToSink(int slot, const std::string& targetSinkName);
 
+/// True when the sound server has a sink named @p name right now.
+static bool sinkExists(const std::string& name) {
+    const char* const argv[] = { "pactl", "list", "sinks", "short", nullptr };
+    PactlResult r = runPactl(argv);
+    if (r.exitCode != 0) return true;   // cannot tell: let the move itself decide
+    std::istringstream ss(r.stdoutText);
+    std::string l;
+    while (std::getline(ss, l)) {
+        // "<index>\t<name>\t<driver>\t..."
+        const size_t a = l.find('\t');
+        if (a == std::string::npos) continue;
+        const size_t b = l.find('\t', a + 1);
+        if (l.compare(a + 1, b == std::string::npos ? std::string::npos : b - a - 1, name) == 0) return true;
+    }
+    return false;
+}
+
+/// Pulse client indexes (as `pactl list clients` numbers them) that belong to
+/// this process: "Client #N" followed by application.process.id = "<our pid>".
+static std::set<std::string> ownPulseClients() {
+    std::set<std::string> out;
+    const char* const argv[] = { "pactl", "list", "clients", nullptr };
+    PactlResult r = runPactl(argv);
+    if (r.exitCode != 0) return out;
+    const std::string ownPidLine =
+        "application.process.id = \"" + std::to_string(getpid()) + "\"";
+    std::istringstream ss(r.stdoutText);
+    std::string l, current;
+    while (std::getline(ss, l)) {
+        if (l.rfind("Client #", 0) == 0) {
+            current = l.substr(8);
+            trim(current);
+        } else if (!current.empty() && l.find(ownPidLine) != std::string::npos) {
+            out.insert(current);
+        }
+    }
+    return out;
+}
+
 bool movePulseOutputToSink(int slot, const std::string& targetSinkName) {
     if (slot < 0 || slot > 1 || targetSinkName.empty()) return false;
     return movePulseOutputToSinkWithin(slot, targetSinkName, 1500);
@@ -415,6 +448,15 @@ bool movePulseOutputToSink(int slot, const std::string& targetSinkName) {
 bool movePulseOutputToSinkWithin(int slot, const std::string& targetSinkName,
                                  int timeoutMs) {
     if (slot < 0 || slot > 1 || targetSinkName.empty()) return false;
+
+    // A pin to a sink that is not there -- a device unplugged since it was
+    // saved, a sink another program made and took away -- can never succeed,
+    // and polling for it held the start for the whole timeout, per output.
+    if (!sinkExists(targetSinkName)) {
+        printf("[VirtSink] sink '%s' is not there; not pinning OUT%d\n",
+               targetSinkName.c_str(), slot + 1);
+        return false;
+    }
 
     // The stream is created asynchronously: RtAudio's open returns before the
     // sound server has a node for it, so a single look can find nothing and
@@ -429,24 +471,30 @@ bool movePulseOutputToSinkWithin(int slot, const std::string& targetSinkName,
 }
 
 static bool tryMovePulseOutputToSink(int slot, const std::string& targetSinkName) {
-    // Find CrossPad sink-inputs in creation order. PulseAudio assigns IDs
-    // monotonically per session, so the first ID belongs to OUT1, the second
-    // to OUT2.
+    // Find THIS process's sink-inputs in creation order. PulseAudio assigns IDs
+    // monotonically per session, so the first ID belongs to OUT1, the second to
+    // OUT2. Matching on the application name alone would also match another
+    // CrossPad running on the desktop -- a test instance beside a user's would
+    // move the user's output -- so the stream's client must be one of ours.
+    // The stream carries no pid itself; its client does.
     const char* const argvList[] = { "pactl", "list", "sink-inputs", nullptr };
     PactlResult r = runPactl(argvList);
     if (r.exitCode != 0) return false;
 
+    const std::set<std::string> ownClients = ownPulseClients();
     std::vector<std::string> crosspadInputIds;
     {
         std::istringstream ss(r.stdoutText);
         std::string l, currentId;
         bool isCrossPad = false;
+        bool isOurs = false;
         auto flush = [&]() {
-            if (isCrossPad && !currentId.empty()) {
+            if (isCrossPad && isOurs && !currentId.empty()) {
                 crosspadInputIds.push_back(currentId);
             }
             currentId.clear();
             isCrossPad = false;
+            isOurs = false;
         };
         while (std::getline(ss, l)) {
             if (!l.empty() && l.back() == '\r') l.pop_back();
@@ -467,6 +515,11 @@ static bool tryMovePulseOutputToSink(int slot, const std::string& targetSinkName
                 l.find("application.name = \"ALSA plug-in [CrossPad]\"") != std::string::npos) {
                 isCrossPad = true;
             }
+            if (l.find("Client: ") != std::string::npos) {
+                std::string c = l.substr(l.find("Client: ") + 8);
+                trim(c);
+                if (ownClients.count(c)) isOurs = true;
+            }
         }
         flush();
     }
@@ -480,10 +533,23 @@ static bool tryMovePulseOutputToSink(int slot, const std::string& targetSinkName
         "pactl", "move-sink-input", sid.c_str(), targetSinkName.c_str(), nullptr
     };
     PactlResult mr = runPactl(argvMove);
+    /* The caller polls this every 50 ms until the move takes; a failure is
+     * said once per (input, target, exit), not once per poll. */
+    static std::mutex failMutex;
+    static std::string lastFailure;
     if (mr.exitCode != 0) {
-        printf("[VirtSink] move-sink-input %s -> %s failed (exit %d)\n",
-               sid.c_str(), targetSinkName.c_str(), mr.exitCode);
+        const std::string key = sid + ">" + targetSinkName + ":" + std::to_string(mr.exitCode);
+        std::lock_guard<std::mutex> lk(failMutex);
+        if (key != lastFailure) {
+            lastFailure = key;
+            printf("[VirtSink] move-sink-input %s -> %s failed (exit %d)\n",
+                   sid.c_str(), targetSinkName.c_str(), mr.exitCode);
+        }
         return false;
+    }
+    {
+        std::lock_guard<std::mutex> lk(failMutex);
+        lastFailure.clear();
     }
     printf("[VirtSink] Moved CrossPad OUT%d (sink-input %s) -> %s\n",
            slot + 1, sid.c_str(), targetSinkName.c_str());

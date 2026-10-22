@@ -201,14 +201,14 @@ TEST_CASE("AudioMixerEngine: clamp on overdrive", "[audio][mixer]") {
     f.mixer.setRouteEnabled(MixerInput::SYNTH, MixerOutput::OUT1, true);
     f.mixer.setRouteVolume(MixerInput::SYNTH, MixerOutput::OUT1, 4.0f);
 
-    ConstSynth synth(0.5f);  // 0.5 * 4.0 = 2.0 → clamps to 1.0
+    ConstSynth synth(0.5f);  // 0.5 * 4.0 = 2.0 → held at the limiter's ceiling
     f.setSynth(&synth);
 
     std::vector<float> out0(kFrames * 2, 0.0f);
     std::vector<float> out1(kFrames * 2, 0.0f);
     f.render(out0, out1);
 
-    for (float v : out0) REQUIRE(v == 1.0f);
+    for (float v : out0) REQUIRE_THAT(v, WithinAbs(AudioMixerEngine::kLimitCeiling, 1e-6f));
 }
 
 TEST_CASE("AudioMixerEngine: tap buffer captures OUT1 int16", "[audio][mixer][tap]") {

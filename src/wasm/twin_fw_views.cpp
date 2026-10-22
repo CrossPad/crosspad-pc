@@ -1,7 +1,7 @@
 /**
  * @file    twin_fw_views.cpp
- * @brief   What the board's Firmware views (platform-idf main/gui/fw_*_view.cpp,
- *          fw_kit_card.cpp, fw_actions.cpp, fw_views_common.cpp; built here
+ * @brief   What crosspad-gui's Firmware views (src/fw, on the board's
+ *          IFwViewService, platform-idf main/fw_view_service.cpp; built here
  *          unchanged) read from the SD card, for the twin: the card is the
  *          board's, so the Library is its packages as TWIN_FW listed them and
  *          nothing is written. The Store's catalog cache, kit texts and icons
@@ -17,10 +17,10 @@
 #include "crosspad/fw/FwLibraryGc.hpp"
 #include "crosspad/fw/FwStore.hpp"
 #include "fw_gc.h"
-#include "fw_icons.h"
 #include "fw_store_files.h"
 #include "fw_view_data.h"
-#include "fw_views_common.h"
+#include "crosspad-gui/fw/fw_icons.h"
+#include "crosspad-gui/fw/fw_views_common.h"
 
 namespace {
 

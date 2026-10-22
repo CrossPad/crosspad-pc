@@ -1,6 +1,3 @@
-[submodule "lv_drivers"]
-	path = lv_drivers
-	url = https://github.com/lvgl/lv_drivers.git
 [submodule "lvgl"]
 	path = lvgl
 	url = https://github.com/lvgl/lvgl.git
@@ -52,3 +49,15 @@
 [submodule "src/apps/crosspad-slicer"]
 	path = src/apps/crosspad-slicer
 	url = https://github.com/CrossPad/crosspad-slicer.git
+[submodule "src/apps/crosspad-pitchplay"]
+	path = src/apps/crosspad-pitchplay
+	url = https://github.com/CrossPad/crosspad-pitchplay.git
+[submodule "src/apps/crosspad-doom"]
+	path = src/apps/crosspad-doom
+	url = https://github.com/CrossPad/crosspad-doom
+[submodule "src/apps/crosspad-pong"]
+	path = src/apps/crosspad-pong
+	url = https://github.com/CrossPad/crosspad-pong.git
+[submodule "src/apps/crosspad-pianotiles"]
+	path = src/apps/crosspad-pianotiles
+	url = https://github.com/CrossPad/crosspad-pianotiles.git

@@ -97,7 +97,7 @@ public:
     RtAudioErrorType startStream() { if (!open_) return RTAUDIO_INVALID_USE; running_ = true; return RTAUDIO_NO_ERROR; }
     RtAudioErrorType stopStream() { running_ = false; return RTAUDIO_NO_ERROR; }
     RtAudioErrorType abortStream() { running_ = false; return RTAUDIO_NO_ERROR; }
-    const char* getErrorText() { return error_.c_str(); }
+    std::string getErrorText() { return error_; }
     bool isStreamOpen() const { return open_; }
     bool isStreamRunning() const { return running_; }
     double getStreamTime() { return time_; }

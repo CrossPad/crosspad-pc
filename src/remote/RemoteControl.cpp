@@ -4,8 +4,12 @@
  */
 
 #include "RemoteControl.hpp"
+#include "ControlJson.hpp"
+#include "JsonText.hpp"
+#include "crosspad/control/PadInput.hpp"
 
 #include <cstdio>
+#include <cstdlib>
 #include <cstring>
 #include <string>
 #include <vector>
@@ -14,6 +18,10 @@
 #include <thread>
 #include <atomic>
 #include <functional>
+#include <memory>
+#include <condition_variable>
+#include <chrono>
+#include <cerrno>
 
 // SDL2 for framebuffer capture and event injection
 #include <SDL2/SDL.h>
@@ -57,13 +65,23 @@
 #include <crosspad-sampler/waveform/waveform_loader.hpp>
 #define REMOTE_HAS_WAVE 1
 #endif
-#if __has_include("audio/sampler/SampleStreamPlayer.hpp")
-#include "audio/sampler/SampleStreamPlayer.hpp"
+#if defined(USE_AUDIO) && __has_include("sequencer/PcSequencer.hpp")
+#include "sequencer/PcSequencer.hpp"
+#include <crosspad/sequencer/MetronomeNode.hpp>
+#include <crosspad/sequencer/PatternSequencer.hpp>
+#define REMOTE_HAS_SEQ 1
+#endif
+#if defined(USE_AUDIO) && __has_include("audio/sampler/PcSamplerEngine.hpp")
+#include "audio/sampler/PcSamplerEngine.hpp"
 #define REMOTE_HAS_SMPL 1
 #endif
 #include "crosspad-gui/components/power_gesture.h"
 #include "crosspad-gui/components/status_bar.h"
+#include "crosspad-gui/components/touch_gesture.h"
+#include "crosspad-gui/components/transport_bar.h"
+#include "crosspad-gui/platform/IGuiPlatform.h"
 #include "crosspad-gui/components/app_orchestrator.h"   // AppOrchestrator — app_list
+#include "crosspad_app.hpp"                              // crosspad_app_start() — app_start
 
 // PC platform
 #include "pc_stubs/pc_platform.h"
@@ -89,6 +107,8 @@
 #  define SOCKET_INVALID (-1)
 #endif
 
+using namespace remote::json;
+
 /* ── Base64 encoder ──────────────────────────────────────────────────── */
 
 static const char b64_table[] =
@@ -109,25 +129,7 @@ static std::string base64_encode(const uint8_t* data, size_t len) {
     return out;
 }
 
-/* ── Simple JSON helpers (no dependency) ─────────────────────────────── */
-
-static std::string json_string(const std::string& key, const std::string& val) {
-    return "\"" + key + "\":\"" + val + "\"";
-}
-
-static std::string json_bool(const std::string& key, bool val) {
-    return "\"" + key + "\":" + (val ? "true" : "false");
-}
-
-static std::string json_int(const std::string& key, int val) {
-    return "\"" + key + "\":" + std::to_string(val);
-}
-
-static std::string json_float(const std::string& key, float val) {
-    char buf[32];
-    snprintf(buf, sizeof(buf), "%g", (double)val);
-    return "\"" + key + "\":" + buf;
-}
+/* ── Simple JSON readers (the writers are in JsonText.hpp) ──────────── */
 
 /// Extract a string value for a key from a JSON-like string (very simple parser)
 static std::string json_get_string(const std::string& json, const std::string& key) {
@@ -182,28 +184,88 @@ static std::vector<uint8_t> pixels_to_png(const uint8_t* bgra, int w, int h) {
 
 /* ── State ───────────────────────────────────────────────────────────── */
 
-static constexpr uint16_t PORT = 19840;
+/* 19840 unless CROSSPAD_REMOTE_PORT says otherwise: two simulators -- a test
+ * run beside the one somebody is playing -- cannot share a port, and the
+ * second one used to come up with no control port at all and say so only in
+ * its log. */
+static uint16_t remote_port() {
+    const char* v = getenv("CROSSPAD_REMOTE_PORT");
+    const long p = v ? strtol(v, nullptr, 10) : 0;
+    return (p > 0 && p < 65536) ? (uint16_t)p : (uint16_t)19840;
+}
+static const uint16_t PORT = remote_port();
 
 static lv_display_t* s_disp = nullptr;
 static std::thread s_serverThread;
 static std::atomic<bool> s_running{false};
 static socket_t s_listenSocket = SOCKET_INVALID;
 
-// Command queue: commands are received on TCP thread, executed on LVGL thread
-struct PendingCommand {
-    std::string request;
-    std::function<void(const std::string&)> respond;
+/* Commands are read on a client's thread and executed on the LVGL thread.
+ * Each carries its own reply slot, signalled through its condition variable.
+ * There used to be one slot for all of them: a command that outlived the
+ * wait got "timeout", and the reply it produced afterwards was taken as the
+ * reply to the next command -- every reply after that one was the previous
+ * command's. A client that gave up leaves a request the LVGL thread skips. */
+struct Request {
+    std::string line;
+    std::mutex mutex;
+    std::condition_variable cv;
+    bool done = false;
+    bool abandoned = false;
+    std::string response;
 };
 
 static std::mutex s_queueMutex;
-static std::queue<PendingCommand> s_commandQueue;
+static std::queue<std::shared_ptr<Request>> s_commandQueue;
 
-// Response storage for synchronous command processing
-static std::mutex s_responseMutex;
-static std::string s_pendingResponse;
-static bool s_responseReady = false;
+static std::atomic<int> s_clients{0};
 
 /* ── Command handlers (run on LVGL thread) ───────────────────────────── */
+
+/* The picture comes from LVGL's own framebuffer, not from the SDL renderer.
+ * The simulator draws into a texture and presents it; what
+ * SDL_RenderReadPixels returns after SDL_RenderPresent is the back buffer,
+ * which is undefined once it has been swapped -- all black now and then, and
+ * the crop made it likelier. LVGL's DIRECT-mode buffer always holds the whole
+ * latest frame. The capture is in window pixels (the layout times the SDL
+ * zoom), so the framebuffer is sampled nearest-neighbour at that scale. */
+static bool read_framebuffer(float zoom, const SDL_Rect* rect, int w, int h, uint8_t* bgra) {
+    if (zoom <= 0.f) return false;
+    lv_refr_now(s_disp);
+    const lv_draw_buf_t* buf = lv_display_get_buf_active(s_disp);
+    const lv_color_format_t cf = lv_display_get_color_format(s_disp);
+    if (!buf || !buf->data) return false;
+    const int32_t hres = lv_display_get_horizontal_resolution(s_disp);
+    const int32_t vres = lv_display_get_vertical_resolution(s_disp);
+    if (cf != LV_COLOR_FORMAT_ARGB8888 && cf != LV_COLOR_FORMAT_XRGB8888 &&
+        cf != LV_COLOR_FORMAT_RGB888 && cf != LV_COLOR_FORMAT_RGB565) return false;
+    const uint32_t bpp = lv_color_format_get_size(cf);
+    const uint32_t stride = lv_draw_buf_width_to_stride(hres, cf);
+    if ((size_t)stride * vres > buf->data_size) return false;
+    const int ox = rect ? rect->x : 0;
+    const int oy = rect ? rect->y : 0;
+    for (int y = 0; y < h; y++) {
+        int sy = (int)((oy + y) / zoom);
+        if (sy >= vres) sy = vres - 1;
+        const uint8_t* row = buf->data + (size_t)sy * stride;
+        for (int x = 0; x < w; x++) {
+            int sx = (int)((ox + x) / zoom);
+            if (sx >= hres) sx = hres - 1;
+            const uint8_t* px = row + (size_t)sx * bpp;
+            uint8_t* o = bgra + ((size_t)y * w + x) * 4;
+            if (cf == LV_COLOR_FORMAT_RGB565) {
+                const uint16_t v = (uint16_t)(px[0] | (px[1] << 8));
+                o[2] = (uint8_t)(((v >> 11) & 0x1f) * 255 / 31);
+                o[1] = (uint8_t)(((v >> 5) & 0x3f) * 255 / 63);
+                o[0] = (uint8_t)((v & 0x1f) * 255 / 31);
+            } else {
+                o[0] = px[0]; o[1] = px[1]; o[2] = px[2];
+            }
+            o[3] = 255;
+        }
+    }
+    return true;
+}
 
 static std::string handle_screenshot(const std::string& json = "") {
     if (!s_disp) {
@@ -246,12 +308,15 @@ static std::string handle_screenshot(const std::string& json = "") {
         "\"lcd_size\":[" + std::to_string(lcdRect.w) + "," + std::to_string(lcdRect.h) + "]," +
         json_float("scale", zoom);
 
-    // ARGB8888: on little-endian memory layout is [B, G, R, A] per pixel.
-    std::vector<uint8_t> pixels(w * h * 4);
-    if (SDL_RenderReadPixels(renderer, captureRect, SDL_PIXELFORMAT_ARGB8888,
-                             pixels.data(), w * 4) != 0) {
-        return "{" + json_bool("ok", false) + "," +
-               json_string("error", SDL_GetError()) + "}";
+    // BGRA, the byte order the PNG conversion below expects.
+    std::vector<uint8_t> pixels((size_t)w * h * 4);
+    if (!read_framebuffer(zoom, captureRect, w, h, pixels.data())) {
+        // The LVGL buffer is not in a format we read; fall back to the window.
+        if (SDL_RenderReadPixels(renderer, captureRect, SDL_PIXELFORMAT_ARGB8888,
+                                 pixels.data(), w * 4) != 0) {
+            return "{" + json_bool("ok", false) + "," +
+                   json_string("error", SDL_GetError()) + "}";
+        }
     }
 
     // Encode to PNG
@@ -321,7 +386,7 @@ static std::string handle_click(const std::string& json) {
     if (holdMs > 5000) holdMs = 5000;
 
     // LVGL coordinates are the layout's; SDL event coordinates are those times
-    // the window zoom, which is what lv_sdl_mouse divides by.
+    // the window zoom, which is what the mouse driver in hal.c divides by.
     const float zoom = lv_sdl_window_get_zoom(s_disp);
     int lx, ly;
     if (space == "lcd") {
@@ -401,6 +466,199 @@ static std::string handle_click(const std::string& json) {
            "\"hit\":" + hitJson + "}";
 }
 
+/* A drag with the mouse, the board's finger: press at (x1,y1), move to
+ * (x2,y2) in `steps` even steps over `ms`, rest there `rest_ms`, release.
+ * The same SDL events a real mouse makes, so LVGL's scrolling, its momentum
+ * and the swipe recogniser on the indev all see an ordinary drag. A rest
+ * longer than LVGL's momentum window lets go without a flick. The reply comes
+ * at once; the drag takes ms + rest_ms after it. */
+struct DragJob {
+    Uint32 windowId;
+    int x1, y1, x2, y2;   // window pixels
+    int steps, step = 0;
+    uint32_t restMs;
+};
+
+static void drag_push(Uint32 type, Uint32 windowId, int x, int y) {
+    SDL_Event ev = {};
+    ev.type = type;
+    if (type == SDL_MOUSEMOTION) {
+        ev.motion.windowID = windowId;
+        ev.motion.state = SDL_BUTTON_LMASK;
+        ev.motion.x = x;
+        ev.motion.y = y;
+    } else {
+        ev.button.windowID = windowId;
+        ev.button.button = SDL_BUTTON_LEFT;
+        ev.button.state = type == SDL_MOUSEBUTTONDOWN ? SDL_PRESSED : SDL_RELEASED;
+        ev.button.x = x;
+        ev.button.y = y;
+        ev.button.clicks = 1;
+    }
+    SDL_PushEvent(&ev);
+}
+
+static void drag_release_cb(lv_timer_t* t) {
+    auto* job = static_cast<DragJob*>(lv_timer_get_user_data(t));
+    drag_push(SDL_MOUSEBUTTONUP, job->windowId, job->x2, job->y2);
+    delete job;
+}
+
+static void drag_step_cb(lv_timer_t* t) {
+    auto* job = static_cast<DragJob*>(lv_timer_get_user_data(t));
+    job->step++;
+    const int x = job->x1 + (job->x2 - job->x1) * job->step / job->steps;
+    const int y = job->y1 + (job->y2 - job->y1) * job->step / job->steps;
+    drag_push(SDL_MOUSEMOTION, job->windowId, x, y);
+    if (job->step < job->steps) return;
+    lv_timer_delete(t);
+    if (job->restMs == 0) {
+        drag_push(SDL_MOUSEBUTTONUP, job->windowId, job->x2, job->y2);
+        delete job;
+        return;
+    }
+    lv_timer_t* up = lv_timer_create(drag_release_cb, job->restMs, job);
+    lv_timer_set_repeat_count(up, 1);
+}
+
+static std::string handle_drag(const std::string& json) {
+    const int x1 = json_get_int(json, "x1", -1), y1 = json_get_int(json, "y1", -1);
+    const int x2 = json_get_int(json, "x2", -1), y2 = json_get_int(json, "y2", -1);
+    if (x1 < 0 || y1 < 0 || x2 < 0 || y2 < 0) {
+        return "{" + json_bool("ok", false) + "," + json_string("error", "missing x1/y1/x2/y2") + "}";
+    }
+    std::string space = json_get_string(json, "space");
+    if (space.empty()) space = "lcd";
+    if (space != "lcd" && space != "window") {
+        return "{" + json_bool("ok", false) + "," +
+               json_string("error", "space must be lcd or window") + "}";
+    }
+    int ms = json_get_int(json, "ms", 200);
+    if (ms < 10) ms = 10;
+    if (ms > 5000) ms = 5000;
+    int steps = json_get_int(json, "steps", 0);
+    if (steps <= 0) steps = ms / 15;   // the board's panel reports every ~13 ms
+    if (steps < 1) steps = 1;
+    if (steps > 200) steps = 200;
+    int restMs = json_get_int(json, "rest_ms", 0);
+    if (restMs < 0) restMs = 0;
+    if (restMs > 5000) restMs = 5000;
+
+    const float zoom = lv_sdl_window_get_zoom(s_disp);
+    auto toWindow = [&](int x, int y, int& wx, int& wy) {
+        if (space == "lcd") {
+            wx = (int)((x + Stm32EmuWindow::LCD_X) * zoom);
+            wy = (int)((y + Stm32EmuWindow::LCD_Y) * zoom);
+        } else {
+            wx = x;
+            wy = y;
+        }
+    };
+    auto* job = new DragJob{};
+    job->windowId = SDL_GetWindowID(lv_sdl_window_get_window(s_disp));
+    toWindow(x1, y1, job->x1, job->y1);
+    toWindow(x2, y2, job->x2, job->y2);
+    job->steps = steps;
+    job->restMs = (uint32_t)restMs;
+
+    drag_push(SDL_MOUSEMOTION, job->windowId, job->x1, job->y1);
+    drag_push(SDL_MOUSEBUTTONDOWN, job->windowId, job->x1, job->y1);
+    lv_timer_create(drag_step_cb, (uint32_t)(ms / steps > 0 ? ms / steps : 1), job);
+
+    return "{" + json_bool("ok", true) + "," +
+           json_string("space", space) + "," +
+           json_int("ms", ms) + "," + json_int("steps", steps) + "," +
+           json_int("rest_ms", restMs) + "}";
+}
+
+/* The top row: which of the two bars is the page the encoder works on, where
+ * the row rests, the drawer, the encoder's focus and the last swipe -- what a
+ * drag test checks instead of reading pixels. */
+/* The board's ENC_GROUP (hil_control.cpp): every widget the encoder reaches
+ * on this screen, where it is, and the first caption on or above it. */
+static const char* first_label_in(lv_obj_t* scope, int depth) {
+    if (!scope) return nullptr;
+    if (lv_obj_check_type(scope, &lv_label_class)) return lv_label_get_text(scope);
+    if (depth == 0) return nullptr;
+    const uint32_t cnt = lv_obj_get_child_count(scope);
+    for (uint32_t i = 0; i < cnt; ++i) {
+        if (const char* t = first_label_in(lv_obj_get_child(scope, i), depth - 1)) return t;
+    }
+    return nullptr;
+}
+
+static std::string handle_enc_group() {
+    lv_indev_t* nav = crosspad_gui::getGuiPlatform().getNavigationEncoder();
+    lv_group_t* g = nav ? lv_indev_get_group(nav) : nullptr;
+    const uint32_t n = g ? lv_group_get_obj_count(g) : 0;
+    std::string items;
+    for (uint32_t i = 0; i < n; ++i) {
+        lv_obj_t* o = lv_group_get_obj_by_index(g, i);
+        lv_area_t a = {0, 0, -1, -1};
+        if (o) lv_obj_get_coords(o, &a);
+        const char* t = first_label_in(o, 3);
+        if (!t && o) t = first_label_in(lv_obj_get_parent(o), 1);
+        items += std::string(i ? "," : "") + "{" + json_int("i", (int)i) + "," + json_int("x", a.x1) + "," +
+                 json_int("y", a.y1) + "," + json_int("w", a.x2 - a.x1 + 1) + "," +
+                 json_int("h", a.y2 - a.y1 + 1) + "," + json_string("label", t ? t : "") + "}";
+    }
+    return "{" + json_bool("ok", true) + "," + json_int("count", (int)n) + ",\"items\":[" + items + "]}";
+}
+
+/* Every label on screen whose text holds "text" (case-insensitive), on the
+ * active screen and the layers above it, with the box of the nearest
+ * clickable widget around it -- a journey taps a button by its name, encoder
+ * group or not (the apps build theirs on the board only). */
+static void find_labels(lv_obj_t* obj, const std::string& want, std::string& out, int& n) {
+    if (!obj || lv_obj_has_flag(obj, LV_OBJ_FLAG_HIDDEN)) return;
+    if (lv_obj_check_type(obj, &lv_label_class)) {
+        const char* t = lv_label_get_text(obj);
+        std::string low = t ? t : "";
+        for (auto& c : low) c = (char)std::tolower((unsigned char)c);
+        if (!want.empty() && low.find(want) != std::string::npos) {
+            lv_obj_t* hit = obj;
+            while (hit && !lv_obj_has_flag(hit, LV_OBJ_FLAG_CLICKABLE)) hit = lv_obj_get_parent(hit);
+            lv_area_t a;
+            lv_obj_get_coords(hit ? hit : obj, &a);
+            out += std::string(n++ ? "," : "") + "{" + json_string("text", t ? t : "") + "," +
+                   json_int("x", a.x1) + "," + json_int("y", a.y1) + "," + json_int("w", a.x2 - a.x1 + 1) + "," +
+                   json_int("h", a.y2 - a.y1 + 1) + "," + json_bool("clickable", hit != nullptr) + "}";
+        }
+    }
+    const uint32_t cnt = lv_obj_get_child_count(obj);
+    for (uint32_t i = 0; i < cnt; ++i) find_labels(lv_obj_get_child(obj, i), want, out, n);
+}
+
+static std::string handle_ui_find(const std::string& json) {
+    std::string want = json_get_string(json, "text");
+    for (auto& c : want) c = (char)std::tolower((unsigned char)c);
+    std::string out;
+    int n = 0;
+    for (lv_obj_t* root : {lv_screen_active(), lv_layer_top(), lv_layer_sys()}) find_labels(root, want, out, n);
+    return "{" + json_bool("ok", true) + "," + json_int("count", n) + ",\"items\":[" + out + "]}";
+}
+
+static std::string handle_top_bar() {
+    lv_indev_t* nav = crosspad_gui::getGuiPlatform().getNavigationEncoder();
+    lv_group_t* g = nav ? lv_indev_get_group(nav) : nullptr;
+    lv_obj_t* focused = g ? lv_group_get_focused(g) : nullptr;
+    const char* focus = !focused ? "none"
+                      : focused == crosspad_gui::statusbar_get_arrow() ? "arrow"
+                      : crosspad_gui::transportbar_has_focus() ? "transport"
+                      : "screen";
+    lv_area_t fa = {};
+    if (focused) lv_obj_get_coords(focused, &fa);
+    return "{" + json_bool("ok", true) + "," +
+           "\"focus_at\":[" + std::to_string(fa.x1 - Stm32EmuWindow::LCD_X) + "," +
+           std::to_string(fa.y1 - Stm32EmuWindow::LCD_Y) + "]," +
+           json_bool("transport_shown", crosspad_gui::transportbar_shown()) + "," +
+           json_int("row_scroll", crosspad_gui::transportbar_row_scroll()) + "," +
+           json_bool("drawer_open", crosspad_gui::statusbar_drawer_is_open()) + "," +
+           json_string("focus", focus) + "," +
+           json_string("swipe_last", crosspad_gui::swipeDirName(crosspad_gui::touch_gesture_last())) + "," +
+           json_int("swipe_count", (int)crosspad_gui::touch_gesture_count()) + "}";
+}
+
 /* The power button. The firmware resolves both gestures in crosspad-gui, so
  * these verbs exercise exactly the code the hardware button reaches — the
  * device-side equivalent is the CDC verb PWR_GESTURE CLICK|HOLD. */
@@ -434,7 +692,8 @@ static std::string handle_pad_press(const std::string& json) {
     if (pad < 0 || pad > 15) {
         return "{" + json_bool("ok", false) + "," + json_string("error", "invalid pad (0-15)") + "}";
     }
-    crosspad::getPadManager().handlePadPress(pad, vel);
+    crosspad::control::applyPadInput(crosspad::getPadManager(), crosspad::control::PadInput::Press,
+                                     (uint8_t)pad, (uint8_t)vel);
     return "{" + json_bool("ok", true) + "," + json_int("pad", pad) + "," + json_int("velocity", vel) + "}";
 }
 
@@ -443,8 +702,57 @@ static std::string handle_pad_release(const std::string& json) {
     if (pad < 0 || pad > 15) {
         return "{" + json_bool("ok", false) + "," + json_string("error", "invalid pad (0-15)") + "}";
     }
-    crosspad::getPadManager().handlePadRelease(pad);
+    crosspad::control::applyPadInput(crosspad::getPadManager(), crosspad::control::PadInput::Release,
+                                     (uint8_t)pad, 0);
     return "{" + json_bool("ok", true) + "," + json_int("pad", pad) + "}";
+}
+
+// The board's PAD_PRESSURE: pressure on a pad, as the STM streams it, to the
+// active pad logic (or the LEDs' aftertouch without one).
+static std::string handle_pad_pressure(const std::string& json) {
+    int pad = json_get_int(json, "pad", -1);
+    int pressure = json_get_int(json, "pressure", -1);
+    if (pad < 0 || pad > 15) {
+        return "{" + json_bool("ok", false) + "," + json_string("error", "invalid pad (0-15)") + "}";
+    }
+    if (pressure < 0 || pressure > 255) {
+        return "{" + json_bool("ok", false) + "," + json_string("error", "invalid pressure (0-255)") + "}";
+    }
+    crosspad::control::applyPadInput(crosspad::getPadManager(), crosspad::control::PadInput::Pressure,
+                                     (uint8_t)pad, (uint8_t)pressure);
+    return "{" + json_bool("ok", true) + "," + json_int("pad", pad) + "," + json_int("pressure", pressure) + "}";
+}
+
+// The board's PAD_PAN: where on a held pad the press sits, as the STM's 7-bit
+// value (0 left .. 64 centred .. 127 right), to the active pad logic's
+// onPadPan() as value - 64. "pan" in the reply is what the logic got.
+static std::string handle_pad_pan(const std::string& json) {
+    int pad = json_get_int(json, "pad", -1);
+    int value = json_get_int(json, "value", -1);
+    if (pad < 0 || pad > 15) {
+        return "{" + json_bool("ok", false) + "," + json_string("error", "invalid pad (0-15)") + "}";
+    }
+    if (value < 0 || value > 127) {
+        return "{" + json_bool("ok", false) + "," + json_string("error", "invalid value (0-127)") + "}";
+    }
+    const int8_t pan = crosspad::IPadLogicHandler::panFromWire((uint8_t)value);
+    crosspad::control::applyPadInput(crosspad::getPadManager(), crosspad::control::PadInput::Pan,
+                                     (uint8_t)pad, (uint8_t)value);
+    return "{" + json_bool("ok", true) + "," + json_int("pad", pad) + "," + json_int("value", value) +
+           "," + json_int("pan", pan) + "}";
+}
+
+// The board's APP_START: open an app by its launcher name, case-insensitive,
+// as a tap on its tile would (the kit-selector gate included).
+static std::string handle_app_start(const std::string& json) {
+    const std::string name = json_get_string(json, "name");
+    if (name.empty()) {
+        return "{" + json_bool("ok", false) + "," + json_string("error", "missing name") + "}";
+    }
+    if (!crosspad_app_start(name.c_str())) {
+        return "{" + json_bool("ok", false) + "," + json_string("error", "unknown app") + "}";
+    }
+    return "{" + json_bool("ok", true) + "," + json_string("name", name) + "}";
 }
 
 static std::string handle_encoder_rotate(const std::string& json) {
@@ -724,8 +1032,11 @@ static std::string handle_settings_set(const std::string& json) {
     // System
     else if (key == "kit") { settings->Kit = (uint8_t)value; found = true; }
     else if (key == "audio_engine") { settings->AudioEngineEnabled = (value != 0); found = true; }
-    else if (key == "launcher_style") {   // 0 icon grid, 1 list; shown on the next launcher build
-        settings->launcherStyle = value ? crosspad::LauncherStyle::List : crosspad::LauncherStyle::Grid;
+    else if (key == "launcher_style") {   // home screen: 0 icon grid, 1 list, 2 pad map; built on the way home
+        if (value < 0 || value > (int)crosspad::LauncherStyle::Pads) {
+            return "{" + json_bool("ok", false) + "," + json_string("error", "launcher_style is 0..2") + "}";
+        }
+        settings->launcherStyle = (crosspad::LauncherStyle)value;
         found = true;
     }
     // Keypad
@@ -844,18 +1155,7 @@ static std::string handle_citest_status(const std::string& /*json*/) {
 
 static std::string handle_audio_level(const std::string& json) {
     int stream = json_get_int(json, "stream", 0);
-    float l = 0.0f, r = 0.0f;
-    crosspad::getAudioModule().getOutputLevel(static_cast<uint8_t>(stream), l, r);
-    char buf[128];
-    std::snprintf(buf, sizeof(buf), "%.6f", static_cast<double>(l));
-    std::string ls = buf;
-    std::snprintf(buf, sizeof(buf), "%.6f", static_cast<double>(r));
-    std::string rs = buf;
-    // Custom JSON build because json_int helpers are int-only.
-    return std::string("{") + json_bool("ok", true) + "," +
-           json_int("stream", stream) + "," +
-           "\"left\":"  + ls + "," +
-           "\"right\":" + rs + "}";
+    return remote::controlJsonAudioLevel(stream, crosspad::control::readAudioLevel(static_cast<uint8_t>(stream)));
 }
 
 /* ── Kit handlers ────────────────────────────────────────────────────── */
@@ -868,18 +1168,6 @@ static std::string handle_audio_level(const std::string& json) {
 static void (*s_kitLoader)(int) = nullptr;
 static bool (*s_kitBusy)()      = nullptr;
 static remote::AudioDeviceCtl s_audioCtl;
-
-// Minimal JSON string escaping for device labels (PipeWire descriptions can
-// carry quotes). Only " and \ need escaping for a valid one-line value.
-static std::string json_quote(const std::string& s) {
-    std::string out = "\"";
-    for (char c : s) {
-        if (c == '"' || c == '\\') out += '\\';
-        out += c;
-    }
-    out += "\"";
-    return out;
-}
 
 static std::string audio_list_json(std::vector<std::string> (*fn)()) {
     if (!fn) {
@@ -932,37 +1220,19 @@ static std::string handle_audio_in_set(const std::string& j) {
 static std::string handle_mix_lvl() {
 #ifdef REMOTE_HAS_MIXER
     auto& mx = getMixerEngine();
-    const uint8_t nout = mx.numOutputs();
-    std::string out = "{" + json_bool("ok", true) + "," +
-                      json_int("outputs", nout) + ",\"channels\":[";
-    bool first = true;
-    for (uint8_t ch = 0; ch < mx.maxChannels(); ++ch) {
-        if (!mx.isChannelActive(ch)) continue;
-        float cl = 0.0f, cr = 0.0f;
-        mx.getChannelLevel(ch, cl, cr);
-        std::string routes;
-        for (uint8_t o = 0; o < nout; ++o) routes += mx.isRouteEnabled(ch, o) ? '1' : '0';
-        const char* nm = mx.getChannelName(ch);
-        if (!first) out += ",";
-        first = false;
-        out += "{" + json_int("ch", ch) + "," +
-               json_string("name", nm ? nm : "") + "," +
-               json_float("pk_l", cl) + "," + json_float("pk_r", cr) + "," +
-               json_float("vol", mx.getChannelVolume(ch)) + "," +
-               json_bool("mute", mx.isChannelMuted(ch)) + "," +
-               json_string("route", routes) + "}";
-    }
-    out += "],\"out\":[";
-    for (uint8_t o = 0; o < nout; ++o) {
-        float ol = 0.0f, orr = 0.0f;
-        mx.getOutputLevel(o, ol, orr);
-        if (o) out += ",";
-        out += "{" + json_int("out", o) + "," +
-               json_float("pk_l", ol) + "," + json_float("pk_r", orr) + "," +
-               json_float("vol", mx.getOutputVolume(o)) + "," +
-               json_bool("mute", mx.isOutputMuted(o)) + "}";
-    }
-    return out + "]}";
+    std::string chans, outs;
+    crosspad::control::MixerTapLevel tap;
+    crosspad::control::readMixerLevels(mx,
+        [&](const crosspad::control::MixerChannelLevel& row) {
+            if (!chans.empty()) chans += ",";
+            chans += remote::controlJsonMixChannel(row);
+        },
+        [&](const crosspad::control::MixerOutputLevel& row) {
+            if (!outs.empty()) outs += ",";
+            outs += remote::controlJsonMixOutput(row);
+        },
+        [&](const crosspad::control::MixerTapLevel& row) { tap = row; });
+    return remote::controlJsonMixLevels(mx.numOutputs(), chans, outs, tap);
 #else
     return "{" + json_bool("ok", false) + "," +
            json_string("error", "mixer not built") + "}";
@@ -974,25 +1244,11 @@ static std::string handle_mix_lvl() {
 static std::string handle_pitched_status() {
 #ifdef REMOTE_HAS_PITCHED
     auto& inst = crosspad_pc::pitched_port_instrument();
-    const bool active = crosspad_pc::pitched_port_active();
-    crosspad::SampleBank* bank = inst.bank();
-    const uint8_t zones = bank ? bank->zoneCount() : 0;
-    std::string roots = "[";
-    for (uint8_t i = 0; i < zones; ++i) {
-        if (i) roots += ",";
-        char b[16];
-        snprintf(b, sizeof(b), "%.2f", (double)bank->zone(i).rootMidi);
-        roots += b;
-    }
-    roots += "]";
-    const size_t bytes = bank ? bank->bytes() : 0;
-    return "{" + json_bool("ok", true) + "," + json_bool("active", active) + "," +
-           json_int("zones", zones) + ",\"roots\":" + roots + "," +
-           json_int("active_voices", inst.activeVoices()) + "," +
-           json_int("sounding_voices", inst.soundingVoices()) + "," +
-           json_int("steals", (int)inst.stealCount()) + "," +
-           json_float("last_note_hz", inst.lastNoteHz()) + "," +
-           json_int("bank_kb", (int)(bytes / 1024)) + "}";
+    crosspad::control::PitchedStatus st;
+    st.active = crosspad_pc::pitched_port_active();
+    crosspad::control::readPitchedBank(inst.bank(), st);
+    crosspad::control::readPitchedEngine(inst, st);
+    return remote::controlJsonPitchedStatus(st);
 #else
     return "{" + json_bool("ok", false) + "," +
            json_string("error", "pitched not built") + "}";
@@ -1004,18 +1260,11 @@ static std::string handle_pitched_status() {
 // reads were requested, cached, retried, dropped or failed.
 static std::string handle_wave_status() {
 #ifdef REMOTE_HAS_WAVE
-    crosspad_sampler::WaveformLoaderStats st;
-    crosspad_sampler::waveform_loader_get_stats(&st);
-    return "{" + json_bool("ok", true) + "," +
-           json_bool("running", crosspad_sampler::waveform_loader_is_running()) + "," +
-           json_int("requested", (int)st.requested) + "," +
-           json_int("loaded", (int)st.loaded) + "," +
-           json_int("queued", (int)st.queued) + "," +
-           json_int("retried", (int)st.retried) + "," +
-           json_int("dropped", (int)st.dropped) + "," +
-           json_int("failed_info", (int)st.failedInfo) + "," +
-           json_int("failed_read", (int)st.failedRead) + "," +
-           json_int("alloc_fail", (int)st.allocFail) + "}";
+    crosspad_sampler::WaveformLoaderStats loader;
+    crosspad_sampler::waveform_loader_get_stats(&loader);
+    crosspad::control::WaveStatus st;
+    crosspad::control::setWaveLoader(st, loader, crosspad_sampler::waveform_loader_is_running());
+    return remote::controlJsonWaveStatus(st);
 #else
     return "{" + json_bool("ok", false) + "," +
            json_string("error", "sampler not built") + "}";
@@ -1044,34 +1293,53 @@ static std::string handle_app_list() {
 // Pad LED state — the sim's parallel to the board's LED_STATE (shared core
 // PadLedController): brightness, animation flags and the 16 pad colours.
 static std::string handle_led_state() {
-    auto& leds = crosspad::getPadLedController();
-    std::string colors = "[";
-    for (int i = 0; i < 16; ++i) {
-        crosspad::RgbColor c = leds.getPadColor((uint8_t)i);
+    std::string out = remote::controlJsonLedState(crosspad::control::readLedState(crosspad::getPadLedController()));
+    // "colors" are the pads' own colours; "strip" is what the controller
+    // last painted -- pressed, playing, a Loop pad dimmed -- which the
+    // emulator's pad grid does not show (it paints the pads' own colours).
+    std::string strip = "[";
+    for (uint16_t i = 0; i < crosspad::control::LedState::kPads; ++i) {
+        const crosspad::RgbColor c = pc_get_led_color(i);
         char b[10];
         snprintf(b, sizeof(b), "\"%02X%02X%02X\"", c.R, c.G, c.B);
-        if (i) colors += ",";
-        colors += b;
+        if (i) strip += ",";
+        strip += b;
     }
-    colors += "]";
-    return "{" + json_bool("ok", true) + "," +
-           json_int("brightness", (int)leds.getBrightness()) + "," +
-           json_bool("animating", leds.getAnimating()) + "," +
-           json_bool("coalesce", leds.getCoalescedRefresh()) + "," +
-           "\"colors\":" + colors + "}";
+    strip += "]";
+    out.insert(out.size() - 1, ",\"strip\":" + strip);
+    return out;
 }
 
-// Sample engine peak + free WAV slots and load — the sim's parallel to the
-// board's SMPL_PEAK (shared streaming SampleStreamPlayer).
+// Sample engine peak + free sample slots and load — the sim's parallel to the
+// board's SMPL_PEAK (core's SamplerEngine on both). peak and load_main are
+// the most since the last read.
 static std::string handle_smpl_peak() {
 #ifdef REMOTE_HAS_SMPL
+    const auto st = crosspad_pc::native_sampler_stats();
     return "{" + json_bool("ok", true) + "," +
-           json_float("peak", SampleStreamPly_GetPeak()) + "," +
-           json_int("free", SampleStreamPlayer_GetFreeWavCnt()) + "," +
-           json_int("active_voices", (int)SampleStreamPly_GetActiveVoices()) + "," +
-           json_int("underrun", (int)SampleStreamPly_GetUnderrunCount()) + "," +
-           json_int("dropped_notes", (int)SampleStreamPly_GetDroppedNoteCount()) + "," +
-           json_float("load_main", SampleStreamPly_GetLoadMain()) + "}";
+           json_float("peak", st.peak) + "," +
+           json_int("free", st.freeSlots) + "," +
+           json_int("active_voices", (int)st.activeVoices) + "," +
+           json_int("underrun", (int)st.underruns) + "," +
+           json_int("dropped_notes", (int)st.droppedNotes) + "," +
+           json_float("load_main", st.renderLoad) + "}";
+#else
+    return "{" + json_bool("ok", false) + "," +
+           json_string("error", "sampler not built") + "}";
+#endif
+}
+
+// Each pad's Loop state ('.' idle, 'q' waiting for the bar, 'P' playing,
+// 'm' muted), the launch counters and the bar clock — the board's SMPL_LOOPS.
+static std::string handle_smpl_loops() {
+#ifdef REMOTE_HAS_SMPL
+    const auto lp = crosspad_pc::native_sampler_loops();
+    return "{" + json_bool("ok", true) + "," +
+           json_string("pads", lp.states) + "," +
+           json_int("queued", (int)lp.queued) + "," +
+           json_int("launched", (int)lp.launched) + "," +
+           json_bool("clock", lp.clockRunning) + "," +
+           json_int("to_bar", (int)lp.framesToBar) + "}";
 #else
     return "{" + json_bool("ok", false) + "," +
            json_string("error", "sampler not built") + "}";
@@ -1084,28 +1352,18 @@ static std::string handle_kit_list() {
         return "{" + json_bool("ok", false) + "," +
                json_string("error", "no kit manager") + "}";
     }
-    std::string out = "{" + json_bool("ok", true) + "," +
-                      json_int("count", mgr->getKitCount()) + "," +
-                      json_int("current", mgr->getCurrentKitId()) + ",\"kits\":[";
-    for (int i = 0; i < mgr->getKitCount(); ++i) {
-        auto* k = mgr->getKit(i);
-        if (i) out += ",";
-        out += "{" + json_int("id", i) + "," +
-               json_string("name", k ? k->name : std::string()) + "," +
-               json_bool("parsed", k && k->parsed) + "}";
-    }
-    return out + "]}";
+    const int count = mgr->getKitCount();
+    const int current = mgr->getCurrentKitId();
+    std::string kits;
+    crosspad::control::readKitList(*mgr, [&kits](const crosspad::control::KitListRow& row) {
+        if (row.id) kits += ",";
+        kits += remote::controlJsonKitRow(row);
+    });
+    return remote::controlJsonKitList(count, current, kits);
 }
 
 static std::string handle_kit_status() {
-    auto* mgr = crosspad::getKitManager();
-    auto* cur = mgr ? mgr->getCurrentKit() : nullptr;
-    return std::string("{") + json_bool("ok", true) + "," +
-           json_int("count", mgr ? mgr->getKitCount() : 0) + "," +
-           json_int("current", mgr ? mgr->getCurrentKitId() : -1) + "," +
-           json_string("name", cur ? cur->name : std::string()) + "," +
-           json_bool("parsed", cur && cur->parsed) + "," +
-           json_bool("loading", s_kitBusy ? s_kitBusy() : false) + "}";
+    return remote::controlJsonKitStatus(crosspad::control::readKitStatus(s_kitBusy ? s_kitBusy() : false, -1));
 }
 
 static std::string handle_kit_load(const std::string& json) {
@@ -1113,9 +1371,8 @@ static std::string handle_kit_load(const std::string& json) {
         return "{" + json_bool("ok", false) + "," +
                json_string("error", "no sampler installed") + "}";
     }
-    auto* mgr = crosspad::getKitManager();
     const int id = json_get_int(json, "kit", -1);
-    if (!mgr || id < 0 || id >= mgr->getKitCount()) {
+    if (!crosspad::control::kitIdLoadable(id)) {
         return "{" + json_bool("ok", false) + "," +
                json_string("error", "kit index out of range") + "}";
     }
@@ -1124,6 +1381,37 @@ static std::string handle_kit_load(const std::string& json) {
     // kit is playable — ask kit_status for that, exactly as on the device.
     return "{" + json_bool("ok", true) + "," + json_int("kit", id) + "," +
            json_bool("started", true) + "}";
+}
+
+// The pattern sequencer's transport — the board's SEQ PLAY / SEQ STOP / SEQ
+// BPM: {action: "play"|"stop"|"state", bpm?, countin?}. Replies with the
+// clock as the sampler's Loop pads see it.
+static std::string handle_seq(const std::string& json) {
+#ifdef REMOTE_HAS_SEQ
+    crosspad::PatternSequencer& seq = getSequencer();
+    const std::string action = json_get_string(json, "action");
+    const int bpm = json_get_int(json, "bpm", 0);
+    if (bpm > 0) seq.setClickBpm(static_cast<float>(bpm));
+    const int countIn = json_get_int(json, "countin", -1);
+    if (countIn >= 0) seq.setCountIn(countIn != 0);
+    if (action == "play") {
+        seq.playback();
+    } else if (action == "stop") {
+        seq.stop();
+    } else if (!action.empty() && action != "state") {
+        return "{" + json_bool("ok", false) + "," + json_string("error", "unknown action") + "}";
+    }
+    const crosspad::MetronomeNode& m = getMetronome();
+    return "{" + json_bool("ok", true) + "," +
+           json_bool("running", m.running()) + "," +
+           json_float("bpm", m.bpm()) + "," +
+           json_int("to_bar", (int)m.framesToBar()) + "," +
+           json_string("line", crosspad_pc::sequencer_report()) + "}";
+#else
+    (void)json;
+    return "{" + json_bool("ok", false) + "," +
+           json_string("error", "sequencer not built") + "}";
+#endif
 }
 
 static std::string dispatch_command(const std::string& json) {
@@ -1138,11 +1426,26 @@ static std::string dispatch_command(const std::string& json) {
     if (cmd == "click") {
         return handle_click(json);
     }
+    if (cmd == "drag") {
+        return handle_drag(json);
+    }
+    if (cmd == "top_bar") {
+        return handle_top_bar();
+    }
     if (cmd == "pad_press") {
         return handle_pad_press(json);
     }
     if (cmd == "pad_release") {
         return handle_pad_release(json);
+    }
+    if (cmd == "pad_pressure") {
+        return handle_pad_pressure(json);
+    }
+    if (cmd == "pad_pan") {
+        return handle_pad_pan(json);
+    }
+    if (cmd == "app_start") {
+        return handle_app_start(json);
     }
     if (cmd == "power_click") {
         return handle_power_click();
@@ -1195,6 +1498,12 @@ static std::string dispatch_command(const std::string& json) {
     if (cmd == "kit_status") {
         return handle_kit_status();
     }
+    if (cmd == "enc_group") {
+        return handle_enc_group();
+    }
+    if (cmd == "ui_find") {
+        return handle_ui_find(json);
+    }
     if (cmd == "audio_out_list") {
         return handle_audio_out_list();
     }
@@ -1222,6 +1531,12 @@ static std::string dispatch_command(const std::string& json) {
     if (cmd == "smpl_peak") {
         return handle_smpl_peak();
     }
+    if (cmd == "seq") {
+        return handle_seq(json);
+    }
+    if (cmd == "smpl_loops") {
+        return handle_smpl_loops();
+    }
     if (cmd == "led_state") {
         return handle_led_state();
     }
@@ -1235,156 +1550,262 @@ static std::string dispatch_command(const std::string& json) {
     return "{" + json_bool("ok", false) + "," + json_string("error", "unknown command: " + cmd) + "}";
 }
 
-/* ── TCP server thread ───────────────────────────────────────────────── */
+/* ── TCP server ──────────────────────────────────────────────────────── */
+
+static constexpr size_t MAX_LINE_BYTES   = 1u << 20;   // a request is a line of JSON, never megabytes
+static constexpr int    MAX_CLIENTS      = 8;
+static constexpr int    COMMAND_WAIT_MS  = 10000;      // LVGL thread has this long to answer
+static constexpr int    SEND_TIMEOUT_MS  = 10000;      // a reader that stalls longer is dropped
+static constexpr int    IDLE_LIMIT_MS    = 10 * 60 * 1000;
+
+static void set_socket_timeout(socket_t s, int optname, int ms) {
+#ifdef _WIN32
+    DWORD t = (DWORD)ms;
+    setsockopt(s, SOL_SOCKET, optname, (const char*)&t, sizeof(t));
+#else
+    struct timeval tv;
+    tv.tv_sec = ms / 1000;
+    tv.tv_usec = (ms % 1000) * 1000;
+    setsockopt(s, SOL_SOCKET, optname, (const char*)&tv, sizeof(tv));
+#endif
+}
+
+/// The call was interrupted by a signal and should simply be made again.
+static bool interrupted() {
+#ifdef _WIN32
+    return WSAGetLastError() == WSAEINTR;
+#else
+    return errno == EINTR;
+#endif
+}
+
+/// SO_RCVTIMEO / SO_SNDTIMEO ran out.
+static bool timed_out() {
+#ifdef _WIN32
+    return WSAGetLastError() == WSAETIMEDOUT;
+#else
+    return errno == EAGAIN || errno == EWOULDBLOCK;
+#endif
+}
+
+/// Whole buffer or false: send() may take part of it (a base64 screenshot is
+/// hundreds of kB), and a dead peer must neither raise SIGPIPE nor hold the
+/// thread past SEND_TIMEOUT_MS.
+static bool send_all(socket_t s, const std::string& data) {
+#ifdef MSG_NOSIGNAL
+    const int flags = MSG_NOSIGNAL;
+#else
+    const int flags = 0;
+#endif
+    size_t off = 0;
+    while (off < data.size()) {
+        const int n = (int)send(s, data.data() + off, (int)(data.size() - off), flags);
+        if (n < 0 && interrupted()) continue;
+        if (n <= 0) return false;   // a peer gone, or stalled past SO_SNDTIMEO
+        off += (size_t)n;
+    }
+    return true;
+}
+
+static std::string error_reply(const std::string& msg) {
+    return "{" + json_bool("ok", false) + "," + json_string("error", msg) + "}";
+}
+
+/// Cheap shape check before the string-scanning readers see a line: they
+/// answer a garbage line with defaults, which would run an unintended command.
+static bool looks_like_request(const std::string& line) {
+    const size_t first = line.find_first_not_of(" \t\r");
+    const size_t last = line.find_last_not_of(" \t\r");
+    if (first == std::string::npos || line[first] != '{' || line[last] != '}') return false;
+    return !json_get_string(line, "cmd").empty();
+}
+
+/* The audio device verbs open and close sound-server streams (100-500 ms,
+ * seconds for a pactl move) and are thread-safe by design -- the jack panel
+ * runs the same functions on a worker thread under s_audioSelMutex. On the
+ * LVGL thread they froze the UI for as long; they run on the client's thread
+ * instead. ping needs no LVGL/SDL context at all. */
+static bool runs_on_client_thread(const std::string& cmd) {
+    return cmd == "ping" ||
+           cmd == "audio_out_list" || cmd == "audio_in_list" ||
+           cmd == "audio_out_set"  || cmd == "audio_in_set";
+}
+
+static std::string run_on_lvgl_thread(const std::string& line) {
+    auto req = std::make_shared<Request>();
+    req->line = line;
+    {
+        std::lock_guard<std::mutex> qlock(s_queueMutex);
+        s_commandQueue.push(req);
+    }
+    std::unique_lock<std::mutex> lock(req->mutex);
+    req->cv.wait_for(lock, std::chrono::milliseconds(COMMAND_WAIT_MS),
+                     [&] { return req->done || !s_running; });
+    if (req->done) return req->response;
+    req->abandoned = true;
+    return error_reply(s_running ? "timeout" : "stopping");
+}
 
 static void handle_client(socket_t client) {
-    // Set receive timeout
-    #ifdef _WIN32
-    DWORD timeout = 30000; // 30s
-    setsockopt(client, SOL_SOCKET, SO_RCVTIMEO, (const char*)&timeout, sizeof(timeout));
-    #endif
+    // A short receive timeout lets the thread see s_running; a client silent
+    // for IDLE_LIMIT_MS is dropped so idle sockets do not pile up.
+    set_socket_timeout(client, SO_RCVTIMEO, 1000);
+    set_socket_timeout(client, SO_SNDTIMEO, SEND_TIMEOUT_MS);
 
     std::string buffer;
     char chunk[4096];
+    int idleMs = 0;
 
     while (s_running) {
-        int n = recv(client, chunk, sizeof(chunk) - 1, 0);
-        if (n <= 0) break;
-        chunk[n] = '\0';
-        buffer.append(chunk, n);
+        const int n = (int)recv(client, chunk, sizeof(chunk), 0);
+        if (n == 0) break;
+        if (n < 0) {
+            if (interrupted()) continue;
+            if (timed_out() && (idleMs += 1000) < IDLE_LIMIT_MS) continue;
+            break;
+        }
+        idleMs = 0;
+        buffer.append(chunk, (size_t)n);
 
-        // Process complete lines (newline-delimited JSON)
         size_t pos;
         while ((pos = buffer.find('\n')) != std::string::npos) {
             std::string line = buffer.substr(0, pos);
             buffer.erase(0, pos + 1);
+            if (line.find_first_not_of(" \t\r") == std::string::npos) continue;
 
-            if (line.empty()) continue;
-
-            // Commands that need SDL/LVGL context must run on LVGL thread
-            std::string cmd = json_get_string(line, "cmd");
-            if (cmd == "ping") {
-                // ping can respond immediately
-                std::string resp = dispatch_command(line) + "\n";
-                send(client, resp.c_str(), (int)resp.size(), 0);
+            std::string resp;
+            if (!looks_like_request(line)) {
+                resp = error_reply("malformed request: expected one JSON object with a cmd per line");
             } else {
-                // Queue for LVGL thread, wait for response
-                std::unique_lock<std::mutex> lock(s_responseMutex);
-                s_responseReady = false;
-
-                {
-                    std::lock_guard<std::mutex> qlock(s_queueMutex);
-                    s_commandQueue.push({line, nullptr});
+                try {
+                    resp = runs_on_client_thread(json_get_string(line, "cmd"))
+                               ? dispatch_command(line)
+                               : run_on_lvgl_thread(line);
+                } catch (const std::exception& e) {
+                    resp = error_reply(std::string("exception: ") + e.what());
                 }
-
-                // Busy wait for response (with timeout)
-                lock.unlock();
-                int waitMs = 0;
-                while (!s_responseReady && s_running && waitMs < 10000) {
-                    std::this_thread::sleep_for(std::chrono::milliseconds(5));
-                    waitMs += 5;
-                }
-
-                lock.lock();
-                std::string resp = s_responseReady ? s_pendingResponse :
-                    ("{" + json_bool("ok", false) + "," + json_string("error", "timeout") + "}");
-                lock.unlock();
-
-                resp += "\n";
-                send(client, resp.c_str(), (int)resp.size(), 0);
             }
+            resp += "\n";
+            if (!send_all(client, resp)) { CLOSE_SOCKET(client); s_clients--; return; }
+        }
+
+        if (buffer.size() > MAX_LINE_BYTES) {
+            send_all(client, error_reply("request line longer than 1 MiB") + "\n");
+            break;
         }
     }
 
     CLOSE_SOCKET(client);
+    s_clients--;
 }
 
-static void server_thread_func() {
-#ifdef _WIN32
-    WSADATA wsa;
-    if (WSAStartup(MAKEWORD(2, 2), &wsa) != 0) {
-        printf("[Remote] WSAStartup failed\n");
-        return;
-    }
-#endif
-
-    s_listenSocket = socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
-    if (s_listenSocket == SOCKET_INVALID) {
-        printf("[Remote] Failed to create socket\n");
-        return;
-    }
-
-    // Allow reuse
-    int reuse = 1;
-    setsockopt(s_listenSocket, SOL_SOCKET, SO_REUSEADDR, (const char*)&reuse, sizeof(reuse));
-
-    struct sockaddr_in addr = {};
-    addr.sin_family = AF_INET;
-    addr.sin_addr.s_addr = htonl(INADDR_LOOPBACK); // localhost only
-    addr.sin_port = htons(PORT);
-
-    if (bind(s_listenSocket, (struct sockaddr*)&addr, sizeof(addr)) != 0) {
-        printf("[Remote] Failed to bind port %d\n", PORT);
-        CLOSE_SOCKET(s_listenSocket);
-        s_listenSocket = SOCKET_INVALID;
-        return;
-    }
-
-    if (listen(s_listenSocket, 2) != 0) {
-        printf("[Remote] Failed to listen\n");
-        CLOSE_SOCKET(s_listenSocket);
-        s_listenSocket = SOCKET_INVALID;
-        return;
-    }
-
-    printf("[Remote] Listening on 127.0.0.1:%d\n", PORT);
-
+static void accept_loop() {
     while (s_running) {
-        // Use select() with timeout so we can check s_running
         fd_set readfds;
         FD_ZERO(&readfds);
         FD_SET(s_listenSocket, &readfds);
-        struct timeval tv = {1, 0}; // 1 second timeout
+        struct timeval tv = {1, 0};   // wake once a second to see s_running
 
-        int sel = select((int)s_listenSocket + 1, &readfds, nullptr, nullptr, &tv);
+        const int sel = select((int)s_listenSocket + 1, &readfds, nullptr, nullptr, &tv);
         if (sel <= 0) continue;
 
+#ifdef SOCK_CLOEXEC
+        socket_t client = accept4(s_listenSocket, nullptr, nullptr, SOCK_CLOEXEC);
+#else
         socket_t client = accept(s_listenSocket, nullptr, nullptr);
+#endif
         if (client == SOCKET_INVALID) continue;
 
-        // Handle one client at a time (simple for MCP use case)
-        handle_client(client);
+        // One thread per client: a connection that sits idle or reads slowly
+        // never keeps another one (or the LVGL thread) waiting.
+        if (s_clients.load() >= MAX_CLIENTS) {
+            send_all(client, error_reply("too many control connections") + "\n");
+            CLOSE_SOCKET(client);
+            continue;
+        }
+        s_clients++;
+        std::thread(handle_client, client).detach();
     }
-
-    CLOSE_SOCKET(s_listenSocket);
-    s_listenSocket = SOCKET_INVALID;
-
-#ifdef _WIN32
-    WSACleanup();
-#endif
-
-    printf("[Remote] Server stopped\n");
 }
 
 /* ── Public API ──────────────────────────────────────────────────────── */
 
 namespace remote {
 
-void start(lv_display_t* disp) {
+bool start(lv_display_t* disp) {
     s_disp = disp;
+
+#ifdef _WIN32
+    WSADATA wsa;
+    if (WSAStartup(MAKEWORD(2, 2), &wsa) != 0) {
+        fprintf(stderr, "[Remote] WSAStartup failed\n");
+        return false;
+    }
+#endif
+
+    // Bind here, not in the thread: the caller learns at once whether it has
+    // a control port.
+#ifdef SOCK_CLOEXEC
+    // Not into a child: the updater's script and the app it restarts
+    // inherited the bound port, and the new simulator could not bind it.
+    s_listenSocket = socket(AF_INET, SOCK_STREAM | SOCK_CLOEXEC, IPPROTO_TCP);
+#else
+    s_listenSocket = socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
+#endif
+    bool ok = s_listenSocket != SOCKET_INVALID;
+    if (ok) {
+        int reuse = 1;
+        setsockopt(s_listenSocket, SOL_SOCKET, SO_REUSEADDR, (const char*)&reuse, sizeof(reuse));
+
+        struct sockaddr_in addr = {};
+        addr.sin_family = AF_INET;
+        addr.sin_addr.s_addr = htonl(INADDR_LOOPBACK);   // localhost only
+        addr.sin_port = htons(PORT);
+        ok = bind(s_listenSocket, (struct sockaddr*)&addr, sizeof(addr)) == 0 &&
+             listen(s_listenSocket, 8) == 0;
+    }
+    if (!ok) {
+        const char* why = strerror(errno);
+        fprintf(stderr, "[Remote] !!! NO CONTROL PORT: cannot listen on 127.0.0.1:%d (%s). "
+                        "Another simulator owns it? Set CROSSPAD_REMOTE_PORT. "
+                        "This instance cannot be driven.\n", PORT, why);
+        printf("[Remote] !!! NO CONTROL PORT on %d (%s)\n", PORT, why);
+        if (s_listenSocket != SOCKET_INVALID) CLOSE_SOCKET(s_listenSocket);
+        s_listenSocket = SOCKET_INVALID;
+        const std::string title = "CrossPad - NO CONTROL PORT (" + std::to_string(PORT) + " busy)";
+        lv_sdl_window_set_title(disp, title.c_str());
+        return false;
+    }
+
     s_running = true;
-    s_serverThread = std::thread(server_thread_func);
-    printf("[Remote] Control server starting on port %d\n", PORT);
+    s_serverThread = std::thread(accept_loop);
+    printf("[Remote] Listening on 127.0.0.1:%d\n", PORT);
+    return true;
 }
 
 void stop() {
     s_running = false;
+    // A client waiting on a queued command answers "stopping" now, not after
+    // the full COMMAND_WAIT_MS.
+    {
+        std::lock_guard<std::mutex> qlock(s_queueMutex);
+        while (!s_commandQueue.empty()) {
+            auto req = std::move(s_commandQueue.front());
+            s_commandQueue.pop();
+            { std::lock_guard<std::mutex> lock(req->mutex); }
+            req->cv.notify_all();
+        }
+    }
+    if (s_serverThread.joinable()) {
+        s_serverThread.join();
+    }
     if (s_listenSocket != SOCKET_INVALID) {
         CLOSE_SOCKET(s_listenSocket);
         s_listenSocket = SOCKET_INVALID;
     }
-    if (s_serverThread.joinable()) {
-        s_serverThread.join();
+    // client threads see s_running within a second (receive timeout)
+    for (int i = 0; i < 300 && s_clients.load() > 0; i++) {
+        std::this_thread::sleep_for(std::chrono::milliseconds(10));
     }
     printf("[Remote] Control server stopped\n");
 }
@@ -1399,19 +1820,38 @@ void set_audio_device_ctl(const AudioDeviceCtl& ctl) {
 }
 
 void process_pending() {
-    std::lock_guard<std::mutex> lock(s_queueMutex);
-    while (!s_commandQueue.empty()) {
-        auto cmd = std::move(s_commandQueue.front());
-        s_commandQueue.pop();
-
-        std::string response = dispatch_command(cmd.request);
-
-        // Signal response to waiting TCP thread
+    // One request at a time, the queue unlocked while it runs, and a bounded
+    // batch per call: a client flooding commands must not hold the LVGL task
+    // out of lv_timer_handler.
+    for (int handled = 0; handled < 16; handled++) {
+        std::shared_ptr<Request> req;
         {
-            std::lock_guard<std::mutex> rlock(s_responseMutex);
-            s_pendingResponse = response;
-            s_responseReady = true;
+            std::lock_guard<std::mutex> lock(s_queueMutex);
+            if (s_commandQueue.empty()) return;
+            req = std::move(s_commandQueue.front());
+            s_commandQueue.pop();
         }
+
+        {
+            std::lock_guard<std::mutex> lock(req->mutex);
+            if (req->abandoned) continue;   // the client already got "timeout"
+        }
+
+        std::string response;
+        try {
+            response = dispatch_command(req->line);
+        } catch (const std::exception& e) {
+            response = error_reply(std::string("exception: ") + e.what());
+        } catch (...) {
+            response = error_reply("exception");
+        }
+
+        {
+            std::lock_guard<std::mutex> lock(req->mutex);
+            req->response = std::move(response);
+            req->done = true;
+        }
+        req->cv.notify_all();
     }
 }
 

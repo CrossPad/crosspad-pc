@@ -1,0 +1,11 @@
+{
+  "kit": "pianotiles",
+  "display_name": "Piano Tiles",
+  "version": "0.1.0",
+  "apps": [
+    "crosspad-pianotiles"
+  ],
+  "standalone": "PianoTiles",
+  "top_bar": false,
+  "description": "Piano Tiles: six classic tunes played tile by tile on the pads, which light what comes. Five levels a song, best scores kept. Quit in the pause menu goes back."
+}

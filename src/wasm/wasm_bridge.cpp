@@ -72,8 +72,9 @@ extern crosspad::CrosspadStatus status;
 #include "sequencer/PcSequencer.hpp"
 #include "crosspad/sequencer/PatternSequencer.hpp"
 #endif
-#ifdef CP_UX2000
-#include "crosspad-gui/components/mode_overlay.h"
+#if __has_include("crosspad-gui/components/ui_probe.h")   // the GUI map's probe, in crosspad-gui 2.5.0 and later
+#include "crosspad-gui/components/ui_probe.h"
+#define TWIN_UI_TREE 1
 #endif
 
 // The asset loader resolves its folder in a static constructor, long before
@@ -618,18 +619,8 @@ void sync_to(const std::string& app, int launcher) {
         if (a && !strcasecmp(a->getName(), app.c_str())) want = a.get();
     if (!want) { printf("[twin] no app '%s' here\n", app.c_str()); return; }
     printf("[twin] following the board into %s\n", want->getName());
-#ifdef CP_UX2000
-    /* As a pad on the MODE map: the app takes the screen from the one on it
-     * (a home still to come would close it again; a kit list before an app
-     * goes with the rest of the screen). */
-    crosspad_app_settle_home();
-    if (open && !open->isStarted()) crosspad_gui::mode_overlay_go_home();
-    crosspad_gui::mode_overlay_close();
-    crosspad_gui::mode_overlay_open_app(want->getName());
-#else
     if (open || rebuild) crosspad_app_go_home();
     crosspad_gui::AppOrchestrator::onAppSelected(want, crosspad_app_container());
-#endif
 }
 
 void apply_loose(const Input& in) {
@@ -656,7 +647,7 @@ void apply_loose(const Input& in) {
 } // namespace
 
 namespace remote {
-void start(lv_display_t* disp) {
+bool start(lv_display_t* disp) {
     s_disp = disp;
     lv_display_add_event_cb(disp, on_refr_ready, LV_EVENT_REFR_READY, nullptr);
 
@@ -683,6 +674,7 @@ void start(lv_display_t* disp) {
         s_encSdl = lv_indev_get_read_cb(s_enc);
         lv_indev_set_read_cb(s_enc, enc_read);
     }
+    return true;
 }
 void stop() {}
 void process_pending() {
@@ -901,6 +893,20 @@ EMSCRIPTEN_KEEPALIVE const char* wasm_ui_apps() {
         if (a && a->getName() && *a->getName()) { out += a->getName(); out += '\n'; }
     return out.c_str();
 }
+#ifdef TWIN_UI_TREE
+/** The widgets on the LCD as JSON (crosspad_gui::ui_tree_json), for the GUI map. Laid out
+ *  first: a screen shown a moment ago has not had its pass yet. Valid until the next call. */
+EMSCRIPTEN_KEEPALIVE const char* wasm_ui_tree() {
+    static crosspad_gui::UiNode nodes[512];
+    static std::string out;
+    lv_obj_update_layout(lv_screen_active());
+    lv_obj_update_layout(lv_layer_top());
+    const uint16_t n = crosspad_gui::ui_tree_probe(nodes, 512);
+    out.clear();
+    crosspad_gui::ui_tree_json(nodes, n, running_name().c_str(), out);
+    return out.c_str();
+}
+#endif
 /** The twin's running app ("-" on the launcher). */
 EMSCRIPTEN_KEEPALIVE const char* wasm_ui_app() {
     static std::string name;

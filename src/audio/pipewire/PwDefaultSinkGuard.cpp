@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: MIT
+// SPDX-License-Identifier: GPL-3.0-or-later
 #ifdef __linux__
 #include "PwDefaultSinkGuard.hpp"
 #include "PwContext.hpp"
