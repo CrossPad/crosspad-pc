@@ -139,7 +139,7 @@ lv_obj_t* Stm32EmuWindow::init(lv_obj_t* screen)
     screen_ = screen ? screen : lv_screen_active();
 
     lv_display_t* disp = lv_display_get_default();
-    lv_sdl_window_set_title(disp, "CrossPad");
+    lv_sdl_window_set_title(disp, "CrossPad v" CROSSPAD_PC_VERSION);  // which build is running, at a glance
 
     buildLayout();
 
