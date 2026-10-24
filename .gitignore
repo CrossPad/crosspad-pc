@@ -39,5 +39,7 @@ hil_logs/*
 # CP Tools: the app manager scripts/app_manager.py downloads
 scripts/.cache/
 
+# Browser build (preset web-twin)
+/build-web/
 # Python byte code (scripts/ import each other)
 __pycache__/

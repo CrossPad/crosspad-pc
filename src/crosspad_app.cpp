@@ -54,8 +54,12 @@
 #include "crosspad-gui/components/volume_overlay.h"
 #include "crosspad-gui/components/power_gesture.h"
 #include "crosspad-gui/fw/IFwViewService.h"
+#ifdef __EMSCRIPTEN__
+void fw_view_service_install(void);   // the board's (platform-idf main/fw_view_service.cpp)
+#else
 #include "fw/PcFirmware.hpp"
 #include "fw/PcFwViewService.hpp"
+#endif
 #include "crosspad-gui/components/boot_splash.h"
 
 #ifdef USE_MIDI
@@ -129,9 +133,15 @@ static constexpr UBaseType_t kBootTaskPriority = 1;
 
 /* ── State ────────────────────────────────────────────────────────────── */
 
-static lv_obj_t* app_c = nullptr;
+/* The app container, by the name the board's gui.h gives it (its views open apps in it). */
+lv_obj_t* app_c = nullptr;
 static lv_obj_t* s_lcdContainer = nullptr;
 static Stm32EmuWindow stm32Emu;
+static bool s_lcdOnly = false;
+
+void crosspad_app_set_lcd_only(bool on) { s_lcdOnly = on; }
+bool crosspad_app_lcd_only() { return s_lcdOnly; }
+lv_obj_t* crosspad_app_container() { return app_c; }
 
 // Central MIDI router — distributes pad output to USB + BLE + STM32
 static crosspad::MidiInputHandler s_midiHandler;
@@ -1233,6 +1243,34 @@ static void boot_devices()
     }
     s_mixerEngine.setDefaults();
 
+#ifdef CROSSPAD_BOARD_FIRMWARE
+    /* The board's desk, in its order and under its names (platform-idf
+     * crosspad-platform-idf/CrosspadPlatform.cpp): the Mixer lists and files
+     * channels by both. No host plays into a simulator: the USB channel is
+     * there, silent. */
+    static crosspad::AudioInputNode s_usbNode{static_cast<crosspad::IAudioInput*>(nullptr), "USB"};
+    s_samplerNode = crosspad_pc::sampler_port_init(kit_gate_host());
+    if (s_samplerNode) {
+        const auto ch = s_mixerEngine.addChannel(s_samplerNode, "Sampler");
+        for (uint8_t o = 0; o < crosspad_pc::PcAudioModule::NUM_BUSES; ++o) s_mixerEngine.setRouteEnabled(ch, o, true);
+    }
+    s_pitchedNode = crosspad_pc::pitched_port_init(mixerSr);
+    if (s_pitchedNode) {
+        const auto ch = s_mixerEngine.addChannel(s_pitchedNode, "Pitched");
+        for (uint8_t o = 0; o < crosspad_pc::PcAudioModule::NUM_BUSES; ++o) s_mixerEngine.setRouteEnabled(ch, o, true);
+    }
+    {
+        const auto ch = s_mixerEngine.addChannel(&s_usbNode, "USB");
+        for (uint8_t o = 0; o < crosspad_pc::PcAudioModule::NUM_OUTPUTS; ++o) s_mixerEngine.setRouteEnabled(ch, o, true);
+    }
+    crosspad_pc::sequencer_init(s_mixerEngine, crosspad_pc::PcAudioModule::NUM_OUTPUTS);
+    s_mixerEngine.addChannel(&s_in1Node, "IN1");
+    s_mixerEngine.addChannel(&s_in2Node, "IN2");
+    s_mixerEngine.setOutputName(0, "Out 1/2");
+    s_mixerEngine.setOutputName(1, "Out 3/4");
+    s_mixerEngine.setOutputName(crosspad_pc::PcAudioModule::CAPTURE_BUS, "USB rec");
+    s_mixerEngine.setOutputHeard(crosspad_pc::PcAudioModule::CAPTURE_BUS, false);
+#else
     // Register predefined PC channels in IN1=0, IN2=1, SYNTH=2 order.
     s_mixerSynthNode.setEngine(&fmSynth);
     s_mixerEngine.addChannel(&s_in1Node, "Input 1");
@@ -1264,6 +1302,7 @@ static void boot_devices()
     // The click and the pattern sequencer ride the mixer, as on the board,
     // and so does the song engine that plays clips and bounces scenes.
     crosspad_pc::sequencer_init(s_mixerEngine, crosspad_pc::PcAudioModule::NUM_OUTPUTS);
+#endif
     crosspad_pc::song_engine_init(s_mixerEngine, crosspad_pc::PcAudioModule::NUM_OUTPUTS,
                                   crosspad_pc::PcAudioModule::CAPTURE_BUS);
     // The Recorder's and the Slicer's: takes, auditions, kits from a loop.
@@ -1284,6 +1323,7 @@ static void boot_devices()
     // applies; loadState only patches existing slots, never creates them.
     s_mixerEngine.loadState(getMixerStatePath());
 
+#ifndef CROSSPAD_BOARD_FIRMWARE   /* the board's desk names and routes its own */
     // The pads alone on the capture bus a bounce records, whatever an older
     // saved state (two outputs) said about routes it did not know.
     s_mixerEngine.setOutputName(crosspad_pc::PcAudioModule::CAPTURE_BUS, "Rec (pads)");
@@ -1298,6 +1338,7 @@ static void boot_devices()
     if (kit2Ch != kMixerInvalidChannelId) {
         s_mixerEngine.setRouteEnabled(kit2Ch, crosspad_pc::PcAudioModule::CAPTURE_BUS, true);
     }
+#endif
 
     // Engine-level state-changed sink — MixerApp.cpp (cross-platform) calls
     // notifyStateChanged() after every GUI mutation; this hook flushes to disk.
@@ -1485,7 +1526,9 @@ static void boot_finish()
     /* The board's boot-time decisions, made here as its platform makes them,
      * whatever app the firmware is: pad 16 held through the boot goes back
      * to the main firmware, a trial slot confirms itself. */
+#ifndef __EMSCRIPTEN__   /* a twin's slots are the board's (TWIN_FW) */
     if (pc_fw::bootFinished(crosspad::getPadManager().isPadPressed(pc_fw::kRecoveryPad))) return;
+#endif
 
     /* A single-app kit (DOOM) starts into its app; there is no launcher to
      * go back to, Escape is the power click. */
@@ -1493,7 +1536,11 @@ static void boot_finish()
         printf("[CrossPad] kit %s: app %s is not registered\n", CROSSPAD_FW_KIT_ID, CROSSPAD_FW_STANDALONE_APP);
 
     /* ── Auto-check for updates (background) ─────────────────────────── */
+#ifdef __EMSCRIPTEN__
+    if (false) {   // no GitHub in the browser: the board checks for itself
+#else
     if (pc_platform_get_auto_check_updates()) {
+#endif
         std::thread([]() {
             PcUpdater updater;
             auto info = updater.checkForUpdate();
@@ -1915,16 +1962,25 @@ void crosspad_app_init()
     std::atexit(crosspad_app_shutdown);
 #endif
 
+#ifndef __EMSCRIPTEN__
     /* Which slot this binary runs, and that firmware's own settings in place
      * before they are read. */
     pc_fw::boot();
+#endif
 
     /* Platform stubs (event bus, settings, pad manager, GUI) */
     pc_platform_init();
 
     /* The Firmware views and an app that leaves the firmware (DOOM's Quit)
      * switch through the one service. */
+#ifdef __EMSCRIPTEN__
+    /* The board's own service, over what the twin answers for its ESP half
+     * (src/wasm/twin_*.cpp: TWIN_FW, an idle WiFi link, an updater that
+     * leaves the work to the board). */
+    fw_view_service_install();
+#else
     crosspad_gui::setFwViewService(&pcFwViewService());
+#endif
 
     /* The pads' animations (progress bars, showFrame) and the LED controller
      * advance on this tick, as on the board's pad_anim worker. On the LVGL
@@ -1939,10 +1995,18 @@ void crosspad_app_init()
     /* Load saved device preferences */
     loadDevicePrefs();
 
-    /* STM32 emulator window — returns 320x240 LCD container */
-    s_lcdContainer = stm32Emu.init();
+    /* STM32 emulator window — returns 320x240 LCD container. With --lcd the
+     * display is the LCD itself: the GUI takes the active screen as the board's
+     * does, and the body is built on a screen never shown (its jacks and card
+     * slot are still what the rest of the simulator talks to). */
+    s_lcdContainer = s_lcdOnly ? (stm32Emu.init(lv_obj_create(nullptr)), lv_screen_active())
+                               : stm32Emu.init();
 
     /* Virtual SD card slot — auto-mount from saved preferences */
+#ifdef __EMSCRIPTEN__
+    // The page mounts the card (IndexedDB) at /sdcard (crosspad-web-twin web/simtwin.js).
+    if (s_devicePrefs.sdcardPath.empty()) s_devicePrefs.sdcardPath = "/sdcard";
+#endif
     if (!s_devicePrefs.sdcardPath.empty()) {
         namespace fs = std::filesystem;
         std::error_code ec;
@@ -1983,13 +2047,16 @@ void crosspad_app_init()
     /* Overlay layer on lv_layer_top(), exactly over the LCD area. It sat at
      * y = 20 while the panel is drawn at LCD_Y, so every overlay -- the MODE
      * map, dialogs, the kit loader -- landed 38 px high, and one aligned to
-     * the panel lost its bottom 38 px to the layer's clip. */
-    lv_obj_t* overlayLayer = lv_obj_create(lv_layer_top());
-    lv_obj_remove_style_all(overlayLayer);
-    lv_obj_set_pos(overlayLayer, Stm32EmuWindow::LCD_X, Stm32EmuWindow::LCD_Y);
-    lv_obj_set_size(overlayLayer, Stm32EmuWindow::LCD_W, Stm32EmuWindow::LCD_H);
-    lv_obj_remove_flag(overlayLayer, (lv_obj_flag_t)(LV_OBJ_FLAG_CLICKABLE | LV_OBJ_FLAG_SCROLLABLE));
-    crosspad_gui::setOverlayParent(overlayLayer);
+     * the panel lost its bottom 38 px to the layer's clip. With --lcd the top
+     * layer is the LCD already, as on the board. */
+    if (!s_lcdOnly) {
+        lv_obj_t* overlayLayer = lv_obj_create(lv_layer_top());
+        lv_obj_remove_style_all(overlayLayer);
+        lv_obj_set_pos(overlayLayer, Stm32EmuWindow::LCD_X, Stm32EmuWindow::LCD_Y);
+        lv_obj_set_size(overlayLayer, Stm32EmuWindow::LCD_W, Stm32EmuWindow::LCD_H);
+        lv_obj_remove_flag(overlayLayer, (lv_obj_flag_t)(LV_OBJ_FLAG_CLICKABLE | LV_OBJ_FLAG_SCROLLABLE));
+        crosspad_gui::setOverlayParent(overlayLayer);
+    }
 
     /* The board's cold-boot splash, the first thing on the panel: the devices
      * come up behind it, the launcher is built behind it, and it leaves once
@@ -2059,6 +2126,9 @@ bool crosspad_app_start(const char* name)
 
 void crosspad_app_update_pad_icon()
 {
+#ifdef CROSSPAD_BOARD_FIRMWARE
+    return;   // a simulator's glyph; the board's status bar has none
+#endif
     std::string active = crosspad::getPadManager().getActivePadLogic();
 
     if (active == "MLPiano") {

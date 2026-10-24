@@ -38,7 +38,14 @@ static int touch_watch(void * user, SDL_Event * e)
    * port's SDL_PushEvent() inside remote::process_pending(). */
   if (e->type != SDL_MOUSEBUTTONDOWN && e->type != SDL_MOUSEBUTTONUP &&
       e->type != SDL_MOUSEMOTION && e->type != SDL_WINDOWEVENT) return 0;
+#if LVGL_VERSION_MAJOR == 9 && LVGL_VERSION_MINOR < 4
+  /* A board's LVGL 9.3 (the browser twin) has no lv_sdl_window_get_window():
+   * there the page's canvas is the one window, so every event is this one's. */
+  const Uint32 win = e->type == SDL_WINDOWEVENT ? e->window.windowID
+                   : e->type == SDL_MOUSEMOTION ? e->motion.windowID : e->button.windowID;
+#else
   const Uint32 win = SDL_GetWindowID(lv_sdl_window_get_window(s_disp));
+#endif
   const float zoom = lv_sdl_window_get_zoom(s_disp);
   switch (e->type) {
     case SDL_MOUSEBUTTONDOWN:
@@ -94,6 +101,7 @@ lv_display_t * sdl_hal_init(int32_t w, int32_t h)
   lv_indev_set_group(mouse, lv_group_get_default());
   lv_indev_set_display(mouse, disp);
   lv_display_set_default(disp);
+#ifndef __EMSCRIPTEN__   /* the page reads the LCD out as pixels: no cursor on it */
   /*Declare the image file.*/
   LV_IMAGE_DECLARE(mouse_cursor_icon); 
   lv_obj_t * cursor_obj;
@@ -102,7 +110,8 @@ lv_display_t * sdl_hal_init(int32_t w, int32_t h)
   /*Set the image source*/
   lv_image_set_src(cursor_obj, &mouse_cursor_icon);           
   /*Connect the image  object to the driver*/
-  lv_indev_set_cursor(mouse, cursor_obj);             
+  lv_indev_set_cursor(mouse, cursor_obj);
+#endif             
 
   /* The rotary encoder. Left without a group on purpose: crosspad-gui hands it
    * one per screen (launcher, settings, the quick-settings drawer), the same

@@ -118,4 +118,9 @@ private:
     LineCallback lineCb_;
 
     void readerLoop();
+#ifdef __EMSCRIPTEN__
+public:
+    /// Bytes from Web Serial (src/wasm/web_uart.cpp).
+    void feed(const uint8_t* data, size_t len);
+#endif
 };
