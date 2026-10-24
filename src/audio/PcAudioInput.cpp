@@ -99,7 +99,7 @@ bool PcAudioInput::begin(unsigned int inputDevice, uint32_t sampleRate,
         &PcAudioInput::rtAudioCallback, this, &options);
 
     if (err != RTAUDIO_NO_ERROR) {
-        printf("[AudioIn] Failed to open stream: %s\n", rtAudio_->getErrorText());
+        printf("[AudioIn] Failed to open stream: %s\n", rtAudio_->getErrorText().c_str());
         rtAudio_.reset();
         return false;
     }
@@ -111,7 +111,7 @@ bool PcAudioInput::begin(unsigned int inputDevice, uint32_t sampleRate,
 
     err = rtAudio_->startStream();
     if (err != RTAUDIO_NO_ERROR) {
-        printf("[AudioIn] Failed to start stream: %s\n", rtAudio_->getErrorText());
+        printf("[AudioIn] Failed to start stream: %s\n", rtAudio_->getErrorText().c_str());
         rtAudio_->closeStream();
         streamOpen_ = false;
         currentDeviceName_.clear();

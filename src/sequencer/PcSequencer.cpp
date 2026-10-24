@@ -10,13 +10,16 @@
 #include "crosspad/platform/PlatformServices.hpp"
 #include "crosspad/sequencer/MetronomeNode.hpp"
 #include "crosspad/sequencer/PatternSequencer.hpp"
-#include "crosspad/sequencer/SequenceStore.hpp"
 #include "crosspad/sequencer/SequencerController.hpp"
+#include "crosspad/song/SongScenes.hpp"
+#include "crosspad/transport/SequencerTransport.hpp"
+#include "crosspad-gui/components/mode_overlay.h"
 #include "pc_stubs/pc_platform.h"
 
 #include "FreeRTOS.h"
 #include "task.h"
 
+#include <cstdio>
 #include <string>
 
 namespace {
@@ -25,7 +28,6 @@ crosspad::MetronomeNode s_metronome;
 crosspad::PatternSequencer s_sequencer;
 crosspad::SequencerController s_controller;
 
-constexpr const char* kScenesFile = "/crosspad/sequences.json";
 /// While a pattern or a count-in runs the poll is the jitter a fired hit
 /// inherits; idle it only decides how soon a transport start is noticed.
 constexpr uint32_t kPollLiveMs = 2;
@@ -51,25 +53,22 @@ void poll_task(void*)
     }
 }
 
-/// Read the scenes once a card is there, then write them back whenever they
-/// change -- never mid-take, and never over a file that did not read.
+void scenes_log(bool warning, const char* msg)
+{
+    std::printf("[seq_store]%s %s\n", warning ? " warning:" : "", msg);
+}
+
+/// The scenes as the open song's (core's SongScenes), as on the board.
+crosspad::SongScenes s_scenes(s_sequencer, scenes_log);
+
+/// Sweep while a card is in: the open song's scenes come in, changes go out.
 void store_task(void*)
 {
-    std::string file;
     for (;;) {
         vTaskDelay(pdMS_TO_TICKS(kStoreSweepMs));
-        if (pc_platform_get_sdcard_path().empty()) continue;
-        if (file.empty()) {
-            const std::string path = pc_platform_resolve_sdcard_path(kScenesFile);
-            if (crosspad::SequenceStore::open(s_sequencer, path) == crosspad::SequenceLoad::Unreadable) {
-                continue;
-            }
-            file = path;
-            s_sequencer.clearDirty();
-            continue;
-        }
-        if (!s_sequencer.dirty() || s_sequencer.isRecording()) continue;
-        if (crosspad::SequenceStore::save(s_sequencer, file)) s_sequencer.clearDirty();
+        const std::string root = pc_platform_get_sdcard_path();
+        if (root.empty()) continue;
+        s_scenes.sweep(root);
     }
 }
 
@@ -77,6 +76,32 @@ void store_task(void*)
 
 crosspad::MetronomeNode& getMetronome() { return s_metronome; }
 crosspad::PatternSequencer& getSequencer() { return s_sequencer; }
+
+namespace crosspad_pc {
+
+void sequencer_kit_changed(const std::string& kitJsonPath) { s_scenes.kitChanged(kitJsonPath); }
+
+std::string sequencer_report()
+{
+    auto& sq = s_sequencer;
+    std::string bars, ev;
+    for (uint8_t s = 0; s < crosspad::PatternSequencer::kNumSequences; ++s) {
+        const char* sep = s ? "/" : "";
+        bars += sep + std::to_string(sq.sceneBars(s));
+        ev += sep + std::to_string(sq.eventCount(s));
+    }
+    char head[192];
+    std::snprintf(head, sizeof(head), "SEQ: mode=%u state=%u scenes=%u scene=%u>%u bars=",
+                  (unsigned)sq.mode(), (unsigned)sq.state(), (unsigned)sq.sceneCount(),
+                  (unsigned)sq.activeScene(), (unsigned)sq.pendingScene());
+    char tail[160];
+    std::snprintf(tail, sizeof(tail), " bpm=%.1f quant=%u pos=%.3f dirty=%d erase=%d countin=%d file=",
+                  sq.getClickBpm(), (unsigned)sq.quantization(), (double)sq.progress(),
+                  sq.dirty() ? 1 : 0, sq.erasing() ? 1 : 0, sq.countIn() ? 1 : 0);
+    return std::string(head) + bars + " ev=" + ev + tail + s_scenes.currentFile();
+}
+
+} // namespace crosspad_pc
 
 namespace crosspad_pc {
 
@@ -98,13 +123,18 @@ void sequencer_init(AudioMixerEngine& mixer, uint8_t audibleOutputs)
      * pads have more ways in (mouse grid, keyboard, MIDI, remote), so the
      * pad manager's input tap stamps them all. */
     crosspad::getPadManager().setInputTap([](void*, uint8_t pad, uint8_t vel) {
-        s_sequencer.noteIn(pad, vel);
+        /* A hit on the MODE map picks an app and plays nothing (the board's
+         * tap, midiCallbacks.cpp). */
+        if (!crosspad_gui::mode_overlay_is_open()) s_sequencer.noteIn(pad, vel);
     }, nullptr);
     s_controller.setSeqLength(crosspad::SequencerLimits::MAX_SEQ_LENGTH);
     s_controller.init(s_sequencer);
     s_sequencer.setController(&s_controller);
     crosspad::getPlatformServices().sequencer = &s_controller;
     crosspad::getPlatformServices().sequencerEngine = &s_sequencer;
+    /* The pattern is the transport's home, as on the board: it holds it until
+     * an app takes it and gets it back when that app is left stopped. */
+    crosspad::transportSetHome(crosspad::sequencerTransport());
     /* The process ends with _Exit(); these run until then. */
     xTaskCreate(poll_task, "seq_poll", kTaskStack, nullptr, kPollPriority, nullptr);
     xTaskCreate(store_task, "seq_store", kTaskStack, nullptr, kStorePriority, nullptr);

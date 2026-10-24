@@ -8,7 +8,7 @@
 #include "crosspad/platform/CrosspadPlatformInit.hpp"
 #include "crosspad/platform/PlatformCapabilities.hpp"
 #include "crosspad/platform/PlatformServices.hpp"
-#include "crosspad/event/FreeRtosEventBus.hpp"
+#include "pc_stubs/FreeRtosEventBus.hpp"
 #include "crosspad/pad/PadManager.hpp"
 #include "crosspad/pad/PadLedController.hpp"
 #include "crosspad/pad/PadAnimator.hpp"

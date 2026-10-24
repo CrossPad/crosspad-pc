@@ -61,6 +61,28 @@ void PcAudioModule::process() {
     }
 }
 
+void PcAudioModule::addNode(crosspad::IAudioNode* node) {
+    if (!mixer_) {
+        AbstractAudioModule::addNode(node);
+        return;
+    }
+    if (!node) return;
+    if (config_.sampleRate > 0) node->onPrepare(config_.frameCount, config_.sampleRate);
+    for (auto& slot : appNodes_) {
+        crosspad::IAudioNode* empty = nullptr;
+        if (slot.compare_exchange_strong(empty, node, std::memory_order_acq_rel)) return;
+    }
+    printf("[PcAudioModule] no room for node %s\n", node->name());
+}
+
+void PcAudioModule::removeNode(crosspad::IAudioNode* node) {
+    for (auto& slot : appNodes_) {
+        crosspad::IAudioNode* expected = node;
+        slot.compare_exchange_strong(expected, nullptr, std::memory_order_acq_rel);
+    }
+    AbstractAudioModule::removeNode(node);
+}
+
 void PcAudioModule::processMixer() {
     const uint32_t frames  = config_.frameCount;
     const uint32_t samples = frames * 2;
@@ -68,6 +90,10 @@ void PcAudioModule::processMixer() {
     float* outBuses[NUM_BUSES];
     for (uint8_t s = 0; s < NUM_BUSES; ++s) outBuses[s] = mixerBus_[s].data();
     mixer_->render(outBuses, NUM_BUSES, frames);
+    for (auto& slot : appNodes_) {
+        crosspad::IAudioNode* n = slot.load(std::memory_order_acquire);
+        if (n && n->enabled() && n->isGenerator()) n->mix(mixerBus_[0].data(), frames);
+    }
     if (CaptureTap tap = captureTap_.load(std::memory_order_acquire)) {
         tap(mixerBus_[CAPTURE_BUS].data(), frames);
     }
@@ -85,11 +111,19 @@ void PcAudioModule::processMixer() {
         uint32_t pushed = stream->pushSamples(pushScratchInt16_[s].data(),
                                             crosspad::AudioFormat::Int16, frames);
         if (pushed < frames) {
-            // Ring overflow — we are producing faster than RtAudio drains. Log at
-            // most once a second so sustained overrun is visible but not spammy.
-            if (++overflowCount_ % overflowLogEvery_ == 1) {
-                printf("[PcAudioModule] OUT%u overflow: dropped %u frames (total events %u)\n",
-                       unsigned(s + 1), frames - pushed, overflowCount_);
+            // Ring overflow — we are producing faster than RtAudio drains. Counted
+            // every time, said at most once per overflowLogPeriod with the total
+            // since the last line, so a sustained overrun is one line, not a stream.
+            ++overflowCount_;
+            overflowFrames_ += frames - pushed;
+            const auto now = std::chrono::steady_clock::now();
+            if (now - overflowLastLog_ >= overflowLogPeriod) {
+                overflowLastLog_ = now;
+                printf("[PcAudioModule] OUT overflow: %u events, %llu frames dropped since the last report (total events %u)\n",
+                       overflowCount_ - overflowReported_,
+                       (unsigned long long)overflowFrames_, overflowCount_);
+                overflowReported_ = overflowCount_;
+                overflowFrames_ = 0;
             }
         }
     }

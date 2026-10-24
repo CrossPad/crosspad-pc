@@ -108,7 +108,7 @@ jobs:
       - name: Install dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y libsdl2-dev ninja-build libasound2-dev
+          sudo apt-get install -y libsdl2-dev ninja-build libasound2-dev libpulse-dev libdbus-1-dev
 
       - name: Configure
         run: >

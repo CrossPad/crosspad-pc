@@ -16,6 +16,7 @@
 #include <SDL2/SDL.h>
 #include "crosspad-gui/platform/IGuiPlatform.h"
 #include "crosspad_app.hpp"
+#include "pc_stubs/pc_platform.h"
 
 /* ── SDL event watcher (encoder + keyboard capture) ──────────────────── */
 
@@ -175,6 +176,7 @@ void Stm32EmuWindow::buildLayout()
     encoder_.create(screen_, ENC_X, ENC_Y, ENC_SIZE);
     powerBtn_.create(screen_, PWR_X, PWR_Y, PWR_SIZE);
     padGrid_.create(screen_, GRID_X, GRID_Y, PAD_SIZE, PAD_GAP);
+    padGrid_.setLedSource(&pc_get_led_color);
 
     // Logo centered between LCD and pad grid
     lv_obj_t* logo = lv_image_create(screen_);

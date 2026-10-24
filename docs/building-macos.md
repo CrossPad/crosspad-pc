@@ -14,7 +14,8 @@ Build steps: https://crosspad.app/docs/start-here/pc-simulator/ (macOS tab).
   CoreMIDI and CoreFoundation itself. RtAudio 6.0.0 does the same for CoreAudio
   (`RTAUDIO_API_CORE`). PipeWire and PulseAudio are gated to Linux in
   CMakeLists.txt.
-- FreeRTOS uses the **GCC POSIX port**, which builds on macOS via pthreads.
+- FreeRTOS uses the kernel's **GCC POSIX port** (`port.c` +
+  `utils/wait_for_event.c`), which builds on macOS via pthreads.
 - **No unguarded Linux-only system headers.** Every `<pulse/*>`, `<spa/*>`,
   `<pipewire-*>` include lives in a file compiled only under
   `CROSSPAD_PIPEWIRE_OK` / `if(CMAKE_SYSTEM_NAME STREQUAL "Linux")`, or behind
@@ -24,7 +25,8 @@ Build steps: https://crosspad.app/docs/start-here/pc-simulator/ (macOS tab).
   are behind `crosspad_pc::audio_platform`, whose non-Linux path is a no-op, so
   on macOS the selector runs on plain RtAudio (CoreAudio) devices.
 - The exe path comes from `_NSGetExecutablePath` (`PcPlatformStubs.cpp`), and
-  HTTP (App Store, update check) shells out to `curl` (`PcHttpClient.cpp`).
+  HTTP (App Store, update check) runs `curl` through `posix_spawnp`
+  (`PcHttpClient.cpp`, `PcSubprocess.cpp`).
 
 ## What is missing on macOS
 

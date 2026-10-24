@@ -17,6 +17,7 @@
  * float buffers live here as mixerBus_.
  */
 
+#include <chrono>
 #include <crosspad/audio/AbstractAudioModule.hpp>
 #include <atomic>
 #include <thread>
@@ -88,6 +89,14 @@ public:
     /// Pass nullptr to fall back to the node chain.
     void setMixerEngine(AudioMixerEngine* mixer) { mixer_ = mixer; }
 
+    /// With the mixer rendering, a node an app adds (DOOM's sound) is no mixer
+    /// channel: it goes into a fixed table the render reads without a lock,
+    /// and plays on OUT1. Without the mixer, the node chain. An app may add
+    /// one while the render runs; one it removes must outlive the render pass
+    /// that may still be in it.
+    void addNode(crosspad::IAudioNode* node) override;
+    void removeNode(crosspad::IAudioNode* node) override;
+
     /// Optional post-master tap of OUT1: every processMixer cycle the int16
     /// conversion of bus 0 is also pushed here (e.g. a PipeWire virtual
     /// source mirroring CrossPad's output as a "microphone"). Pass nullptr
@@ -108,6 +117,8 @@ public:
 private:
     PcRtAudioOutputStream outputs_[NUM_OUTPUTS];
     AudioMixerEngine* mixer_ = nullptr;
+    static constexpr size_t kAppNodes = 4;
+    std::atomic<crosspad::IAudioNode*> appNodes_[kAppNodes] = {};
     std::atomic<crosspad::IAudioStream*> aux_{nullptr};
     std::atomic<CaptureTap> captureTap_{nullptr};
 
@@ -130,7 +141,10 @@ private:
 
     // Ring overflow tracking and rate-limited logging
     uint32_t overflowCount_ = 0;
-    uint32_t overflowLogEvery_ = 400;  // ≈1-2 s depending on frameCount (128-256) at 48kHz
+    uint32_t overflowReported_ = 0;
+    uint64_t overflowFrames_ = 0;
+    std::chrono::steady_clock::time_point overflowLastLog_{};
+    static constexpr std::chrono::seconds overflowLogPeriod{10};
 
     void audioThreadFunc();
     void processMixer();

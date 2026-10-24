@@ -80,9 +80,13 @@ PcAudioOutput* pc_platform_get_audio_output(int index);
 /// Save the current mixer state to ~/.crosspad/mixer_state.json
 void pc_platform_save_mixer_state();
 
-// ── Virtual SD card ──────────────────────────────────────────────────────
-
 #include <string>
+
+/// The profile directory, worked out from the environment: usable before
+/// pc_platform_init() (the firmware slots read it that early).
+std::string pc_platform_resolve_profile_dir();
+
+// ── Virtual SD card ──────────────────────────────────────────────────────
 
 /// Set the virtual SD card root directory. Creates /crosspad/kits/ and
 /// /crosspad/recordings/ subdirectories if they don't exist.
