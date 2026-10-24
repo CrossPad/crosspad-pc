@@ -558,6 +558,11 @@ if(CROSSPAD_FIRMWARE_DIR AND EMSCRIPTEN)
     if(EXISTS "${CROSSPAD_FIRMWARE_DIR}/main/include/cp_account.h")
         list(APPEND _board_builtin_sources "${PROJECT_SOURCE_DIR}/src/wasm/twin_account.cpp")
     endif()
+    # A firmware with Settings -> USB host: a browser no host ever enumerates
+    # (src/wasm/twin_usb_host.cpp).
+    if(EXISTS "${CROSSPAD_FIRMWARE_DIR}/main/include/usb_host_profile.h")
+        list(APPEND _board_builtin_sources "${PROJECT_SOURCE_DIR}/src/wasm/twin_usb_host.cpp")
+    endif()
     # The board's data (TWIN_FW) in the firmware's own package and slot types.
     list(APPEND _board_builtin_sources "${PROJECT_SOURCE_DIR}/src/wasm/twin_board.cpp")
     set_source_files_properties(${_board_builtin_sources} PROPERTIES
