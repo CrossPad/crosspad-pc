@@ -84,6 +84,7 @@ void fw_view_service_install(void);   // the board's (platform-idf main/fw_view_
 #include "audio/sampler/PcInstrumentHost.hpp"
 #include "audio/sampler/PcPitchedPort.hpp"
 #include "audio/sampler/PcSamplerPort.hpp"
+#include "audio/sampler/PcSecondKit.hpp"
 #include <crosspad-sampler/logic/kit_gate.hpp>
 #ifdef USE_VIRTUAL_AUDIO
 #include "audio/virtual/IVirtualSinkManager.hpp"
@@ -172,6 +173,7 @@ static crosspad::IAudioNode* s_samplerNode = nullptr;
 // The second sample engine: one PitchedInstrument, silent until a kit whose
 // kit.json says "engine": "pitched" is loaded.
 static crosspad::IAudioNode* s_pitchedNode = nullptr;
+static crosspad::IAudioNode* s_kit2Node = nullptr;
 
 /// Sink each output wants to be pinned to, applied once audio is flowing.
 /// Empty means "wherever the sound server puts it".
@@ -1306,6 +1308,17 @@ static void boot_devices()
     // The Recorder's and the Slicer's: takes, auditions, kits from a loop.
     crosspad_pc::sample_tools_init(s_mixerEngine, crosspad_pc::PcAudioModule::NUM_OUTPUTS);
 
+    // A song's second kit track plays its own kit in an engine of its own
+    // (core ISecondKit), on a channel of its own as on the board. Added after
+    // the channels whose indices are pinned, and before loadState() for the
+    // same reason as the sampler.
+    s_kit2Node = crosspad_pc::second_kit_node();
+    const auto kit2Ch = s_mixerEngine.addChannel(s_kit2Node, "Kit 2");
+    if (kit2Ch != kMixerInvalidChannelId) {
+        s_mixerEngine.setRouteEnabled(kit2Ch, static_cast<AudioMixerEngine::OutputId>(MixerOutput::OUT1), true);
+    }
+    crosspad::getPlatformServices().secondKit = crosspad_pc::second_kit();
+
     // Load mixer state AFTER channel slots exist so saved per-channel routing
     // applies; loadState only patches existing slots, never creates them.
     s_mixerEngine.loadState(getMixerStatePath());
@@ -1321,6 +1334,9 @@ static void boot_devices()
     if (s_pitchedNode) {
         s_mixerEngine.setRouteEnabled(static_cast<MixerInput>(4),
                                       static_cast<MixerOutput>(crosspad_pc::PcAudioModule::CAPTURE_BUS), true);
+    }
+    if (kit2Ch != kMixerInvalidChannelId) {
+        s_mixerEngine.setRouteEnabled(kit2Ch, crosspad_pc::PcAudioModule::CAPTURE_BUS, true);
     }
 #endif
 
@@ -1370,6 +1386,9 @@ static void boot_devices()
         if (s_samplerNode) s_audioModule.addNode(s_samplerNode);
         s_pitchedNode = crosspad_pc::pitched_port_init(cfg.sampleRate);
         if (s_pitchedNode) s_audioModule.addNode(s_pitchedNode);
+        s_kit2Node = crosspad_pc::second_kit_node();
+        s_audioModule.addNode(s_kit2Node);
+        crosspad::getPlatformServices().secondKit = crosspad_pc::second_kit();
 #endif
         crosspad::getPlatformServices().setAudioModule(&s_audioModule);
         // Apps borrow the pitched engine through it (an Arrange Pitch track, a
