@@ -28,3 +28,12 @@ GPL-3.0-or-later, see [LICENSE](LICENSE). Code from LVGL's `lv_port_pc_vscode` t
 (ML_SynthTools, Marcel Licence) is GPL-3.0-or-later. Submodules (LVGL, FreeRTOS, crosspad-core,
 crosspad-gui, the apps) and the libraries CMake fetches (RtMidi, RtAudio, ArduinoJson, SimpleBLE, fmt,
 Catch2) keep their own licenses; SimpleBLE is GPL-3.0, with a commercial license sold by its authors.
+
+### No warranty, intended use
+
+CrossPad is a musical instrument. This software is provided "as is", without
+warranty of any kind (GPL-3.0 sections 15 and 16). It is not designed, tested
+or certified for safety-critical use — medical, military, aviation,
+automotive, nuclear or life-support systems — and should not be relied on
+where a failure could cause injury, death or damage to property. Details:
+[Legal](https://crosspad.app/docs/reference/legal/).
