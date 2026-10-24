@@ -61,6 +61,11 @@ pid_t spawn_with(std::vector<std::string> argv, std::vector<std::string> env,
                  posix_spawn_file_actions_t* fa, bool newSession)
 {
     if (argv.empty()) return -1;
+#ifdef __EMSCRIPTEN__
+    // A page starts no processes: every caller already takes -1 as "did not start".
+    (void)env; (void)fa; (void)newSession;
+    return -1;
+#else
 #if defined(__GLIBC__) && (__GLIBC__ > 2 || (__GLIBC__ == 2 && __GLIBC_MINOR__ >= 34))
     posix_spawn_file_actions_addclosefrom_np(fa, 3);
 #endif
@@ -85,6 +90,7 @@ pid_t spawn_with(std::vector<std::string> argv, std::vector<std::string> env,
     const int rc = posix_spawnp(&pid, cargv[0], fa, &attr, cargv.data(), cenv.data());
     posix_spawnattr_destroy(&attr);
     return rc == 0 ? pid : -1;
+#endif
 }
 
 int remaining_ms(std::chrono::steady_clock::time_point deadline)

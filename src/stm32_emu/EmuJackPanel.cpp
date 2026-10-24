@@ -249,7 +249,10 @@ void EmuJackPanel::createJack(lv_obj_t* parent, JackId id,
     }
 
     // --- Dropdown (all jacks are clickable) ---
-    jack.dropdown = lv_dropdown_create(lv_layer_top());
+    // Above the body on the top layer; a body built on a screen never shown
+    // (--lcd) keeps its dropdowns there too, off the LCD's top layer.
+    lv_obj_t* scr = lv_obj_get_screen(parent);
+    jack.dropdown = lv_dropdown_create(scr == lv_screen_active() ? lv_layer_top() : scr);
     lv_dropdown_set_text(jack.dropdown, nullptr);
     lv_dropdown_set_options(jack.dropdown, "(None)");
     lv_obj_set_style_text_font(jack.dropdown, &lv_font_montserrat_10, 0);

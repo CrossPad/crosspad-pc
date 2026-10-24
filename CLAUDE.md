@@ -50,6 +50,24 @@ FreeRTOS is always on (there is no `USE_FREERTOS` option any more).
 | `LV_USE_FFMPEG` | OFF | Video playback |
 | `LV_USE_FREETYPE` | OFF | FreeType font rendering |
 | `ASAN` | OFF | AddressSanitizer (Debug, non-MSVC only) |
+| `CROSSPAD_FIRMWARE_DIR` | (empty) | A platform-idf checkout: build *its* crosspad-core, crosspad-gui (with its fonts), apps and LVGL instead of this repo's pins (defines `CROSSPAD_BOARD_FIRMWARE`). Required for the browser build |
+| `CROSSPAD_EXTRA_APPS` | (empty) | More app directories to build (`;`-separated), e.g. the apps a board installed beside its firmware's own; one with the same name replaces it |
+| `CROSSPAD_WEB_OUT` | `build-*/web` | Browser build only: where `CrossPad.{mjs,wasm,data}` go |
+| `CROSSPAD_WEB_ASSETS` | (empty) | Browser build only: a board's mirrored assets partition (with a `.pulled` stamp) preloaded as `/assets`; empty = `bin/assets` |
+
+### Browser twin (WebAssembly)
+
+`cmake --preset web-twin && cmake --build --preset web-twin` (emsdk sourced) ->
+`build-web/web/CrossPad.{mjs,wasm,data}`: the firmware of `../platform-idf` in a
+web page. The pages that run it (live twin of a board over Web MIDI, standalone
+emulator), board-data and test tools, the build wrapper and the docs live in
+[CrossPad/crosspad-web-twin](https://github.com/CrossPad/crosspad-web-twin),
+which has this repository as a submodule; it sets `CROSSPAD_WEB_OUT` (where the
+build goes) and `CROSSPAD_WEB_ASSETS` (a board's mirrored assets partition).
+Browser-only code here is `src/wasm/` (bridge, Web MIDI/Audio/Serial, the
+board's data and `src/wasm/board/` headers for its Settings/Firmware apps) and
+`src/freertos/wasm/` (tasks as fibers). `--lcd` (any build) makes the display
+the LCD alone.
 
 ### Compile Defines
 

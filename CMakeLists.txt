@@ -24,6 +24,56 @@ if(NOT EXISTS "${CMAKE_CURRENT_LIST_DIR}/.vscode/settings.json"
     endif()
 endif()
 
+# ── Which firmware this builds ──────────────────────────────────────────
+# Unset: this repository's pinned crosspad-core, crosspad-gui, apps and LVGL
+# -- the desktop simulator. Set to a platform-idf checkout: that firmware's own
+# components (the fonts are crosspad-gui's) and its LVGL (the ESP-IDF managed
+# component), so what runs is what the board runs. The browser twin of a board is
+# built this way (preset web-twin; the pages and tools: crosspad-web-twin).
+set(CROSSPAD_FIRMWARE_DIR "" CACHE PATH "platform-idf checkout to build the firmware from (empty: this repository's pins)")
+if(CROSSPAD_FIRMWARE_DIR)
+    get_filename_component(CROSSPAD_FIRMWARE_DIR "${CROSSPAD_FIRMWARE_DIR}" ABSOLUTE BASE_DIR "${CMAKE_SOURCE_DIR}")
+    set(CP_CORE_DIR "${CROSSPAD_FIRMWARE_DIR}/components/crosspad-core")
+    set(CP_GUI_DIR  "${CROSSPAD_FIRMWARE_DIR}/components/crosspad-gui")
+    set(CP_LVGL_DIR "${CROSSPAD_FIRMWARE_DIR}/managed_components/lvgl__lvgl")
+    file(GLOB CP_APP_DIRS LIST_DIRECTORIES true "${CROSSPAD_FIRMWARE_DIR}/components/crosspad-*")
+    list(FILTER CP_APP_DIRS EXCLUDE REGEX "/crosspad-(core|gui|platform-idf)$")
+    foreach(_need CP_CORE_DIR CP_GUI_DIR CP_LVGL_DIR)
+        if(NOT EXISTS "${${_need}}")
+            message(FATAL_ERROR "CROSSPAD_FIRMWARE_DIR: no ${${_need}} (run a firmware build there once: it fetches the managed LVGL)")
+        endif()
+    endforeach()
+    # The board's lv_conf values (lv_conf.h) and the board's desk and status bar
+    # (crosspad_app.cpp) instead of the simulator's.
+    add_compile_definitions(CROSSPAD_BOARD_FIRMWARE=1)
+    message(STATUS "Firmware from ${CROSSPAD_FIRMWARE_DIR}")
+else()
+    set(CP_CORE_DIR "${CMAKE_SOURCE_DIR}/lib/crosspad-core")
+    set(CP_GUI_DIR  "${CMAKE_SOURCE_DIR}/lib/crosspad-gui")
+    set(CP_LVGL_DIR "${CMAKE_SOURCE_DIR}/lvgl")
+    file(GLOB CP_APP_DIRS LIST_DIRECTORIES true "${CMAKE_SOURCE_DIR}/src/apps/crosspad-*")
+endif()
+# Apps a board has installed beside its firmware's own (the app manager puts
+# them in components/ untracked): a twin of that board builds them too.
+set(CROSSPAD_EXTRA_APPS "" CACHE STRING "More app directories to build (;-separated)")
+foreach(_extra ${CROSSPAD_EXTRA_APPS})
+    get_filename_component(_extra "${_extra}" ABSOLUTE BASE_DIR "${CMAKE_SOURCE_DIR}")
+    get_filename_component(_extra_name "${_extra}" NAME)
+    list(FILTER CP_APP_DIRS EXCLUDE REGEX "/${_extra_name}$")
+    list(APPEND CP_APP_DIRS "${_extra}")
+endforeach()
+# ... and the ones not to build (directory names, ;-separated): a public build leaves out what a
+# board installed for itself (crosspad-web-twin's CROSSPAD_PUBLIC=1).
+set(CROSSPAD_EXCLUDE_APPS "" CACHE STRING "App directory names not to build (;-separated)")
+foreach(_ex ${CROSSPAD_EXCLUDE_APPS})
+    list(FILTER CP_APP_DIRS EXCLUDE REGEX "/${_ex}$")
+endforeach()
+
+# The browser build is a board's twin: the same firmware, fed the board's inputs.
+if(EMSCRIPTEN AND NOT CROSSPAD_FIRMWARE_DIR)
+    message(FATAL_ERROR "The browser build runs a board's firmware: set CROSSPAD_FIRMWARE_DIR to a platform-idf checkout (preset web-twin)")
+endif()
+
 # Set the correct FreeRTOS port for the current compiler
 if(MSVC OR MINGW)
     set(FREERTOS_PORT MSVC_MINGW CACHE STRING "FreeRTOS port" FORCE)
@@ -45,12 +95,17 @@ add_library(freertos_config INTERFACE)
 target_include_directories(freertos_config SYSTEM INTERFACE ${PROJECT_SOURCE_DIR}/config)
 target_compile_definitions(freertos_config INTERFACE projCOVERAGE_TEST=0)
 
-add_subdirectory(FreeRTOS)
+if(NOT EMSCRIPTEN)
+    add_subdirectory(FreeRTOS)
+endif()
 
 include_directories(${PROJECT_SOURCE_DIR}/FreeRTOS/include)
 include_directories(${PROJECT_SOURCE_DIR}/config)
 
-if(MSVC OR MINGW)
+if(EMSCRIPTEN)
+    # The browser: tasks are fibers on one thread (src/freertos/wasm/port.c).
+    set(FREERTOS_PORT_DIR ${PROJECT_SOURCE_DIR}/src/freertos/wasm)
+elseif(MSVC OR MINGW)
     set(FREERTOS_PORT_DIR ${PROJECT_SOURCE_DIR}/FreeRTOS/portable/MSVC-MingW)
 else()
     set(FREERTOS_PORT_DIR ${PROJECT_SOURCE_DIR}/FreeRTOS/portable/ThirdParty/GCC/Posix)
@@ -65,6 +120,15 @@ file(GLOB FREERTOS_SOURCES
 
 # Main include files of the project
 include_directories(${PROJECT_SOURCE_DIR}/main/inc)
+# ESP-IDF header shims (esp_log, esp_timer, heap caps, FreeRTOS idf additions)
+# for app code written against the board.
+include_directories(${PROJECT_SOURCE_DIR}/src/compat)
+
+# The simulator registers more built-in apps than a board (CITest, AppStore,
+# MLPiano, Serial Monitor, Update); at the core's default of 16 the last ones --
+# Settings and Update -- were silently dropped. Global: AppRegistry's size is in
+# its header, so every translation unit has to agree on it.
+add_compile_definitions(CROSSPAD_MAX_APPS=32)
 
 # Define options for LVGL with default values (OFF)
 option(LV_USE_DRAW_SDL "Use SDL draw unit" OFF)
@@ -82,8 +146,17 @@ set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(EXECUTABLE_OUTPUT_PATH ${PROJECT_SOURCE_DIR}/bin)
 set(WORKING_DIRECTORY ${PROJECT_SOURCE_DIR})
 
-# Find and include SDL2 library
-find_package(SDL2 REQUIRED)
+# Find and include SDL2 library (Emscripten brings its own port)
+if(EMSCRIPTEN)
+    set(CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -sUSE_SDL=2")
+    set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -sUSE_SDL=2")
+    set(SDL2_INCLUDE_DIRS "${EMSCRIPTEN_SYSROOT}/include/SDL2")
+    set(SDL2_LIBRARIES "")
+    # Web MIDI / WebAudio stand in for RtMidi / RtAudio (src/wasm/web_io.cpp).
+    include_directories(${SDL2_INCLUDE_DIRS} ${PROJECT_SOURCE_DIR}/src/wasm/shim)
+else()
+    find_package(SDL2 REQUIRED)
+endif()
 
 include(FetchContent)
 
@@ -104,7 +177,7 @@ FetchContent_Declare(
 FetchContent_MakeAvailable(ArduinoJson)
 
 # MIDI support via RtMidi
-if(USE_MIDI)
+if(USE_MIDI AND NOT EMSCRIPTEN)
     FetchContent_Declare(
         rtmidi
         GIT_REPOSITORY https://github.com/thestk/rtmidi.git
@@ -118,7 +191,7 @@ if(USE_MIDI)
 endif()
 
 # Audio support via RtAudio
-if(USE_AUDIO)
+if(USE_AUDIO AND NOT EMSCRIPTEN)
     FetchContent_Declare(
         rtaudio
         GIT_REPOSITORY https://github.com/thestk/rtaudio.git
@@ -213,12 +286,19 @@ add_compile_definitions($<$<BOOL:${LV_USE_FFMPEG}>:LV_USE_FFMPEG=1>)
 # when built as a separate DLL)
 set(BUILD_SHARED_LIBS OFF)
 
-add_subdirectory(lvgl)
+# Code includes "lvgl/lvgl.h": with an LVGL other than the submodule, that name
+# has to reach it before the project root (where the submodule sits) does.
+if(NOT CP_LVGL_DIR STREQUAL "${CMAKE_SOURCE_DIR}/lvgl")
+    file(MAKE_DIRECTORY "${CMAKE_BINARY_DIR}/lvgl_include")
+    file(CREATE_LINK "${CP_LVGL_DIR}" "${CMAKE_BINARY_DIR}/lvgl_include/lvgl" SYMBOLIC)
+    include_directories(BEFORE "${CMAKE_BINARY_DIR}/lvgl_include")
+endif()
+add_subdirectory(${CP_LVGL_DIR} lvgl)
 target_include_directories(lvgl PUBLIC ${PROJECT_SOURCE_DIR} ${SDL2_INCLUDE_DIRS})
 
 # Montserrat with European diacritics comes from crosspad-gui (src/fonts/,
 # compiled with the gui sources below); LVGL's own copies leave its build.
-include(${CMAKE_CURRENT_SOURCE_DIR}/lib/crosspad-gui/cmake/crosspad_gui_fonts.cmake)
+include(${CP_GUI_DIR}/cmake/crosspad_gui_fonts.cmake)
 crosspad_gui_replace_lvgl_fonts(lvgl)
 
 # Restore warning level for project code
@@ -228,19 +308,19 @@ if(MSVC)
 endif()
 
 # ── crosspad-core portable sources (auto-discover, excluding platform-specific) ──
-file(GLOB_RECURSE CROSSPAD_CORE_SOURCES lib/crosspad-core/src/*.cpp)
+file(GLOB_RECURSE CROSSPAD_CORE_SOURCES ${CP_CORE_DIR}/src/*.cpp)
 list(FILTER CROSSPAD_CORE_SOURCES EXCLUDE REGEX "SyncEventBus\\.cpp$")
 list(FILTER CROSSPAD_CORE_SOURCES EXCLUDE REGEX "Stm32Manager\\.cpp$")
 
 # ── crosspad-gui sources (auto-discover) ──
 file(GLOB_RECURSE CROSSPAD_GUI_SOURCES
-    lib/crosspad-gui/src/*.cpp lib/crosspad-gui/src/*.c)  # .c: fonts, icons
+    ${CP_GUI_DIR}/src/*.cpp ${CP_GUI_DIR}/src/*.c)  # .c: fonts, icons
 
 # ── Auto-reconfigure when source files are added/removed ──
 # Ninja watches these directories and triggers cmake reconfigure on changes
 set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS
-    "${CMAKE_SOURCE_DIR}/lib/crosspad-core/src"
-    "${CMAKE_SOURCE_DIR}/lib/crosspad-gui/src"
+    "${CP_CORE_DIR}/src"
+    "${CP_GUI_DIR}/src"
     "${CMAKE_SOURCE_DIR}/src/apps"
     "${CMAKE_SOURCE_DIR}/src/pc_stubs"
     "${CMAKE_SOURCE_DIR}/src/updater"
@@ -268,36 +348,48 @@ set(MAIN_SOURCES ${WIN_RESOURCES} src/mouse_cursor_icon.c src/hal/hal.c
     src/stm32_emu/EmuJackPanel.cpp
     src/stm32_emu/EmuSdCardSlot.cpp
     src/stm32_emu/KeyboardCapture.cpp
-    src/uart/PcUart.cpp
     src/crosspad_app.cpp
-    src/fw/PcFirmware.cpp
-    src/fw/PcFwDesc.cpp
-    src/fw/PcFwViewService.cpp
-    src/remote/RemoteControl.cpp
-    src/remote/ControlJson.cpp
     ${CROSSPAD_CORE_SOURCES}
     ${CROSSPAD_GUI_SOURCES}
     ${PC_STUB_SOURCES}
 )
+if(EMSCRIPTEN)
+    # The page's side door (LCD out, the board's inputs in), Web MIDI/Audio, Web Serial.
+    list(APPEND MAIN_SOURCES src/wasm/wasm_bridge.cpp src/wasm/web_io.cpp src/wasm/web_uart.cpp)
+else()
+    # The simulator's own firmware slots and kit packages (a twin's are the board's, TWIN_FW).
+    list(APPEND MAIN_SOURCES src/uart/PcUart.cpp src/remote/RemoteControl.cpp src/remote/ControlJson.cpp
+         src/fw/PcFirmware.cpp src/fw/PcFwDesc.cpp src/fw/PcFwViewService.cpp)
+endif()
 set(MAIN_LIBS lvgl lvgl::examples lvgl::demos lvgl::thorvg ${SDL2_LIBRARIES} ArduinoJson)
 
 # FreeRTOS entry point + platform port
-if(MSVC OR MINGW)
+if(EMSCRIPTEN)
+    list(APPEND MAIN_SOURCES src/freertos_main.cpp ${FREERTOS_SOURCES})
+elseif(MSVC OR MINGW)
     list(APPEND MAIN_SOURCES src/freertos_main.cpp src/freertos/freertos_win32_port.c ${FREERTOS_SOURCES})
 else()
     list(APPEND MAIN_SOURCES src/freertos_main.cpp ${FREERTOS_PORT_DIR}/utils/wait_for_event.c ${FREERTOS_SOURCES})
 endif()
-list(APPEND MAIN_LIBS freertos_config freertos_kernel)
+if(EMSCRIPTEN)
+    list(APPEND MAIN_LIBS freertos_config)
+else()
+    list(APPEND MAIN_LIBS freertos_config freertos_kernel)
+endif()
 
 
-if(NOT MSVC)
+if(EMSCRIPTEN)
+    list(APPEND MAIN_LIBS m)
+elseif(NOT MSVC)
     list(APPEND MAIN_LIBS m pthread)
 endif()
 
 # MIDI sources and libraries
 if(USE_MIDI)
     list(APPEND MAIN_SOURCES src/midi/PcMidi.cpp)
-    list(APPEND MAIN_LIBS rtmidi)
+    if(NOT EMSCRIPTEN)
+        list(APPEND MAIN_LIBS rtmidi)
+    endif()
     if(WIN32)
         list(APPEND MAIN_LIBS winmm)
     endif()
@@ -313,7 +405,9 @@ endif()
 if(USE_AUDIO)
     list(APPEND MAIN_SOURCES src/audio/PcAudio.cpp src/audio/PcAudioInput.cpp src/audio/PcAudioModule.cpp)
     list(APPEND MAIN_SOURCES src/audio/audio_platform.cpp)
-    list(APPEND MAIN_LIBS rtaudio)
+    if(NOT EMSCRIPTEN)
+        list(APPEND MAIN_LIBS rtaudio)
+    endif()
 
     # The sampler's platform side over core's SamplerEngine, the engine the
     # board plays kits with. Listed explicitly rather than globbed so a stray
@@ -430,18 +524,63 @@ endif()
 message(STATUS "CrossPad firmware kit: ${CROSSPAD_FW_KIT} ${CROSSPAD_FW_KIT_VERSION} -> bin/${CROSSPAD_EXE_NAME}")
 
 # ── Built-in apps (always present) ──────────────────────────────────────
-foreach(_builtin settings citest update firmware)
-    if(EXISTS "${CMAKE_SOURCE_DIR}/src/apps/${_builtin}/CMakeLists.txt")
-        add_subdirectory(src/apps/${_builtin})
+# A board has Settings and Firmware, no CITest. In the browser the board's own
+# two are built, their ESP half answered by src/wasm/board/ with the board's
+# data (TWIN_INFO, TWIN_FW); on the desktop the simulator's. The board's own
+# headers (main/include) come after src/wasm/board/: those that reach no
+# ESP-IDF are used as they are, the others are the shims'.
+if(CROSSPAD_FIRMWARE_DIR)
+    set(_builtins settings update)
+else()
+    set(_builtins settings citest update firmware)
+endif()
+set(CP_BUILTIN_APP_DIRS "")
+if(CROSSPAD_FIRMWARE_DIR AND EMSCRIPTEN)
+    # Settings (its WiFi page, its Updates category) and the Firmware app as the
+    # board builds them: crosspad-gui's Firmware views (src/fw, in the gui
+    # sources) on the board's IFwViewService (main/fw_view_service.cpp), each
+    # with what answers for its ESP half here -- an idle WiFi link
+    # (src/wasm/twin_wifi.cpp), an updater that leaves the work to the board
+    # (src/wasm/twin_updater.cpp), the card's packages from TWIN_FW
+    # (src/wasm/twin_fw_views.cpp) instead of the SD card.
+    set(_board_builtin_sources
+        "${CROSSPAD_FIRMWARE_DIR}/main/app/settings/settings_app.cpp"
+        "${CROSSPAD_FIRMWARE_DIR}/main/app/settings/settings_updates.cpp"
+        "${CROSSPAD_FIRMWARE_DIR}/main/app/update/update_app.cpp"
+        "${CROSSPAD_FIRMWARE_DIR}/main/gui/wifi_page.cpp"
+        "${CROSSPAD_FIRMWARE_DIR}/main/fw_view_service.cpp"
+        "${CROSSPAD_FIRMWARE_DIR}/main/fw_ui_state.cpp"
+        "${PROJECT_SOURCE_DIR}/src/wasm/twin_wifi.cpp"
+        "${PROJECT_SOURCE_DIR}/src/wasm/twin_updater.cpp"
+        "${PROJECT_SOURCE_DIR}/src/wasm/twin_fw_views.cpp")
+    # A firmware with a crosspad.app account (Settings -> Account, remote
+    # management on the WiFi page): a board never paired (src/wasm/twin_account.cpp).
+    if(EXISTS "${CROSSPAD_FIRMWARE_DIR}/main/include/cp_account.h")
+        list(APPEND _board_builtin_sources "${PROJECT_SOURCE_DIR}/src/wasm/twin_account.cpp")
     endif()
-endforeach()
-list(APPEND MAIN_SOURCES ${SETTINGS_APP_SOURCES} ${CITEST_APP_SOURCES} ${UPDATE_APP_SOURCES}
-     ${FIRMWARE_APP_SOURCES})
+    # The board's data (TWIN_FW) in the firmware's own package and slot types.
+    list(APPEND _board_builtin_sources "${PROJECT_SOURCE_DIR}/src/wasm/twin_board.cpp")
+    set_source_files_properties(${_board_builtin_sources} PROPERTIES
+        INCLUDE_DIRECTORIES "${PROJECT_SOURCE_DIR}/src/wasm/board;${CROSSPAD_FIRMWARE_DIR}/main/app/update;${CROSSPAD_FIRMWARE_DIR}/main/include")
+    list(APPEND MAIN_SOURCES ${_board_builtin_sources})
+    list(APPEND CP_BUILTIN_APP_DIRS "${CROSSPAD_FIRMWARE_DIR}/main/app/settings" "${CROSSPAD_FIRMWARE_DIR}/main/app/update")
+else()
+    foreach(_builtin ${_builtins})
+        if(EXISTS "${CMAKE_SOURCE_DIR}/src/apps/${_builtin}/CMakeLists.txt")
+            add_subdirectory(src/apps/${_builtin})
+            list(APPEND CP_BUILTIN_APP_DIRS "${CMAKE_SOURCE_DIR}/src/apps/${_builtin}")
+        endif()
+    endforeach()
+    list(APPEND MAIN_SOURCES ${SETTINGS_APP_SOURCES} ${CITEST_APP_SOURCES} ${UPDATE_APP_SOURCES}
+         ${FIRMWARE_APP_SOURCES})
+endif()
 
 # ── Installable apps (submodules in src/apps/crosspad-*) ────────────────
-# Only directories .gitmodules registers are apps. A leftover checkout of an
-# app the repo no longer carries (untracked, so it survives a branch switch)
-# would otherwise be compiled in and appear in the launcher.
+# Of this repository's src/apps/, only directories .gitmodules registers are
+# apps. A leftover checkout of an app the repo no longer carries (untracked,
+# so it survives a branch switch) would otherwise be compiled in and appear in
+# the launcher. A firmware's apps (CROSSPAD_FIRMWARE_DIR) and a board's
+# installed ones (CROSSPAD_EXTRA_APPS) are taken as they are.
 set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS "${CMAKE_SOURCE_DIR}/.gitmodules")
 file(STRINGS "${CMAKE_SOURCE_DIR}/.gitmodules" _gitmodule_paths REGEX "^[ \t]*path[ \t]*=[ \t]*src/apps/crosspad-")
 set(_registered_app_names "")
@@ -451,15 +590,15 @@ foreach(_line ${_gitmodule_paths})
     list(APPEND _registered_app_names "${_reg_name}")
 endforeach()
 
-file(GLOB _app_glob_dirs "${CMAKE_SOURCE_DIR}/src/apps/crosspad-*/")
 set(_app_submodule_dirs "")
 set(_stray_app_names "")
-foreach(_app_dir ${_app_glob_dirs})
+foreach(_app_dir ${CP_APP_DIRS})
     if(NOT IS_DIRECTORY "${_app_dir}")
         continue()
     endif()
     get_filename_component(_app_name "${_app_dir}" NAME)
-    if(_app_name IN_LIST _registered_app_names)
+    get_filename_component(_app_parent "${_app_dir}" DIRECTORY)
+    if(NOT _app_parent STREQUAL "${CMAKE_SOURCE_DIR}/src/apps" OR _app_name IN_LIST _registered_app_names)
         list(APPEND _app_submodule_dirs "${_app_dir}")
     else()
         list(APPEND _stray_app_names "${_app_name}")
@@ -532,6 +671,13 @@ foreach(_app_dir ${_app_submodule_dirs})
     endif()
     if(_app_sources)
         list(APPEND MAIN_SOURCES ${_app_sources})
+        # The browser twin builds the apps as the board does: their encoder
+        # half and their other board-only paths sit behind ESP_PLATFORM
+        # (src/compat answers the ESP headers they take; LV_KCONFIG_IGNORE keeps
+        # LVGL from looking for an sdkconfig.h).
+        if(CROSSPAD_FIRMWARE_DIR AND EMSCRIPTEN)
+            set_source_files_properties(${_app_sources} PROPERTIES COMPILE_DEFINITIONS "ESP_PLATFORM=1;LV_KCONFIG_IGNORE=1")
+        endif()
     endif()
 
     message(STATUS "App submodule: ${_app_name} (${_app_sources})")
@@ -544,14 +690,11 @@ endforeach()
 # on the search path, and an installed app's icon lives in its own repo.
 set(_crosspad_asset_stage "${CMAKE_SOURCE_DIR}/bin/assets")
 file(MAKE_DIRECTORY "${_crosspad_asset_stage}")
-file(GLOB _crosspad_gui_assets "${CMAKE_SOURCE_DIR}/lib/crosspad-gui/assets/*.png")
+file(GLOB _crosspad_gui_assets "${CP_GUI_DIR}/assets/*.png")
 set(_crosspad_app_asset_dirs "")
-file(GLOB _crosspad_all_asset_dirs "${CMAKE_SOURCE_DIR}/src/apps/*/assets")
-foreach(_dir ${_crosspad_all_asset_dirs})
-    get_filename_component(_owner "${_dir}" DIRECTORY)
-    get_filename_component(_owner "${_owner}" NAME)
-    if(NOT _owner IN_LIST _stray_app_names)
-        list(APPEND _crosspad_app_asset_dirs "${_dir}")
+foreach(_dir ${_kit_app_dirs} ${CP_BUILTIN_APP_DIRS})
+    if(IS_DIRECTORY "${_dir}/assets")
+        list(APPEND _crosspad_app_asset_dirs "${_dir}/assets")
     endif()
 endforeach()
 set(_crosspad_app_assets "")
@@ -598,13 +741,13 @@ message(STATUS "CrossPad version: ${CP_VERSION}")
 configure_file(cmake/version.h.in "${CMAKE_BINARY_DIR}/generated/crosspad_pc_version.h" @ONLY)
 
 # Submodule revisions for Settings -> Info, mirroring platform-idf.
-include(${CMAKE_CURRENT_LIST_DIR}/lib/crosspad-core/cmake/crosspad_git_rev.cmake)
-crosspad_git_rev(CROSSPAD_CORE_REV "${PROJECT_SOURCE_DIR}/lib/crosspad-core")
-crosspad_git_rev(CROSSPAD_GUI_REV  "${PROJECT_SOURCE_DIR}/lib/crosspad-gui")
+include(${CP_CORE_DIR}/cmake/crosspad_git_rev.cmake)
+crosspad_git_rev(CROSSPAD_CORE_REV "${CP_CORE_DIR}")
+crosspad_git_rev(CROSSPAD_GUI_REV  "${CP_GUI_DIR}")
 
 
 # Auto-generate app registry initialization
-include(${CMAKE_CURRENT_LIST_DIR}/lib/crosspad-core/cmake/crosspad_app_registry.cmake)
+include(${CP_CORE_DIR}/cmake/crosspad_app_registry.cmake)
 set(APP_REGISTRY_FILE "${CMAKE_BINARY_DIR}/app_registry_init.cpp")
 set(_registry_excludes "")
 if(NOT BUILD_TESTING)
@@ -614,8 +757,7 @@ list(APPEND _registry_excludes ${_stray_app_names} ${_kit_excluded})
 if(_kit_apps)
     # Only the kit's apps reach the launcher; the rest stay compiled for the
     # backend that links against them.
-    file(GLOB _all_app_dirs LIST_DIRECTORIES true "${PROJECT_SOURCE_DIR}/src/apps/*")
-    foreach(_d ${_all_app_dirs})
+    foreach(_d ${CP_APP_DIRS} ${CP_BUILTIN_APP_DIRS})
         get_filename_component(_n "${_d}" NAME)
         if(IS_DIRECTORY "${_d}" AND NOT _n IN_LIST _kit_apps)
             list(APPEND _registry_excludes "${_n}")
@@ -624,7 +766,7 @@ if(_kit_apps)
 endif()
 crosspad_generate_app_registry(
     OUTPUT  "${APP_REGISTRY_FILE}"
-    DIRS    "${PROJECT_SOURCE_DIR}/src/apps"
+    DIRS    ${CP_APP_DIRS} ${CP_BUILTIN_APP_DIRS}
     EXCLUDE ${_registry_excludes})
 list(APPEND MAIN_SOURCES "${APP_REGISTRY_FILE}")
 
@@ -687,17 +829,36 @@ endif()
 # Build-time inventory of installed apps and shared submodules (commit + pin).
 # Same generator the firmware uses, so `--versions` here and APP_VERSIONS on a
 # board answer in the same format.
-include(${CMAKE_CURRENT_LIST_DIR}/lib/crosspad-core/cmake/crosspad_app_versions.cmake)
-set(_crosspad_app_dirs ${_kit_app_dirs})
+include(${CP_CORE_DIR}/cmake/crosspad_app_versions.cmake)
+set(_crosspad_app_manifest "${CMAKE_CURRENT_LIST_DIR}/apps.json")
+if(CROSSPAD_FIRMWARE_DIR AND EXISTS "${CROSSPAD_FIRMWARE_DIR}/apps.json")
+    set(_crosspad_app_manifest "${CROSSPAD_FIRMWARE_DIR}/apps.json")
+endif()
 crosspad_generate_app_versions(
     OUTPUT   "${CMAKE_BINARY_DIR}/app_versions.cpp"
-    SHARED   "${CMAKE_CURRENT_LIST_DIR}/lib/crosspad-core"
-             "${CMAKE_CURRENT_LIST_DIR}/lib/crosspad-gui"
-    APPS     ${_crosspad_app_dirs}
-    MANIFEST "${CMAKE_CURRENT_LIST_DIR}/apps.json")
+    SHARED   "${CP_CORE_DIR}"
+             "${CP_GUI_DIR}"
+    APPS     ${_kit_app_dirs}
+    MANIFEST "${_crosspad_app_manifest}")
 list(APPEND MAIN_SOURCES "${CMAKE_BINARY_DIR}/app_versions.cpp")
 
+# A board's firmware: the source id of what the screen is built from, as the board's own
+# build computes it (platform-idf tools/twin_source_id.cmake, TWIN_HELLO). Written now,
+# and on every build by the target below (sources change without a reconfigure).
+if(CROSSPAD_FIRMWARE_DIR AND EXISTS "${CROSSPAD_FIRMWARE_DIR}/tools/twin_source_id.cmake")
+    set(_twin_sid "${CMAKE_BINARY_DIR}/generated/twin_source_id.c")
+    set(_twin_sid_cmd ${CMAKE_COMMAND} -DFW=${CROSSPAD_FIRMWARE_DIR} -DOUT=${_twin_sid}
+                      -P ${CROSSPAD_FIRMWARE_DIR}/tools/twin_source_id.cmake)
+    execute_process(COMMAND ${_twin_sid_cmd})
+    add_custom_target(twin_source_id COMMAND ${_twin_sid_cmd} BYPRODUCTS ${_twin_sid} COMMENT "twin source id")
+    list(APPEND MAIN_SOURCES "${_twin_sid}")
+endif()
+
 add_executable(CrossPad ${MAIN_SOURCES})
+if(TARGET twin_source_id)
+    add_dependencies(CrossPad twin_source_id)
+    target_compile_definitions(CrossPad PRIVATE TWIN_HELLO=1)   # else a firmware from before it
+endif()
 set_target_properties(CrossPad PROPERTIES OUTPUT_NAME "${CROSSPAD_EXE_NAME}")
 target_compile_definitions(CrossPad PRIVATE
     CROSSPAD_FW_KIT_ID="${CROSSPAD_FW_KIT}"
@@ -719,11 +880,11 @@ target_compile_definitions(CrossPad PRIVATE
 )
 target_include_directories(CrossPad PRIVATE
     ${PROJECT_SOURCE_DIR}/src
-    ${PROJECT_SOURCE_DIR}/lib/crosspad-core/include
-    ${PROJECT_SOURCE_DIR}/lib/crosspad-gui/include
+    ${CP_CORE_DIR}/include
+    ${CP_GUI_DIR}/include
     ${PROJECT_SOURCE_DIR}/lib/ml_synth
     ${PROJECT_SOURCE_DIR}/lib
-    ${PROJECT_SOURCE_DIR}/lvgl/src
+    ${CP_LVGL_DIR}/src
     ${CMAKE_BINARY_DIR}/generated
 )
 # Add include dirs from installable app submodules
@@ -751,6 +912,85 @@ endif()
 # (lv_assert_crosspad.h) carries function names rather than bare addresses.
 if(NOT WIN32)
     target_link_options(CrossPad PRIVATE -rdynamic)
+endif()
+
+if(EMSCRIPTEN)
+    # The browser build: an ES module a page instantiates (crosspad-web-twin's
+    # web/simtwin.js).
+    # ASYNCIFY carries the fiber scheduler; sleeps inside tasks yield
+    # (src/wasm/web_io.cpp); time() is the board's in a twin (wasm_bridge.cpp).
+    # The pages that load it live in crosspad-web-twin, whose build sets both.
+    set(CROSSPAD_WEB_OUT "${CMAKE_BINARY_DIR}/web" CACHE PATH "Where the browser build (CrossPad.mjs/.wasm/.data) goes")
+    # /assets: a board's assets partition when one was mirrored (a board can
+    # run with an older one than its firmware; crosspad-web-twin
+    # tools/pull_assets.py), else the images this tree stages.
+    set(CROSSPAD_WEB_ASSETS "" CACHE PATH "A board's mirrored assets partition to preload as /assets (empty: bin/assets)")
+    set(_web_assets "${CMAKE_SOURCE_DIR}/bin/assets")
+    if(CROSSPAD_WEB_ASSETS AND EXISTS "${CROSSPAD_WEB_ASSETS}/.pulled")
+        set(_web_assets "${CROSSPAD_WEB_ASSETS}")
+        set_property(TARGET CrossPad APPEND PROPERTY LINK_DEPENDS "${_web_assets}/.pulled")
+    elseif(CROSSPAD_FIRMWARE_DIR)
+        # No board's: the firmware's own partition, staged by its rules (main/collect_assets.cmake,
+        # which runs only inside an ESP-IDF build): crosspad-gui's images, the apps' and the
+        # components', main/images/data where nothing else gave that name, main/docs/*.md under
+        # docs/ (the Instructions app's text). Not the apps left out of this build, not the STM image.
+        set(_web_assets "${CMAKE_BINARY_DIR}/fw_assets")
+        file(REMOVE_RECURSE "${_web_assets}")
+        file(MAKE_DIRECTORY "${_web_assets}/docs")
+        set(_fw "${CROSSPAD_FIRMWARE_DIR}")
+        set(_asset_dirs "${_fw}/components/crosspad-gui/assets")
+        file(GLOB _more LIST_DIRECTORIES true "${_fw}/main/app/*/assets" "${_fw}/components/crosspad-*/assets")
+        foreach(_d ${_more})
+            get_filename_component(_owner "${_d}" DIRECTORY)
+            get_filename_component(_owner "${_owner}" NAME)
+            if(_owner STREQUAL "crosspad-gui" OR _owner STREQUAL "crosspad-core" OR _owner IN_LIST CROSSPAD_EXCLUDE_APPS
+               OR _owner IN_LIST _kit_excluded)
+                continue()
+            endif()
+            list(APPEND _asset_dirs "${_d}")
+        endforeach()
+        foreach(_d ${_asset_dirs})
+            file(GLOB _pngs "${_d}/*.png")
+            foreach(_f ${_pngs})
+                file(COPY "${_f}" DESTINATION "${_web_assets}")
+            endforeach()
+        endforeach()
+        file(GLOB _imgs "${_fw}/main/images/data/*.png" "${_fw}/main/images/data/*.bin")
+        foreach(_f ${_imgs})
+            get_filename_component(_n "${_f}" NAME)
+            if(NOT EXISTS "${_web_assets}/${_n}")
+                file(COPY "${_f}" DESTINATION "${_web_assets}")
+            endif()
+        endforeach()
+        file(GLOB _docs "${_fw}/main/docs/*.md")
+        file(COPY ${_docs} DESTINATION "${_web_assets}/docs")
+        file(GLOB_RECURSE _staged RELATIVE "${_web_assets}" "${_web_assets}/*")
+        list(LENGTH _staged _n_staged)
+        message(STATUS "Web assets: ${_n_staged} files from the firmware's tree")
+    endif()
+    message(STATUS "Web build -> ${CROSSPAD_WEB_OUT} (assets ${_web_assets})")
+    set_target_properties(CrossPad PROPERTIES SUFFIX ".mjs" RUNTIME_OUTPUT_DIRECTORY "${CROSSPAD_WEB_OUT}")
+    target_link_options(CrossPad PRIVATE
+        -sUSE_SDL=2 -sASYNCIFY=1 -sASYNCIFY_STACK_SIZE=524288 -sSTACK_SIZE=4194304
+        -sALLOW_MEMORY_GROWTH=1 -sINITIAL_MEMORY=268435456
+        -sMODULARIZE=1 -sEXPORT_ES6=1 -sEXPORT_NAME=CrossPadSim -sENVIRONMENT=web -sEXIT_RUNTIME=0
+        -lidbfs.js -sFORCE_FILESYSTEM=1
+        -Wl,--wrap=nanosleep -Wl,--wrap=time -Wl,--wrap=sched_yield
+        -Wl,--wrap=pthread_create -Wl,--wrap=pthread_join -Wl,--wrap=pthread_detach
+        "-sEXPORTED_FUNCTIONS=['_main','_malloc','_free']"
+        "-sDEFAULT_LIBRARY_FUNCS_TO_INCLUDE=['$stringToNewUTF8']"
+        "-sEXPORTED_RUNTIME_METHODS=['HEAPU8','HEAPF32','FS','IDBFS','callMain','addRunDependency','removeRunDependency','stringToNewUTF8','UTF8ToString']"
+        --preload-file "${_web_assets}@/assets"
+    )
+    # What the board and its twin both describe their screens with (TWIN_STATE):
+    # the firmware's, so both sides agree; a firmware without the board side of
+    # the twin (a release branch) has none, and then the copy kept here does.
+    set(_twin_state_h "${CROSSPAD_FIRMWARE_DIR}/main/include/twin_state.h")
+    if(NOT EXISTS "${_twin_state_h}")
+        set(_twin_state_h "${PROJECT_SOURCE_DIR}/src/wasm/twin_state.h")
+    endif()
+    message(STATUS "twin_state.h: ${_twin_state_h}")
+    configure_file("${_twin_state_h}" "${CMAKE_BINARY_DIR}/generated/twin_state.h" COPYONLY)
 endif()
 
 # Winsock + COM (folder picker dialog) for Windows

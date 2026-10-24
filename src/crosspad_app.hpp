@@ -8,6 +8,8 @@
  * styles, app registry, and loads the launcher screen.
  */
 
+#include "lvgl/lvgl.h"
+
 class PcUart;
 
 /// Start the boot on the LVGL task, after lv_init() + sdl_hal_init(): the
@@ -21,6 +23,20 @@ void crosspad_app_init();
 /// the splash's exit once it has played). True on the one pass that built
 /// the launcher -- from then on the simulator is up.
 bool crosspad_app_tick();
+
+/**
+ * @brief The display is the board's LCD alone (320x240, the GUI on the active
+ *        screen as on the board), with no device body around it. Set before
+ *        the display is made (freertos_main.cpp: --lcd). The browser twin of a
+ *        board runs this way, so LVGL sees exactly the board's display: the
+ *        default theme's sizes, scroll timings and dropdown placement all
+ *        follow the display's resolution.
+ */
+void crosspad_app_set_lcd_only(bool on);
+bool crosspad_app_lcd_only();
+
+/** The container apps are started in (the launcher's app area). */
+lv_obj_t* crosspad_app_container();
 
 /// Release platform resources that must be cleaned up before exit
 /// (virtual audio sinks, RtAudio streams, etc.). From any thread and from

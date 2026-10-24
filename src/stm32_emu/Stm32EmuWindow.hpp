@@ -33,8 +33,10 @@ public:
     static constexpr int32_t LCD_Y = 58;
 
     /// Build device body on the active screen. Returns the 320x240 LCD container.
-    /// Call after sdl_hal_init(WIN_W, WIN_H) and pc_platform_init().
-    lv_obj_t* init();
+    /// Call after sdl_hal_init(WIN_W, WIN_H) and pc_platform_init(). The body is
+    /// built on @p screen (default: the active one); a screen never loaded
+    /// keeps it off the display while its parts (jacks, card slot) still work.
+    lv_obj_t* init(lv_obj_t* screen = nullptr);
 
     /// Forward a MIDI CC value to the virtual encoder rotation.
     /// @param value       Current CC value
