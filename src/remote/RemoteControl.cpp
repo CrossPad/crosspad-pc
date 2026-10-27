@@ -638,6 +638,43 @@ static std::string handle_ui_find(const std::string& json) {
     return "{" + json_bool("ok", true) + "," + json_int("count", n) + ",\"items\":[" + out + "]}";
 }
 
+
+/* LOCAL AUDIT VERB (task/topbar-clip-audit, not for upstream): every visible
+ * object under the app container that crosses the container's top or bottom
+ * edge, unless a scrollable ancestor below the container scrolls it. */
+lv_obj_t* crosspad_app_container();
+static void clip_walk(lv_obj_t* o, const lv_area_t& c, bool scrolled, int depth, std::string& out, int& n) {
+    if (!o || lv_obj_has_flag(o, LV_OBJ_FLAG_HIDDEN) || depth > 40) return;
+    lv_area_t a; lv_obj_get_coords(o, &a);
+    const bool crossTop = a.y1 < c.y1 && a.y2 >= c.y1;
+    const bool crossBot = a.y2 > c.y2 && a.y1 <= c.y2;
+    const bool outside = a.y2 < c.y1 || a.y1 > c.y2;
+    if (!scrolled && (crossTop || crossBot || outside) && a.x2 >= a.x1 && a.y2 >= a.y1) {
+        const char* t = lv_obj_check_type(o, &lv_label_class) ? lv_label_get_text(o) : first_label_in(o, 2);
+        std::string txt = t ? std::string(t).substr(0, 40) : "";
+        for (auto& ch : txt) if ((unsigned char)ch < 32 || ch == '"' || ch == '\\') ch = ' ';
+        out += std::string(n++ ? "," : "") + "{" + json_string("cls", lv_obj_get_class(o) && lv_obj_get_class(o)->name ? lv_obj_get_class(o)->name : "?") + "," +
+               json_string("text", txt) + "," + json_int("depth", depth) + "," +
+               json_int("x", a.x1 - Stm32EmuWindow::LCD_X) + "," + json_int("y", a.y1 - Stm32EmuWindow::LCD_Y) + "," +
+               json_int("w", a.x2 - a.x1 + 1) + "," + json_int("h", a.y2 - a.y1 + 1) + "," +
+               json_string("edge", crossTop ? "top" : crossBot ? "bottom" : "outside") + "}";
+        return;   // report the outermost offender only
+    }
+    const bool scrolls = scrolled || (depth > 0 && lv_obj_has_flag(o, LV_OBJ_FLAG_SCROLLABLE) &&
+                         (lv_obj_get_scroll_top(o) > 0 || lv_obj_get_scroll_bottom(o) > 0));
+    const uint32_t cnt = lv_obj_get_child_count(o);
+    for (uint32_t i = 0; i < cnt; ++i) clip_walk(lv_obj_get_child(o, i), c, scrolls, depth + 1, out, n);
+}
+static std::string handle_ui_clip() {
+    lv_obj_t* root = crosspad_app_container();
+    if (!root) return "{" + json_bool("ok", false) + "}";
+    lv_area_t c; lv_obj_get_coords(root, &c);
+    std::string out; int n = 0;
+    clip_walk(root, c, false, 0, out, n);
+    return "{" + json_bool("ok", true) + "," + json_int("cy1", c.y1 - Stm32EmuWindow::LCD_Y) + "," +
+           json_int("cy2", c.y2 - Stm32EmuWindow::LCD_Y) + "," + json_int("count", n) + ",\"items\":[" + out + "]}";
+}
+
 static std::string handle_top_bar() {
     lv_indev_t* nav = crosspad_gui::getGuiPlatform().getNavigationEncoder();
     lv_group_t* g = nav ? lv_indev_get_group(nav) : nullptr;
@@ -1501,6 +1538,9 @@ static std::string dispatch_command(const std::string& json) {
     if (cmd == "enc_group") {
         return handle_enc_group();
     }
+    if (cmd == "ui_clip") {
+        return handle_ui_clip();
+    }
     if (cmd == "ui_find") {
         return handle_ui_find(json);
     }
@@ -1856,3 +1896,13 @@ void process_pending() {
 }
 
 } // namespace remote
+// LOCAL AUDIT STUB: the native CROSSPAD_FIRMWARE_DIR build leaves the CI test app out.
+#ifdef CROSSPAD_BOARD_FIRMWARE
+#include "apps/citest/CITestApi.hpp"
+namespace citest {
+bool start() { return false; }
+bool isRunning() { return false; }
+size_t stageCount() { return 0; }
+bool stageAt(size_t, const char*&, Result&, const char*&) { return false; }
+}
+#endif
