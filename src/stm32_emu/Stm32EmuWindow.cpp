@@ -224,11 +224,17 @@ lv_obj_t* Stm32EmuWindow::buildLcdContainer(lv_obj_t* parent)
     lv_obj_set_size(lcd, LCD_W, LCD_H);
     lv_obj_set_style_bg_color(lcd, lv_color_black(), 0);
     lv_obj_set_style_bg_opa(lcd, LV_OPA_COVER, 0);
-    lv_obj_set_style_border_width(lcd, 2, 0);
-    lv_obj_set_style_border_color(lcd, lv_color_hex(0x444444), 0);
-    lv_obj_set_style_radius(lcd, 4, 0);
+    /* The frame is an outline, drawn outside the box: a border takes its 2 px
+     * from the content, so the GUI got 316x236 at (2,2) instead of the
+     * board's 320x240 at (0,0) -- the app area under the 40 px top bar was
+     * 196 px from y 42, not 200 from y 40, and a layout that fits the board
+     * looked clipped here. Square, as the panel is. */
+    lv_obj_set_style_border_width(lcd, 0, 0);
+    lv_obj_set_style_outline_width(lcd, 2, 0);
+    lv_obj_set_style_outline_color(lcd, lv_color_hex(0x444444), 0);
+    lv_obj_set_style_outline_pad(lcd, 0, 0);
+    lv_obj_set_style_radius(lcd, 0, 0);
     lv_obj_set_style_pad_all(lcd, 0, 0);
-    lv_obj_set_style_clip_corner(lcd, true, 0);
     lv_obj_remove_flag(lcd, LV_OBJ_FLAG_SCROLLABLE);
 
     // Ustaw flex layout i styl, aby status bar był widoczny
