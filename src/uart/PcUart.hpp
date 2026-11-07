@@ -93,9 +93,10 @@ public:
     /// @return vector of matching port names
     static std::vector<std::string> findPortsByVidPid(uint16_t vid, uint16_t pid);
 
-    /// CrossPad hardware USB identifiers (ESP32-S3)
+    /// CrossPad USB serial (CDC) profile; 0x1001 would be any ESP32-S3 in
+    /// USB-Serial-JTAG mode, which opening the port can reset
     static constexpr uint16_t CROSSPAD_VID = 0x303A;
-    static constexpr uint16_t CROSSPAD_PID = 0x1001;
+    static constexpr uint16_t CROSSPAD_PID = 0x3456;
 
 private:
     static constexpr size_t MAX_BUFFERED_LINES = 2000;
