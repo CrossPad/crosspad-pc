@@ -3,7 +3,7 @@
 Desktop simulator for the [CrossPad](https://github.com/CrossPad) 16-pad MIDI controller: the same crosspad-core,
 crosspad-gui (LVGL 9) and apps as the ESP32-S3 firmware, in an SDL2 window that draws the LCD, pads, encoder
 and power button. It runs on Linux, Windows and macOS. Serial ports (the virtual USB/UART link, the serial
-monitor app) work on Windows only; on macOS, MIDI and audio are not well tested.
+monitor app) work on Windows and Linux; on macOS they are missing, and MIDI and audio are not well tested.
 
 ## Quickstart (Ubuntu / Debian)
 

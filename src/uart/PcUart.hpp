@@ -6,7 +6,8 @@
  *
  * Provides OTG-like functionality: the simulator can act as either a UART
  * host (reading data from a connected device) or device (writing data out),
- * or both simultaneously over the same COM port. Uses Windows serial API.
+ * or both simultaneously over the same port. Windows COM ports and Linux
+ * ttys (termios); other platforms get a stub that finds no port.
  *
  * Received data is stored in a thread-safe ring buffer and can be polled
  * by the Serial Monitor app or other consumers.
@@ -101,6 +102,8 @@ private:
 
 #ifdef _WIN32
     HANDLE hSerial_ = INVALID_HANDLE_VALUE;
+#elif defined(__linux__)
+    int fd_ = -1;
 #endif
 
     std::string portName_;

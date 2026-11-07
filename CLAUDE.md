@@ -29,7 +29,7 @@ Day to day: `cmake -B build -G Ninja -DCMAKE_BUILD_TYPE=Debug && cmake --build b
 - `bin/CrossPad --versions` prints one `APPVER: <component> id=… commit=… ref=… dirty=…` line per core / gui / app it was built with, then `APPVER: end count=N`, and exits — the simulator's answer to the firmware's APP_VERSIONS, used by the app manager.
 - Windows: `build.bat` calls Visual Studio 2022 **Community**'s `vcvarsall.bat x64`, **wipes `build/` every time**, then configures with the vcpkg toolchain (`C:/vcpkg/scripts/buildsystems/vcpkg.cmake`). For incremental builds run the two cmake lines by hand from an x64 Native Tools prompt. A post-build step copies `SDL2.dll` (from the vcpkg tree) next to the exe.
 - Linux: `libdbus-1-dev` is only needed for `USE_BLE` (SimpleBLE); without it configure with `-DUSE_BLE=OFF`. `libpipewire-0.3-dev` is optional: without it CMake prints "PipeWire dev headers not found" and the virtual sinks fall back to `pactl` at runtime.
-- Platforms: the simulator runs on Linux, Windows and macOS. Serial ports (`src/uart/PcUart.cpp`: the virtual USB/UART jack, the serial monitor app, `Capability::Usb`) are Windows-only; Linux and macOS get an empty stub. On macOS, MIDI (CoreMIDI) and audio (CoreAudio) are not well tested; `docs/building-macos.md` lists what works there and what is missing.
+- Platforms: the simulator runs on Linux, Windows and macOS. Serial ports (`src/uart/PcUart.cpp`: the virtual USB/UART jack, the serial monitor app, `Capability::Usb`) work on Windows (COM ports) and Linux (`/dev/ttyACM*` and `/dev/ttyUSB*` through termios; any tty path saved as `uart_port` in `device_preferences.json`, a `socat` pty pair for instance, opens too); macOS gets an empty stub. On macOS, MIDI (CoreMIDI) and audio (CoreAudio) are not well tested; `docs/building-macos.md` lists what works there and what is missing.
 - `ctest -LE gui` skips the tests that need a display (`gui_integration`, and `gui_audio_citest`, which is also labelled `flaky`); `ctest -L gui -LE flaky` runs the stable GUI one.
 
 ### CMake Options
@@ -148,7 +148,7 @@ docs/                           — design notes; instructions.md is the in-app 
 **Installable apps** (in `src/apps/crosspad-*/`, managed by app manager):
 
 - **crosspad-appstore**: the App Store (PC only). It hides itself from its own list, so it cannot remove itself, and release builds (`BUILD_TESTING=OFF`) leave it out
-- **crosspad-mixer**, **crosspad-piano**, **crosspad-instructions**, **crosspad-serial-monitor** (needs serial ports, so Windows only), **crosspad-sampler**: Installable via `python3 scripts/app_manager.py install <name>` or via the App Store UI
+- **crosspad-mixer**, **crosspad-piano**, **crosspad-instructions**, **crosspad-serial-monitor** (needs serial ports: Windows and Linux), **crosspad-sampler**: Installable via `python3 scripts/app_manager.py install <name>` or via the App Store UI
 - **crosspad-sequencer**, **crosspad-song**, **crosspad-arrange**, **crosspad-pad-mixer**, **crosspad-recorder**, **crosspad-slicer**, **crosspad-pitchplay**, **crosspad-dawcontrol**: the board's apps, with the platform services they need wired here -- the pattern sequencer and metronome (`src/sequencer/PcSequencer.cpp`, scenes in `<sdcard_path>/crosspad/sequences.json`), core's song engine (`src/song/PcSongEnginePort.cpp`, projects in `<sdcard_path>/SONGS`, bounces from the mixer's third "Rec (pads)" bus), a song's second kit track on an engine of its own (`src/audio/sampler/PcSecondKit.cpp`, core `ISecondKit`, the "Kit 2" channel), the sample tools (`src/sampletools/`), per-pad levels (`PcPadMix` in `PcSamplerPort.cpp`) and `stm32MessageHandler` for DAW Control (no hub on PC, so no launch buttons)
 - **crosspad-doom**, **crosspad-pong**, **crosspad-pianotiles**: games, each the app of its firmware kit (§ Firmware kits); a kit-only app is left out of the other kits' launchers
 
@@ -197,7 +197,7 @@ crosspad-core provides a bitflag-based capability query system (`crosspad/platfo
 - `hasCapability(cap)` — true if ALL specified flags are present
 - `hasAnyCapability(caps)` — true if ANY specified flag is present
 
-**PC sets:** base caps (Pads, Leds, Encoder, Display, Persistence) in `pc_platform_init()`. Midi, Synth, AudioOut (via `setAudioModule`), Http and Bluetooth are added by core's `PlatformServices` setters as the devices register; `AudioIn` is not set on PC (`pc_platform_set_audio_input()` only stores the pointer); `Usb` follows the serial link (Windows only).
+**PC sets:** base caps (Pads, Leds, Encoder, Display, Persistence) in `pc_platform_init()`. Midi, Synth, AudioOut (via `setAudioModule`), Http and Bluetooth are added by core's `PlatformServices` setters as the devices register; `AudioIn` is not set on PC (`pc_platform_set_audio_input()` only stores the pointer); `Usb` follows the serial link (Windows and Linux).
 
 ### App System
 
