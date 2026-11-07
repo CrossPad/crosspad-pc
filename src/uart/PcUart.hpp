@@ -6,7 +6,8 @@
  *
  * Provides OTG-like functionality: the simulator can act as either a UART
  * host (reading data from a connected device) or device (writing data out),
- * or both simultaneously over the same COM port. Uses Windows serial API.
+ * or both simultaneously over the same port. Windows COM ports and Linux
+ * ttys (termios); other platforms get a stub that finds no port.
  *
  * Received data is stored in a thread-safe ring buffer and can be polled
  * by the Serial Monitor app or other consumers.
@@ -92,15 +93,18 @@ public:
     /// @return vector of matching port names
     static std::vector<std::string> findPortsByVidPid(uint16_t vid, uint16_t pid);
 
-    /// CrossPad hardware USB identifiers (ESP32-S3)
+    /// CrossPad USB serial (CDC) profile; 0x1001 would be any ESP32-S3 in
+    /// USB-Serial-JTAG mode, which opening the port can reset
     static constexpr uint16_t CROSSPAD_VID = 0x303A;
-    static constexpr uint16_t CROSSPAD_PID = 0x1001;
+    static constexpr uint16_t CROSSPAD_PID = 0x3456;
 
 private:
     static constexpr size_t MAX_BUFFERED_LINES = 2000;
 
 #ifdef _WIN32
     HANDLE hSerial_ = INVALID_HANDLE_VALUE;
+#elif defined(__linux__)
+    int fd_ = -1;
 #endif
 
     std::string portName_;

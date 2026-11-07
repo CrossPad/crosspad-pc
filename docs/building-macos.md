@@ -30,9 +30,9 @@ Build steps: https://crosspad.app/docs/start-here/pc-simulator/ (macOS tab).
 
 ## What is missing on macOS
 
-- **Serial ports.** `src/uart/PcUart.cpp` is a Windows COM backend; every other
-  OS gets an empty stub, so the USB/UART jack never connects and the serial
-  monitor app has nothing to read. (Linux has the same gap.)
+- **Serial ports.** `src/uart/PcUart.cpp` has a Windows COM and a Linux
+  termios backend; macOS gets an empty stub, so the USB/UART jack never
+  connects and the serial monitor app has nothing to read.
 - **Virtual audio devices.** `VirtualSinkFactory` returns `NullSinkManager`
   off Linux; a CoreAudio/BlackHole backend would be new work.
 - **SD-card folder picker.** `EmuSdCardSlot::openFolderDialog()` prints "not
