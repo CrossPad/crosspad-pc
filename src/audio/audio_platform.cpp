@@ -6,6 +6,7 @@
 #endif
 #ifdef USE_PIPEWIRE
 #include "pipewire/PwSinkEnumerator.hpp"     // pwEnumerateSinks / pwEnumerateSources
+#include "pipewire/PwDefaultSinkGuard.hpp"   // queryCurrentDefault
 #endif
 #if defined(USE_VIRTUAL_AUDIO) && defined(__linux__)
 #include "virtual/PulseMonitorCapture.hpp"   // libpulse monitor capture (Linux)
@@ -61,6 +62,20 @@ std::vector<SinkCandidate> outputSinkCandidates() {
     }
 #endif
     return out;
+}
+
+std::string currentDefaultSink() {
+#ifdef USE_PIPEWIRE
+    // A guard that never takes over only reads; its destructor changes nothing.
+    PwDefaultSinkGuard probe;
+    std::string name = probe.queryCurrentDefault();
+    if (!name.empty()) return name;
+#endif
+#ifdef USE_VIRTUAL_AUDIO
+    return pulseDefaultSink();   // pactl fallback (portable stub returns "")
+#else
+    return {};
+#endif
 }
 
 /* ── Virtual-sink monitor capture ─────────────────────────────────────── */
