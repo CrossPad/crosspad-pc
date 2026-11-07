@@ -107,6 +107,7 @@ set(AUDIO_TEST_FILES
     audio/test_PcAudioModule.cpp
     audio/test_MixerGoldens.cpp
     audio/test_PitchedEngine.cpp
+    audio/test_OutputRoute.cpp
 )
 
 # ── Native PipeWire backend tests (only when CMake detected usable headers) ──

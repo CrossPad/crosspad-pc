@@ -293,7 +293,7 @@ Used by the [crosspad-mcp](https://github.com/CrossPad/crosspad-mcp) simulator t
 |----------|--------|
 | `CROSSPAD_REMOTE_PORT` | control port (default 19840; never use that for a test) |
 | `CROSSPAD_INSTANCE=<id>` | suffix for the PipeWire/Pulse nodes (`crosspad_vin1_<id>`, `crosspad_out_<id>`); defaults to the port when that is not 19840. The pactl fallback's stale-sink cleanup removes only this instance's nodes |
-| `CROSSPAD_AUDIO=on\|isolated\|off` | `on` (default without an id): plain names + default-sink takeover. `isolated` (default with an id): real audio, suffixed names, no takeover. `off`: no audio device, no virtual sinks. Anything but `on` with no id uses id `test`. Only the primary `on` instance ever takes the default sink |
+| `CROSSPAD_AUDIO=on\|isolated\|off` | `on` (default without an id): plain names, and the default-sink takeover when `pw_takeover_default` is on (off in a fresh profile). `isolated` (default with an id): real audio, suffixed names, no takeover. `off`: no audio device, no virtual sinks. Anything but `on` with no id uses id `test`. Only the primary `on` instance ever takes the default sink |
 | `CROSSPAD_PROFILE_DIR` | replaces `~/.crosspad` (preferences, device_preferences, mixer_state, cache; the SD card path comes from its `device_preferences.json`). The updater's version cache still lives under `$HOME` |
 | `CROSSPAD_NO_MIDI=1` | no MIDI ports touched |
 | `SDL_VIDEODRIVER=dummy SDL_RENDER_DRIVER=software` | headless; the control port's screenshot still works |

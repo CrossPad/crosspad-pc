@@ -55,8 +55,14 @@ End-to-end latency target: **~15 ms** with default settings.
 
 ### Default-sink takeover, restore, and crash recovery
 
-On startup, if the `pw_takeover_default` preference is true (default **on**)
-and the native backend is active:
+The takeover is **opt-in**: a fresh profile has `pw_takeover_default` false.
+With it on, every other program's sound goes into the mixer's Input 1, and a
+fresh mixer routes Input 1 to no output, so a new user would hear the
+desktop go quiet the moment the simulator starts. A profile that saved the
+preference keeps its value.
+
+On startup, if the `pw_takeover_default` preference is true and the native
+backend is active (and only in the primary instance, see `CROSSPAD_AUDIO`):
 
 1. `PwDefaultSinkGuard::takeover("crosspad_vin1")` reads the current
    *effective* `default.audio.sink` value, saves it, and sets
@@ -79,6 +85,44 @@ and the native backend is active:
    the stale configured sink and clears the marker (kept for retry if the
    daemon is unreachable) — so the user's default is never stranded on
    `crosspad_vin1`.
+
+A sink recorded as the previous default that is itself a CrossPad sink (an
+earlier run's leftover, another simulator's takeover) is never restored: the
+configured key is cleared instead and WirePlumber picks a real default.
+
+### Where the outputs go (never into a CrossPad sink)
+
+With the takeover on, the system default IS `crosspad_vin1`, so an output
+that follows the default plays into the simulator's own input: the user
+hears nothing and the mixer feeds itself. Another simulator's takeover does
+the same to this one. `crosspad_app.cpp` therefore keeps two routes per
+output: the user's pick (what `device_preferences.json` holds: a sink in
+`audio_outN_pa`, an RtAudio device by name in `audio_outN`, or nothing = the
+default) and what actually plays.
+
+- A sink pick is opened as a stream **created on that sink**
+  (`PcAudioOutput::beginOnSink()`, libpulse-simple with the sink named), not
+  opened on the default and moved afterwards. The old move matched the
+  stream by its client's pid, which PipeWire's pulse layer reports as
+  `Client: n/a`, so the pin never found the stream and the output stayed on
+  the default.
+- An output that would follow the default while the default is (or, at
+  boot, is about to become) a CrossPad sink is opened on a named real sink
+  instead (`out_route::safeSinks()` in `src/audio/OutputRoute.hpp`): the
+  default from before the takeover, then the crash-recovery marker's sink,
+  then any real sink. The log says which (`[Audio] OUT1 -> sink '…' (…)`).
+- PipeWire makes a stream created on the sink that is the default at that
+  moment follow the default from then on. Such a stream is re-opened right
+  after the takeover, before the audio module starts.
+- A route watch (every 2 s) re-routes an output whose sink went away (the
+  server then moves the stream to the default) or whose default became a
+  CrossPad sink, and puts it back on the user's pick once that works again.
+  A fallback is never written to the preferences.
+- A pick from the jack panel or the control port is resolved by its label,
+  and RtAudio devices by name inside the instance that opens them (RtAudio
+  numbers devices per instance: an id from another enumeration named a
+  different device, or one with no outputs). A pick that does not open is
+  refused and the output goes back to what it played.
 
 Toggling `pw_takeover_default` off keeps the vin sinks created and
 capturable, but CrossPad never touches the system default. There's no
@@ -142,6 +186,9 @@ no daemon means no failure.
 build/bin/crosspad_tests "[pipewire]"
 ```
 
+The order of the fallback sinks is unit-tested without a sound server
+(`tests/audio/test_OutputRoute.cpp`, tag `[route]`).
+
 One test, `PwDefaultSinkGuard takeover+restore roundtrip`, is tagged
 `[pipewire][.mutate]` — the leading `.` hides it from default runs because it
 mutates the *real* session default sink. It only executes when
@@ -158,6 +205,7 @@ CROSSPAD_PW_TEST_MUTATE=1 build/bin/crosspad_tests "[.mutate]"
 | `native PipeWire unavailable, falling back to pactl` in logs | No daemon reachable at startup, or built without PipeWire dev headers | `systemctl --user status pipewire`; rebuild with `libpipewire-0.3-dev` installed |
 | `crosspad_vin*` sinks missing from `pavucontrol`/`qpwgraph` | Backend fell back to legacy pactl path, or `USE_VIRTUAL_AUDIO=OFF` | Check startup log for which backend was selected |
 | System default sink didn't get restored | Killed with `SIGKILL` before shutdown ran | Next launch restores it automatically via `pw_prev_default_sink` crash recovery |
+| Silence, `OUT1: … would not open` / `no output would open` in the log | The picked sink is gone and no real sink is listed | Pick another output on the jack panel; the log lists what was tried |
 | Choppy audio | PipeWire quantum too low for your hardware | `pw-metadata -n settings 0 clock.force-quantum 512` |
 
 ## Roadmap

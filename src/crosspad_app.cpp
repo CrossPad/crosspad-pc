@@ -81,6 +81,7 @@ void fw_view_service_install(void);   // the board's (platform-idf main/fw_view_
 #include "audio/PcAudioModule.hpp"
 #include "InstanceEnv.hpp"
 #include "audio/audio_platform.hpp"
+#include "audio/OutputRoute.hpp"
 #include "audio/sampler/PcInstrumentHost.hpp"
 #include "audio/sampler/PcPitchedPort.hpp"
 #include "audio/sampler/PcSamplerPort.hpp"
@@ -173,9 +174,9 @@ static crosspad::IAudioNode* s_samplerNode = nullptr;
 // kit.json says "engine": "pitched" is loaded.
 static crosspad::IAudioNode* s_pitchedNode = nullptr;
 
-/// Sink each output wants to be pinned to, applied once audio is flowing.
-/// Empty means "wherever the sound server puts it".
-static std::string s_pendingPin[2];
+/// The rate the audio module renders at, once it is set up: an output opened
+/// on a sink later has to run at it. 0 before.
+static std::atomic<uint32_t> s_outRate{0};
 #ifdef HAS_MIXER
 #include "crosspad/audio/AudioInputNode.hpp"
 #include "pc_stubs/pc_platform.h"
@@ -234,7 +235,10 @@ struct DevicePreferences {
     std::string bleDevice;    // Last connected BLE MIDI device address
     uint8_t     bleMode = 0;  // 0=Host, 1=Server
     // Native PipeWire: make CrossPad IN#1 the system default sink while active.
-    bool        pwTakeoverDefault = true;
+    // Opt-in: every other program's sound then goes into the mixer's Input 1,
+    // which a fresh mixer does not route to any output, so a new user would
+    // hear their desktop go quiet the moment the simulator starts.
+    bool        pwTakeoverDefault = false;
     // Sink name to restore on shutdown. Non-empty at startup means the previous
     // run died before restoring — used for crash recovery, not the live default.
     std::string pwPrevDefaultSink;
@@ -352,70 +356,197 @@ static void saveDevicePrefs() {
 /* ── Audio/MIDI device enumeration helpers ───────────────────────────── */
 
 #ifdef USE_AUDIO
-struct AudioDeviceEntry {
-    unsigned int rtAudioId;
-    std::string name;
-};
-
-/// Enumerate output devices with 2+ output channels.
-static std::vector<AudioDeviceEntry> enumerateAudioOutputDevices() {
-    std::vector<AudioDeviceEntry> result;
+/// Names of the output devices with 2+ output channels. A device is named,
+/// never numbered: RtAudio numbers devices per instance, so an id from this
+/// enumeration can mean another device, or none, to the instance that opens
+/// it (PcAudioOutput::begin resolves the name itself).
+static std::vector<std::string> enumerateAudioOutputDevices() {
+    std::vector<std::string> result;
     RtAudio probe;
     for (unsigned int id : probe.getDeviceIds()) {
         RtAudio::DeviceInfo info = probe.getDeviceInfo(id);
-        if (info.outputChannels >= 2) {
-            result.push_back({id, info.name});
-        }
+        if (info.outputChannels >= 2) result.push_back(info.name);
     }
     return result;
 }
 
-/// Enumerate input devices with 2+ input channels.
-static std::vector<AudioDeviceEntry> enumerateAudioInputDevices() {
-    std::vector<AudioDeviceEntry> result;
+/// Names of the input devices with 2+ input channels.
+static std::vector<std::string> enumerateAudioInputDevices() {
+    std::vector<std::string> result;
     RtAudio probe;
     for (unsigned int id : probe.getDeviceIds()) {
         RtAudio::DeviceInfo info = probe.getDeviceInfo(id);
-        if (info.inputChannels >= 2) {
-            result.push_back({id, info.name});
-        }
+        if (info.inputChannels >= 2) result.push_back(info.name);
     }
     return result;
 }
 
-/// Devices that route into the SYSTEM DEFAULT sink. With default-sink
-/// takeover active the default IS crosspad_vin1, so opening OUT on one of
-/// these feeds CrossPad's own output back into its own input — feedback loop.
+/// Devices that play into the SYSTEM DEFAULT sink, wherever it is.
 static bool isLoopbackRiskDevice(const std::string& name) {
     return name.find("Default ALSA Device") != std::string::npos ||
            name.find("PulseAudio Sound Server") != std::string::npos;
 }
 
-static bool loopGuardActive() {
-    // The feedback guard only matters where the build can take over the system
-    // default sink (PipeWire); the platform layer answers that without a #ifdef.
-    return crosspad_pc::audio_platform::supportsPwTakeover() && s_devicePrefs.pwTakeoverDefault;
+/// The boot opens the outputs before the takeover runs; while it is still to
+/// come, the default counts as CrossPad's already.
+static std::atomic<bool> s_takeoverPending{false};
+
+/// The system default sink is one of CrossPad's own (this run's takeover, or
+/// another simulator's), so an output following it would play into a
+/// CrossPad input: silence for the user and a feedback path.
+static bool defaultIsCrossPads() {
+#ifdef USE_PIPEWIRE
+    if (s_pwGuard.active() || s_takeoverPending.load()) return true;
+#endif
+    return crosspad_pc::out_route::isCrossPadSink(
+        crosspad_pc::audio_platform::currentDefaultSink());
 }
 
-/// One selectable entry of the OUT1/OUT2 dropdowns.
-/// rtAudioId != 0 → a real RtAudio device; otherwise paSinkName names a
-/// PulseAudio/PipeWire sink reached via move-sink-input.
+/* ── Output routes ────────────────────────────────────────────────────────
+ * What an output is open on. `wanted` is the user's pick (what the
+ * preferences hold); `open` is what plays, which differs while the pick is
+ * unusable: a device that will not open, a sink that went away, or the
+ * system default while that is a CrossPad sink. An output is never left on a
+ * CrossPad sink: a route that would follow such a default is replaced by a
+ * named real sink (out_route::safeSinks), and the route watch puts it back
+ * on its pick once that works again. */
+struct OutRoute {
+    enum class Kind { None, Default, Device, Sink };
+    Kind        kind = Kind::None;
+    std::string id;     ///< Device: RtAudio device name. Sink: sink name.
+    std::string label;  ///< what the jack panel shows
+    /// Sink: it was the default sink when the stream was created. The sound
+    /// server then makes the stream follow the default instead of the sink
+    /// (PipeWire's pulse layer does), so it moves with the default after all.
+    bool        viaDefault = false;
+    bool same(const OutRoute& o) const { return kind == o.kind && id == o.id; }
+    bool followsDefault() const {
+        return kind == Kind::Default || (kind == Kind::Device && isLoopbackRiskDevice(id))
+            || (kind == Kind::Sink && viaDefault);
+    }
+};
+static OutRoute s_outWanted[2];
+static OutRoute s_outOpen[2];
+/// A picked sink that is listed but would not open (one that never plays, an
+/// HDMI port with nothing on it): the route watch does not go back to it
+/// until it has gone and come back, or every attempt would drop the output.
+static std::string s_outRefusedSink[2];
+
+/// The real sink @p sink is listed by the sound server right now.
+static bool sinkListed(const std::string& sink) {
+    for (auto& s : crosspad_pc::audio_platform::outputSinkCandidates())
+        if (s.name == sink) return true;
+    return false;
+}
+
+static PcAudioOutput& outputOf(int slot) { return slot == 0 ? pcAudio : pcAudio2; }
+
+/// Open exactly @p r on the slot. Refuses a sink that is not among the real
+/// ones the server lists (gone, unplugged, a CrossPad sink), and a route that
+/// follows the default while the default is a CrossPad sink.
+static bool openRouteExactly(int slot, OutRoute r) {
+    auto& out = outputOf(slot);
+    out.end();
+    s_outOpen[slot] = {};
+    bool ok = false;
+    switch (r.kind) {
+    case OutRoute::Kind::None:
+        return false;
+    case OutRoute::Kind::Default:
+    case OutRoute::Kind::Device:
+        if (r.followsDefault() && defaultIsCrossPads()) return false;
+        ok = out.begin(r.kind == OutRoute::Kind::Device ? r.id : std::string{},
+                       out.getSampleRate(), out.getBufferSize());
+        if (ok) r.label = out.getCurrentDeviceName();
+        break;
+    case OutRoute::Kind::Sink: {
+        if (crosspad_pc::out_route::isCrossPadSink(r.id)) return false;
+        bool listed = false;
+        for (auto& c : crosspad_pc::audio_platform::outputSinkCandidates()) {
+            if (c.name != r.id) continue;
+            listed = true;
+            if (r.label.empty()) r.label = c.description;
+        }
+        if (!listed) return false;
+        r.viaDefault = r.id == crosspad_pc::audio_platform::currentDefaultSink();
+        // The module's rate; before it is set up OUT2 follows OUT1, which
+        // the module takes its rate from.
+        uint32_t rate = s_outRate.load();
+        if (rate == 0) rate = (slot == 1 && pcAudio.isOpen()) ? pcAudio.getSampleRate() : 48000;
+        ok = out.beginOnSink(r.id, rate, out.getBufferSize());
+        break;
+    }
+    }
+    if (ok) s_outOpen[slot] = r;
+    return ok;
+}
+
+/// Open the slot's pick, or, when it cannot be used, the first real sink of
+/// out_route::safeSinks that opens, then the system default if that is safe.
+/// Says which in the log. False only when nothing opens.
+static bool openOutput(int slot, const OutRoute& want) {
+    if (want.kind == OutRoute::Kind::None) {
+        outputOf(slot).end();
+        s_outOpen[slot] = {};
+        return false;
+    }
+    if (openRouteExactly(slot, want)) {
+        s_outRefusedSink[slot].clear();
+        return true;
+    }
+    if (want.kind == OutRoute::Kind::Sink && sinkListed(want.id)) s_outRefusedSink[slot] = want.id;
+    const std::string what = want.kind == OutRoute::Kind::Default ? "the system default"
+                           : "'" + want.id + "'";
+    if (want.followsDefault() && defaultIsCrossPads())
+        printf("[Audio] OUT%d: %s is CrossPad's own input, not following it\n", slot + 1,
+               what.c_str());
+    else
+        printf("[Audio] OUT%d: %s would not open\n", slot + 1, what.c_str());
+
+    std::string userDefault;
+#ifdef USE_PIPEWIRE
+    if (s_pwGuard.active()) userDefault = s_pwGuard.previousSink();
+#endif
+    if (userDefault.empty()) userDefault = crosspad_pc::audio_platform::currentDefaultSink();
+    std::string beforeCrash;
+    setDevicePrefs([&](DevicePreferences& p) { beforeCrash = p.pwPrevDefaultSink; });
+    std::vector<std::string> real;
+    for (auto& s : crosspad_pc::audio_platform::outputSinkCandidates()) real.push_back(s.name);
+    for (const auto& c : crosspad_pc::out_route::safeSinks(userDefault, beforeCrash, real)) {
+        if (want.kind == OutRoute::Kind::Sink && c.sink == want.id) continue;
+        if (openRouteExactly(slot, {OutRoute::Kind::Sink, c.sink, {}})) {
+            printf("[Audio] OUT%d -> sink '%s' (%s)\n", slot + 1, c.sink.c_str(),
+                   crosspad_pc::out_route::describe(c.why));
+            return true;
+        }
+    }
+    if (want.kind != OutRoute::Kind::Default &&
+        openRouteExactly(slot, {OutRoute::Kind::Default, {}, {}})) {
+        printf("[Audio] OUT%d -> the system default (%s)\n", slot + 1,
+               s_outOpen[slot].label.c_str());
+        return true;
+    }
+    printf("[Audio] OUT%d: no output would open\n", slot + 1);
+    return false;
+}
+
+/// One selectable entry of the OUT1/OUT2 dropdowns: an RtAudio device
+/// (paSinkName empty), or a sound-server sink RtAudio does not list.
 struct OutUiEntry {
-    std::string  label;
-    unsigned int rtAudioId = 0;
-    std::string  paSinkName;
+    std::string label;
+    std::string paSinkName;
 };
 
 /// Single source of truth for what the OUT dropdowns offer (minus "(None)").
 /// Applies the feedback-loop guard and the PA-sink overlap dedupe so the
-/// populate site and the selection callback can never disagree on indices.
+/// populate site and the selection callback can never disagree on labels.
 static std::vector<OutUiEntry> buildOutDeviceUiEntries() {
     std::vector<OutUiEntry> entries;
     auto outDevices = enumerateAudioOutputDevices();
-    const bool guard = loopGuardActive();
+    const bool guard = defaultIsCrossPads();
     for (auto& d : outDevices) {
-        if (guard && isLoopbackRiskDevice(d.name)) continue;
-        entries.push_back({d.name, d.rtAudioId, {}});
+        if (guard && isLoopbackRiskDevice(d)) continue;
+        entries.push_back({d, {}});
     }
     // Add sound-server sinks RtAudio's backend missed — typically the
     // motherboard analog jack and the active HDMI display. The platform layer
@@ -438,36 +569,30 @@ static std::vector<OutUiEntry> buildOutDeviceUiEntries() {
         while (tok >> w) {
             if (w.size() < 6 || isStopWord(w)) continue;
             for (auto& d : outDevices) {
-                if (d.name.find(w) != std::string::npos) return true;
+                if (d.find(w) != std::string::npos) return true;
             }
         }
         return false;
     };
     for (auto& s : crosspad_pc::audio_platform::outputSinkCandidates()) {
         if (!overlapsRtAudio(s.description))
-            entries.push_back({s.description, 0, s.name});
+            entries.push_back({s.description, s.name});
     }
-    // Stable, enumeration-order-independent ordering. RtAudio does not
-    // guarantee the same device order between two enumerations, so without
-    // this a rebuild between showing the dropdown and clicking it (the UI
-    // populate timer, or a second remote *_list) could move a device to a
-    // different index and open the wrong one. Sorting by label pins each
-    // device to a fixed slot.
+    // Stable, enumeration-order-independent ordering, so the list a client
+    // shows and the list it picks from agree on positions.
     std::sort(entries.begin(), entries.end(),
               [](const OutUiEntry& a, const OutUiEntry& b) { return a.label < b.label; });
     return entries;
 }
 
 /* ── Cached UI device lists + thread-safe selection ─────────────────────
- * The dropdowns are populated from these caches and the selection resolves
- * the chosen index against the SAME cache — never a fresh enumeration.
- * Rebuilding the list between showing it and clicking it was how a graph
- * change (a sink appearing, RtAudio reordering its ids) shifted indices and
- * opened a different device than the one the label named. The caches refresh
- * on every populate and on every remote *_list. */
+ * The dropdowns are populated from these caches, and a pick is resolved by
+ * its label, never by its position: a refresh between showing a list and
+ * clicking it (the control port lists too) may have moved every entry. The
+ * caches refresh on every populate and on every remote *_list. */
 struct InUiEntry {
     std::string  label;              ///< what the dropdown shows
-    unsigned int rtAudioId = 0;      ///< 0 => not a physical RtAudio device
+    std::string  deviceName;         ///< RtAudio device name; empty for a virtual sink
     std::string  captureDeviceName;  ///< virtual-sink capture target (Pulse)
     bool         isVirtual = false;
 };
@@ -483,8 +608,9 @@ struct AudioJackUiResult {
     std::string label;
 };
 // Serialises device switching: the UI runs it on a worker thread so the LVGL
-// thread never blocks on an ALSA/PulseAudio open, and the remote-control
-// server runs it on its TCP thread — both go through this lock.
+// thread never blocks on an ALSA/PulseAudio open, the remote-control server
+// runs it on its TCP thread and the route watch on its own — all go through
+// this lock.
 static std::mutex s_audioSelMutex;
 
 /// IN dropdown entries: physical RtAudio inputs relabelled with PipeWire
@@ -496,26 +622,22 @@ static std::vector<InUiEntry> buildInDeviceUiEntries() {
     auto inDevices = enumerateAudioInputDevices();
     // Relabel with PipeWire source descriptions where available; portable
     // builds get the raw RtAudio names back. Labels line up with inDevices.
-    std::vector<std::string> rawNames;
-    rawNames.reserve(inDevices.size());
-    for (auto& d : inDevices) rawNames.push_back(d.name);
-    auto labels = crosspad_pc::audio_platform::prettyInputLabels(rawNames);
+    auto labels = crosspad_pc::audio_platform::prettyInputLabels(inDevices);
     std::set<std::string> seen;
     for (size_t i = 0; i < inDevices.size(); ++i) {
         const std::string& label = labels[i];
         if (!seen.insert(label).second) continue;   // dedupe aliases of one card
-        entries.push_back({label, inDevices[i].rtAudioId, {}, false});
+        entries.push_back({label, inDevices[i], {}, false});
     }
 #if defined(USE_VIRTUAL_AUDIO)
     // CrossPad's own virtual sinks (system-wide mixer inputs). The manager is
     // a no-op off-Linux, so list() is empty there and nothing is appended.
     if (s_virtualSinkManager) {
         for (auto& v : s_virtualSinkManager->list())
-            entries.push_back({v.displayName, 0, v.captureDeviceName, true});
+            entries.push_back({v.displayName, {}, v.captureDeviceName, true});
     }
 #endif
-    // Same enumeration-order-independence as the OUT list: pin each entry to a
-    // fixed index by label so a rebuild never re-slots a device.
+    // Same enumeration-order-independence as the OUT list.
     std::sort(entries.begin(), entries.end(),
               [](const InUiEntry& a, const InUiEntry& b) { return a.label < b.label; });
     return entries;
@@ -543,65 +665,77 @@ static std::vector<std::string> refreshInUiCache() {
     return names;
 }
 
-/// Apply an OUT selection by dropdown index against the cached list. Blocking
-/// (RtAudio/PA open) — never call from the LVGL thread; wrap it in a worker.
-/// @return true if a device is connected on the slot afterwards.
-static bool appAudioOutSelectIdx(int slot, int uiIndex, std::string& outLabel) {
+/// The cached entry shown as @p label, the cache rebuilt once when it has
+/// none (it may predate the entry). Call with s_audioSelMutex held.
+template <typename Entry>
+static const Entry* findUiEntry(std::vector<Entry>& cache, std::vector<Entry> (*build)(),
+                                const std::string& label) {
+    for (int pass = 0; pass < 2; ++pass) {
+        for (const auto& e : cache)
+            if (e.label == label) return &e;
+        if (pass == 0) cache = build();
+    }
+    return nullptr;
+}
+
+/// Apply an OUT pick, named by its dropdown label ("" = "(None)"). A pick
+/// that will not open is refused and the slot goes back to what it played
+/// (or a safe fallback), so a bad pick never leaves the output silent; only
+/// a pick that opened is saved. Blocking (RtAudio/PA open) — never call from
+/// the LVGL thread; wrap it in a worker.
+/// @return true if a device is connected on the slot afterwards; @p outLabel
+///         is what it plays.
+static bool appAudioOutSelect(int slot, const std::string& label, std::string& outLabel) {
     std::lock_guard<std::mutex> lk(s_audioSelMutex);
-    auto& output = (slot == 0) ? pcAudio : pcAudio2;
-    if (uiIndex <= 0) {
-        output.end();
-        outLabel.clear();
+    OutRoute want;
+    if (!label.empty()) {
+        const OutUiEntry* sel = findUiEntry(s_outUiCache, &buildOutDeviceUiEntries, label);
+        if (!sel) {
+            printf("[Audio] OUT%d: '%s' is not on the list any more\n", slot + 1, label.c_str());
+            outLabel = s_outOpen[slot].label;
+            return outputOf(slot).isOpen();
+        }
+        want = sel->paSinkName.empty()
+                   ? OutRoute{OutRoute::Kind::Device, sel->label, sel->label}
+                   : OutRoute{OutRoute::Kind::Sink, sel->paSinkName, sel->label};
+    }
+    bool connected = openRouteExactly(slot, want);
+    if (connected || want.kind == OutRoute::Kind::None) {
+        s_outWanted[slot] = want;
         setDevicePrefs([&](DevicePreferences& p) {
-            if (slot == 0) { p.audioOut1.clear(); p.audioOut1Pa.clear(); }
-            else           { p.audioOut2.clear(); p.audioOut2Pa.clear(); }
+            std::string& name = slot == 0 ? p.audioOut1 : p.audioOut2;
+            std::string& pa   = slot == 0 ? p.audioOut1Pa : p.audioOut2Pa;
+            name = want.kind == OutRoute::Kind::None ? std::string{} : want.label;
+            pa   = want.kind == OutRoute::Kind::Sink ? want.id : std::string{};
         });
         saveDevicePrefs();
-        return false;
+    } else {
+        printf("[Audio] OUT%d: '%s' refused, back to the previous output\n", slot + 1,
+               label.c_str());
+        connected = openOutput(slot, s_outWanted[slot]);
     }
-    size_t realIdx = static_cast<size_t>(uiIndex) - 1;
-    if (realIdx >= s_outUiCache.size()) return output.isOpen();
-    const auto& sel = s_outUiCache[realIdx];
-    bool connected = false;
-    if (sel.rtAudioId != 0) {
-        output.switchDevice(sel.rtAudioId);
-        connected = output.isOpen();
-        outLabel = output.getCurrentDeviceName();
-        setDevicePrefs([&](DevicePreferences& p) {
-            if (slot == 0) { p.audioOut1 = outLabel; p.audioOut1Pa.clear(); }
-            else           { p.audioOut2 = outLabel; p.audioOut2Pa.clear(); }
-        });
-    }
-#if defined(USE_VIRTUAL_AUDIO)
-    else {
-        // PA-only sink — open the RtAudio stream on the PulseAudio server
-        // device, then move the sink-input onto the chosen sink. The move is a
-        // portable stub off-Linux; on Mac/Win no such entry is offered anyway.
-        if (!output.isOpen()) {
-            for (auto& d : enumerateAudioOutputDevices()) {
-                if (d.name.find("PulseAudio") != std::string::npos) {
-                    output.switchDevice(d.rtAudioId);
-                    break;
-                }
-            }
-        }
-        if (crosspad_pc::movePulseOutputToSink(slot, sel.paSinkName)) {
-            connected = true;
-            outLabel = sel.label;
-            setDevicePrefs([&](DevicePreferences& p) {
-                if (slot == 0) { p.audioOut1 = sel.label; p.audioOut1Pa = sel.paSinkName; }
-                else           { p.audioOut2 = sel.label; p.audioOut2Pa = sel.paSinkName; }
-            });
-        }
-    }
-#endif
-    saveDevicePrefs();
+    outLabel = connected ? s_outOpen[slot].label : std::string{};
     return connected;
 }
 
-/// Apply an IN selection by dropdown index against the cached list. Blocking —
-/// same worker-thread rule as appAudioOutSelectIdx.
-static bool appAudioInSelectIdx(int slot, int uiIndex, std::string& outLabel) {
+/// The same, by position in the current OUT list (the control port's form).
+static bool appAudioOutSelectIdx(int slot, int uiIndex, std::string& outLabel) {
+    std::string label;
+    {
+        std::lock_guard<std::mutex> lk(s_audioSelMutex);
+        if (uiIndex > 0 && static_cast<size_t>(uiIndex) <= s_outUiCache.size())
+            label = s_outUiCache[uiIndex - 1].label;
+        else if (uiIndex > 0) {
+            outLabel = s_outOpen[slot].label;
+            return outputOf(slot).isOpen();
+        }
+    }
+    return appAudioOutSelect(slot, label, outLabel);
+}
+
+/// Apply an IN pick, named by its dropdown label ("" = "(None)"). Blocking —
+/// same worker-thread rule as appAudioOutSelect.
+static bool appAudioInSelect(int slot, const std::string& label, std::string& outLabel) {
     std::lock_guard<std::mutex> lk(s_audioSelMutex);
     auto& input = (slot == 0) ? pcAudioIn1 : pcAudioIn2;
     // Tear down whichever capturer was bound to this slot — saves juggling
@@ -609,7 +743,7 @@ static bool appAudioInSelectIdx(int slot, int uiIndex, std::string& outLabel) {
     // RtAudio input and the (platform-owned) virtual capturer get stopped.
     input.end();
     crosspad_pc::audio_platform::stopVirtualCapture(slot);
-    if (uiIndex <= 0) {
+    if (label.empty()) {
         outLabel.clear();
         pc_platform_set_audio_input(slot, nullptr);
         setDevicePrefs([&](DevicePreferences& p) {
@@ -618,15 +752,15 @@ static bool appAudioInSelectIdx(int slot, int uiIndex, std::string& outLabel) {
         saveDevicePrefs();
         return false;
     }
-    size_t realIdx = static_cast<size_t>(uiIndex) - 1;
-    if (realIdx >= s_inUiCache.size()) { saveDevicePrefs(); return false; }
-    const auto& sel = s_inUiCache[realIdx];
+    const InUiEntry* found = findUiEntry(s_inUiCache, &buildInDeviceUiEntries, label);
+    if (!found) { saveDevicePrefs(); return false; }
+    const InUiEntry sel = *found;
     bool connected = false;
-    if (!sel.isVirtual && sel.rtAudioId != 0) {
-        input.switchDevice(sel.rtAudioId);
+    if (!sel.isVirtual && !sel.deviceName.empty()) {
+        input.switchDevice(sel.deviceName);
         connected = input.isOpen();
         if (connected) pc_platform_set_audio_input(slot, &input);
-        outLabel = sel.label;   // store the shown label, not the raw device id
+        outLabel = sel.label;   // store the shown label, not the raw device name
         setDevicePrefs([&](DevicePreferences& p) {
             if (slot == 0) p.audioIn1 = sel.label; else p.audioIn2 = sel.label;
         });
@@ -647,15 +781,91 @@ static bool appAudioInSelectIdx(int slot, int uiIndex, std::string& outLabel) {
     return connected;
 }
 
-/// Find device ID by name in a list. Returns 0 (default) if not found.
-static unsigned int findDeviceByName(const std::vector<AudioDeviceEntry>& devices,
-                                      const std::string& name) {
-    if (name.empty()) return 0;
-    for (auto& d : devices) {
-        if (d.name == name) return d.rtAudioId;
+/// The same, by position in the current IN list (the control port's form).
+static bool appAudioInSelectIdx(int slot, int uiIndex, std::string& outLabel) {
+    std::string label;
+    {
+        std::lock_guard<std::mutex> lk(s_audioSelMutex);
+        if (uiIndex > 0 && static_cast<size_t>(uiIndex) <= s_inUiCache.size())
+            label = s_inUiCache[uiIndex - 1].label;
+        else if (uiIndex > 0)
+            return false;
     }
-    return 0;
+    return appAudioInSelect(slot, label, outLabel);
 }
+
+#ifdef USE_VIRTUAL_AUDIO
+/// The route watch: every couple of seconds put an output back on its pick
+/// once that works again, and take it off a route that broke -- its sink went
+/// away (the server then moves the stream to the default), or the default it
+/// follows became a CrossPad sink. The jack panel is told what plays.
+static std::atomic<bool> s_routeWatchRun{false};
+static std::atomic<bool> s_routeWatchBusy{false};
+
+static void routeWatchTick() {
+    for (int slot = 0; slot < 2; ++slot) {
+        std::string label;
+        bool connected = false;
+        {
+            std::unique_lock<std::mutex> lk(s_audioSelMutex, std::try_to_lock);
+            if (!lk.owns_lock()) return;   // a pick is being applied
+            const OutRoute want = s_outWanted[slot];
+            const OutRoute open = s_outOpen[slot];
+            if (want.kind == OutRoute::Kind::None || open.kind == OutRoute::Kind::None) continue;
+            const bool broken = (open.followsDefault() && defaultIsCrossPads())
+                || (open.kind == OutRoute::Kind::Sink && !sinkListed(open.id));
+            // Back to the pick: its sink is there again (and was not refused
+            // while there), or the default it follows is no longer CrossPad's
+            // (only then was it replaced by a sink).
+            bool canReturn = false;
+            if (!open.same(want) && want.kind == OutRoute::Kind::Sink) {
+                if (!sinkListed(want.id)) s_outRefusedSink[slot].clear();
+                else canReturn = s_outRefusedSink[slot] != want.id;
+            } else if (!open.same(want)) {
+                canReturn = want.followsDefault() && open.kind == OutRoute::Kind::Sink
+                         && !defaultIsCrossPads();
+            }
+            if (!broken && !canReturn) continue;
+            printf("[Audio] OUT%d: %s\n", slot + 1,
+                   broken ? "its sink went away, or the default it follows is CrossPad's; re-routing"
+                          : "its pick works again, going back to it");
+            connected = openOutput(slot, want);
+            label = connected ? s_outOpen[slot].label : std::string{};
+        }
+        auto* res = new AudioJackUiResult{slot == 0 ? EmuJackPanel::AUDIO_OUT1
+                                                    : EmuJackPanel::AUDIO_OUT2,
+                                          connected, std::move(label)};
+        pc_gui::post([](void* ud) {
+            auto* r = static_cast<AudioJackUiResult*>(ud);
+            auto& jp = stm32Emu.getJackPanel();
+            jp.setConnected(static_cast<EmuJackPanel::JackId>(r->jackId), r->connected);
+            jp.setDeviceName(static_cast<EmuJackPanel::JackId>(r->jackId), r->label);
+            delete r;
+        }, res);
+    }
+}
+
+/// Detached, so a process that ends without the shutdown is not stopped by a
+/// joinable thread; routeWatchStop() waits for a tick in progress instead.
+static void routeWatchStart() {
+    if (s_routeWatchRun.exchange(true)) return;
+    std::thread([] {
+        while (s_routeWatchRun.load()) {
+            for (int i = 0; i < 20 && s_routeWatchRun.load(); ++i)
+                std::this_thread::sleep_for(std::chrono::milliseconds(100));
+            s_routeWatchBusy.store(true);
+            if (s_routeWatchRun.load()) routeWatchTick();
+            s_routeWatchBusy.store(false);
+        }
+    }).detach();
+}
+
+static void routeWatchStop() {
+    s_routeWatchRun.store(false);
+    while (s_routeWatchBusy.load())
+        std::this_thread::sleep_for(std::chrono::milliseconds(10));
+}
+#endif
 
 /// Find dropdown index (1-based, 0 = None) for a device name.
 static int findDropdownIndex(const std::vector<std::string>& list, const std::string& name) {
@@ -996,75 +1206,33 @@ static void boot_devices()
 #endif
 
 #ifdef USE_AUDIO
-    // ── Audio OUT1/OUT2: auto-connect saved device or default ──
+    // ── Audio OUT1/OUT2: the saved pick, or the default ──
     //
-    // Preference resolution order per slot:
-    //   1. If audioOutNPa is set — saved pick was a PulseAudio-only sink
-    //      (motherboard analog / HDMI port hidden from RtAudio's ALSA backend).
-    //      Open RtAudio on "PulseAudio Sound Server" so we have a real
-    //      sink-input, then move it onto the remembered PA sink.
-    //   2. Else if audioOutN matches an RtAudio device name — open that directly.
-    //   3. Else — RtAudio default device.
-    auto openOutputSlot = [&](PcAudioOutput& output, int slot,
-                              std::string& savedName, std::string& savedPa) {
-        auto outDevices = enumerateAudioOutputDevices();
-#if defined(USE_VIRTUAL_AUDIO) && defined(__linux__)
-        if (!savedPa.empty()) {
-            // Pinning moves the stream this open creates, so the device has to
-            // be one that appears in the sound server's graph: RtAudio's
-            // default goes through pipewire-alsa and does, while opening a
-            // hardware device directly does not, and on a PipeWire host the
-            // ALSA "pulse" plugin can open without ever creating a node.
-            //
-            // The move itself cannot happen here. The node only materialises
-            // once audio is actually written, and nothing writes until the
-            // audio module starts, which is much later in init — attempting it
-            // at open time simply never finds the stream. The pin is recorded
-            // and applied after start(); see s_pendingPin below.
-            output.begin(0);
-            if (output.isOpen()) {
-                s_pendingPin[slot] = savedPa;
-                return;
-            }
-            printf("[Audio] OUT%d: default device would not open, cannot pin to '%s'\n",
-                   slot + 1, savedPa.c_str());
-            savedPa.clear();
-        }
-#endif
-        unsigned int devId = findDeviceByName(outDevices, savedName);
-        if (loopGuardActive()) {
-            // Saved pick itself is a loopback risk → treat as not found.
-            if (devId != 0 && isLoopbackRiskDevice(savedName)) devId = 0;
-            // No (usable) saved device: RtAudio's default would be the
-            // "Default ALSA Device" → our own virtual sink. Pick the first
-            // real hardware device instead of the default.
-            if (devId == 0) {
-                for (auto& d : outDevices) {
-                    if (!isLoopbackRiskDevice(d.name)) { devId = d.rtAudioId; break; }
-                }
-            }
-        }
-        output.begin(devId);
-        if (output.isOpen()) {
-            savedName = output.getCurrentDeviceName();
-        }
-    };
-
-    // CROSSPAD_AUDIO=off: no device is opened at all (see InstanceEnv.hpp).
+    // The preferences hold the pick: a sink (audioOutNPa, the stream created
+    // on it), an RtAudio device by name, or nothing (the default). An output
+    // that would follow a default that is, or is about to be, CrossPad's own
+    // goes to a named real sink instead (openOutput). A fallback is not
+    // written back, so the pick returns once it works again (the route watch).
     if (crosspad_pc::instance::audioEnabled()) {
-        // On copies: the opens take a while and the preferences are not
-        // held across them (setDevicePrefs).
         DevicePreferences prefs;
         setDevicePrefs([&](DevicePreferences& p) { prefs = p; });
-        {
-            BootUnlocked unlocked;
-            openOutputSlot(pcAudio,  0, prefs.audioOut1, prefs.audioOut1Pa);
-            openOutputSlot(pcAudio2, 1, prefs.audioOut2, prefs.audioOut2Pa);
-        }
-        setDevicePrefs([&](DevicePreferences& p) {
-            p.audioOut1 = prefs.audioOut1; p.audioOut1Pa = prefs.audioOut1Pa;
-            p.audioOut2 = prefs.audioOut2; p.audioOut2Pa = prefs.audioOut2Pa;
-        });
+#ifdef USE_PIPEWIRE
+        // The takeover below runs when this holds (and the native backend
+        // makes the virtual sinks, which PwContext::init() answers).
+        s_takeoverPending = crosspad_pc::instance::defaultSinkTakeoverAllowed() &&
+                            prefs.pwTakeoverDefault && crosspad_pc::PwContext::instance().init();
+#endif
+        auto pick = [](const std::string& name, const std::string& pa) {
+            if (!pa.empty())   return OutRoute{OutRoute::Kind::Sink, pa, name};
+            if (!name.empty()) return OutRoute{OutRoute::Kind::Device, name, name};
+            return OutRoute{OutRoute::Kind::Default, {}, {}};
+        };
+        BootUnlocked unlocked;
+        std::lock_guard<std::mutex> lk(s_audioSelMutex);
+        s_outWanted[0] = pick(prefs.audioOut1, prefs.audioOut1Pa);
+        s_outWanted[1] = pick(prefs.audioOut2, prefs.audioOut2Pa);
+        openOutput(0, s_outWanted[0]);
+        openOutput(1, s_outWanted[1]);
     }
     pc_platform_set_audio_output_2(&pcAudio2);
 
@@ -1153,9 +1321,8 @@ static void boot_devices()
         // through the same builder the dropdown uses.
         auto restoreInSlot = [&](PcAudioInput& in, int slot, const std::string& saved) {
             if (saved.empty() || in.isOpen()) return;
-            unsigned int devId = findDeviceByName(inDevices, saved);
-            if (devId != 0) {
-                in.begin(devId, outSampleRate);
+            if (std::find(inDevices.begin(), inDevices.end(), saved) != inDevices.end()) {
+                in.begin(saved, outSampleRate);
                 if (in.isOpen()) {
                     pc_platform_set_audio_input(slot, &in);
                     printf("[Audio] IN%d auto-connected: %s @ %u Hz\n", slot + 1,
@@ -1163,14 +1330,9 @@ static void boot_devices()
                 }
                 return;
             }
-            s_inUiCache = buildInDeviceUiEntries();
-            for (size_t i = 0; i < s_inUiCache.size(); ++i) {
-                if (s_inUiCache[i].label != saved) continue;
-                std::string lbl;
-                if (appAudioInSelectIdx(slot, (int)i + 1, lbl))
-                    printf("[Audio] IN%d auto-connected: %s\n", slot + 1, lbl.c_str());
-                return;
-            }
+            std::string lbl;
+            if (appAudioInSelect(slot, saved, lbl))
+                printf("[Audio] IN%d auto-connected: %s\n", slot + 1, lbl.c_str());
         };
         if (crosspad_pc::instance::audioEnabled()) {
             if (!in1Skip) restoreInSlot(pcAudioIn1, 0, s_devicePrefs.audioIn1);
@@ -1218,6 +1380,14 @@ static void boot_devices()
                 saveDevicePrefs();
             }
         }
+        // Taken over or not, the guard says from here on (a failed takeover
+        // leaves the default real, and the route watch returns the outputs).
+        s_takeoverPending = false;
+        // An output put on the user's default sink above was created while
+        // that was the default, so it follows the default -- now CrossPad's.
+        // Re-open it before the module starts playing, while the default is
+        // no longer that sink.
+        routeWatchTick();
     }
 #endif
 
@@ -1376,26 +1546,7 @@ static void boot_devices()
         // song's instrument): after the sampler and the pitched engine.
         crosspad_pc::instrument_host_init();
         s_audioModule.start();
-
-#if defined(USE_VIRTUAL_AUDIO) && defined(__linux__)
-        // Now that the module is writing, the output streams exist in the
-        // sound server and can be pinned. This matters most when the
-        // virtual-sink takeover is on: the default sink is then CrossPad's own
-        // input, so an unpinned output would feed straight back into it.
-        {
-            BootUnlocked unlocked;
-            for (uint8_t s = 0; s < 2; ++s) {
-                if (s_pendingPin[s].empty()) continue;
-                if (crosspad_pc::movePulseOutputToSinkWithin(s, s_pendingPin[s], 4000)) {
-                    printf("[Audio] OUT%u pinned to sink '%s'\n",
-                           unsigned(s + 1), s_pendingPin[s].c_str());
-                } else {
-                    printf("[Audio] OUT%u could not be pinned to '%s' — it will follow "
-                           "the default sink\n", unsigned(s + 1), s_pendingPin[s].c_str());
-                }
-            }
-        }
-#endif
+        s_outRate = cfg.sampleRate;
 
 #ifdef USE_PIPEWIRE
         // Expose OUT1 as a virtual source ("CrossPad Out") that OBS/DAWs can
@@ -1536,11 +1687,17 @@ static void boot_finish()
         auto& jp = stm32Emu.getJackPanel();
 
 #ifdef USE_AUDIO
-        // Audio OUT1/OUT2 — show device name and connection status
-        jp.setDeviceName(EmuJackPanel::AUDIO_OUT1, pcAudio.getCurrentDeviceName());
+        // Audio OUT1/OUT2 — what each plays, and whether it is open
+        std::string outLabel[2];
+        {
+            std::lock_guard<std::mutex> lk(s_audioSelMutex);
+            outLabel[0] = s_outOpen[0].label;
+            outLabel[1] = s_outOpen[1].label;
+        }
+        jp.setDeviceName(EmuJackPanel::AUDIO_OUT1, outLabel[0]);
         jp.setConnected(EmuJackPanel::AUDIO_OUT1, pcAudio.isOpen());
 
-        jp.setDeviceName(EmuJackPanel::AUDIO_OUT2, pcAudio2.getCurrentDeviceName());
+        jp.setDeviceName(EmuJackPanel::AUDIO_OUT2, outLabel[1]);
         jp.setConnected(EmuJackPanel::AUDIO_OUT2, pcAudio2.isOpen());
 
         // Audio IN1/IN2 — current device. When a virtual sink serves the slot
@@ -1572,9 +1729,9 @@ static void boot_finish()
         {
             const auto& outNames = s_bootOutNames;
             jp.setDeviceList(EmuJackPanel::AUDIO_OUT1, outNames,
-                             findDropdownIndex(outNames, pcAudio.getCurrentDeviceName()));
+                             findDropdownIndex(outNames, outLabel[0]));
             jp.setDeviceList(EmuJackPanel::AUDIO_OUT2, outNames,
-                             findDropdownIndex(outNames, pcAudio2.getCurrentDeviceName()));
+                             findDropdownIndex(outNames, outLabel[1]));
 
             const auto& inNames = s_bootInNames;
             // IN prefs store the shown label (a PipeWire description), so the
@@ -1585,6 +1742,9 @@ static void boot_finish()
             jp.setDeviceList(EmuJackPanel::AUDIO_IN2, inNames,
                              findDropdownIndex(inNames, s_devicePrefs.audioIn2));
         }
+#ifdef USE_VIRTUAL_AUDIO
+        if (crosspad_pc::instance::audioEnabled()) routeWatchStart();
+#endif
 #endif
 
 #ifdef USE_MIDI
@@ -1701,26 +1861,32 @@ static void boot_finish()
                 // it inline here froze the whole UI (this callback runs on the
                 // LVGL thread). Run the switch on a worker thread and push the
                 // result back with pc_gui::post() so only widget mutation — which
-                // must stay on the LVGL thread — happens there. Selection
-                // resolves against the cached list the dropdown was built from,
-                // never a fresh enumeration whose indices may have shifted.
+                // must stay on the LVGL thread — happens there. The pick is
+                // the label the dropdown showed at that position, resolved by
+                // name: positions shift whenever a list is rebuilt.
                 const bool isOut = (jackId == EmuJackPanel::AUDIO_OUT1 ||
                                     jackId == EmuJackPanel::AUDIO_OUT2);
                 const int  slot  = (jackId == EmuJackPanel::AUDIO_OUT1 ||
                                     jackId == EmuJackPanel::AUDIO_IN1) ? 0 : 1;
-                const int  uiIndex = static_cast<int>(deviceIndex);
-                std::thread([jackId, slot, isOut, uiIndex]() {
+                const auto& shown = isOut ? s_bootOutNames : s_bootInNames;
+                std::string pick;
+                if (deviceIndex > 0 && deviceIndex < shown.size()) pick = shown[deviceIndex];
+                std::thread([jackId, slot, isOut, pick]() {
                     std::string label;
-                    bool connected = isOut ? appAudioOutSelectIdx(slot, uiIndex, label)
-                                           : appAudioInSelectIdx(slot, uiIndex, label);
+                    bool connected = isOut ? appAudioOutSelect(slot, pick, label)
+                                           : appAudioInSelect(slot, pick, label);
                     auto* res = new AudioJackUiResult{jackId, connected, std::move(label)};
                     pc_gui::post([](void* ud) {
                         auto* r = static_cast<AudioJackUiResult*>(ud);
                         auto& jp = stm32Emu.getJackPanel();
-                        jp.setConnected(static_cast<EmuJackPanel::JackId>(r->jackId),
-                                        r->connected);
-                        jp.setDeviceName(static_cast<EmuJackPanel::JackId>(r->jackId),
-                                         r->label);
+                        const auto id = static_cast<EmuJackPanel::JackId>(r->jackId);
+                        jp.setConnected(id, r->connected);
+                        jp.setDeviceName(id, r->label);
+                        // A refused pick leaves the slot on another output:
+                        // the dropdown says which.
+                        if (id == EmuJackPanel::AUDIO_OUT1 || id == EmuJackPanel::AUDIO_OUT2)
+                            jp.setDeviceList(id, s_bootOutNames,
+                                             findDropdownIndex(s_bootOutNames, r->label));
                         delete r;
                     }, res);
                 }).detach();
@@ -2165,6 +2331,9 @@ void crosspad_app_shutdown()
 #if defined(USE_AUDIO) && defined(USE_VIRTUAL_AUDIO)
     bool expected = false;
     if (!s_shutdownRan.compare_exchange_strong(expected, true)) return;
+
+    // Nothing re-routes an output while the default and the sinks go away.
+    routeWatchStop();
 
 #ifdef USE_PIPEWIRE
     // Restore the user's original default sink and clear the crash-recovery

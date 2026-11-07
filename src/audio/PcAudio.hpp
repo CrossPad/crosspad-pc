@@ -16,6 +16,8 @@
 #include <memory>
 #include <string>
 
+struct PcSinkStream;
+
 class PcAudioOutput : public crosspad::IAudioOutput {
 public:
     PcAudioOutput();
@@ -25,8 +27,19 @@ public:
     PcAudioOutput& operator=(const PcAudioOutput&) = delete;
 
     // ── Lifecycle ──────────────────────────────────────────────
-    bool begin(unsigned int outputDevice = 0,
+    /// Open the output device RtAudio calls @p deviceName ("" = its default
+    /// output). The name is resolved by the RtAudio instance that opens it:
+    /// RtAudio numbers devices per instance, so an id from another
+    /// enumeration can name a different device, or one with no outputs.
+    bool begin(const std::string& deviceName = {},
                uint32_t sampleRate = 44100, uint32_t bufferFrames = 256);
+
+    /// Open a stream created on the sound-server sink @p sinkName (Linux,
+    /// PulseAudio or PipeWire). Born on that sink, it never follows the
+    /// system default. False where there is no sound server, or the sink
+    /// is not there.
+    bool beginOnSink(const std::string& sinkName,
+                     uint32_t sampleRate = 48000, uint32_t bufferFrames = 256);
     void end();
 
     // ── IAudioOutput ───────────────────────────────────────────
@@ -44,7 +57,7 @@ public:
     bool isOpen() const;
 
     /// Stop current stream and re-open on a different device.
-    bool switchDevice(unsigned int deviceId);
+    bool switchDevice(const std::string& deviceName);
 
     /// Name of the currently open output device (empty if closed).
     std::string getCurrentDeviceName() const;
@@ -62,6 +75,9 @@ private:
 
     std::atomic<int16_t> outPeakL_{0};
     std::atomic<int16_t> outPeakR_{0};
+
+    // beginOnSink(): the sound-server stream, shared with the thread feeding it.
+    std::shared_ptr<PcSinkStream> sink_;
 
 public:
     // Diagnostic counters (readable from any thread; written on the RtAudio
