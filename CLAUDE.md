@@ -76,7 +76,7 @@ The `CrossPad` target gets: `PLATFORM_PC=1`, `USE_LVGL=1`, `USE_FREERTOS=1`, `CP
 
 ### Core / GUI version gate
 
-`src/crosspad_deps.hpp` declares the crosspad-core / crosspad-gui versions this simulator was written against (today core 2.16.0, gui 2.7.8; major mismatch is `#error`, minor/patch drift a `#warning`). Bump it together with the `lib/` submodules, after building and running against them. Keep the pins in step with what platform-idf's `main` uses.
+`src/crosspad_deps.hpp` declares the crosspad-core / crosspad-gui versions this simulator was written against (today core 2.44.4, gui 2.11.9; major mismatch is `#error`, minor/patch drift a `#warning`). Bump it together with the `lib/` submodules, after building and running against them. Keep the pins in step with what platform-idf's `main` uses.
 
 ## Architecture
 
@@ -104,7 +104,7 @@ src/
   freertos/                     — FreeRTOS port glue (POSIX, Win32)
   stm32_emu/                    — device body: LCD, encoder, pads, jack panel, SD slot, keyboard capture
   midi/                         — PcMidi (RtMidi, auto-connect), PcBleMidi (SimpleBLE)
-  audio/                        — RtAudio output/input, audio module, sampler/ (core's SamplerEngine: kits, second kit, pitched; its README),
+  audio/                        — RtAudio output/input, audio module, sampler/ (core's SamplerEngine: kits, pitched; its README),
                                   pipewire/ (Linux virtual-audio backend, see docs/virtual-audio.md), virtual/
   synth/MlPianoSynth.cpp        — ISynthEngine impl wrapping ML_SynthTools FM engine
   sequencer/, song/             — PC ports of the pattern sequencer and core's song engine
@@ -149,7 +149,7 @@ docs/                           — design notes; instructions.md is the in-app 
 
 - **crosspad-appstore**: the App Store (PC only). It hides itself from its own list, so it cannot remove itself, and release builds (`BUILD_TESTING=OFF`) leave it out
 - **crosspad-mixer**, **crosspad-piano**, **crosspad-instructions**, **crosspad-serial-monitor** (needs serial ports: Windows and Linux), **crosspad-sampler**: Installable via `python3 scripts/app_manager.py install <name>` or via the App Store UI
-- **crosspad-sequencer**, **crosspad-song**, **crosspad-arrange**, **crosspad-pad-mixer**, **crosspad-recorder**, **crosspad-slicer**, **crosspad-pitchplay**, **crosspad-dawcontrol**: the board's apps, with the platform services they need wired here -- the pattern sequencer and metronome (`src/sequencer/PcSequencer.cpp`, scenes in `<sdcard_path>/crosspad/sequences.json`), core's song engine (`src/song/PcSongEnginePort.cpp`, projects in `<sdcard_path>/SONGS`, bounces from the mixer's third "Rec (pads)" bus), a song's second kit track on an engine of its own (`src/audio/sampler/PcSecondKit.cpp`, core `ISecondKit`, the "Kit 2" channel), the sample tools (`src/sampletools/`), per-pad levels (`PcPadMix` in `PcSamplerPort.cpp`) and `stm32MessageHandler` for DAW Control (no hub on PC, so no launch buttons)
+- **crosspad-sequencer**, **crosspad-song**, **crosspad-arrange**, **crosspad-pad-mixer**, **crosspad-recorder**, **crosspad-slicer**, **crosspad-pitchplay**, **crosspad-dawcontrol**: the board's apps, with the platform services they need wired here -- the pattern sequencer and metronome (`src/sequencer/PcSequencer.cpp`, scenes in `<sdcard_path>/crosspad/sequences.json`), core's song engine (`src/song/PcSongEnginePort.cpp`, projects in `<sdcard_path>/SONGS`, bounces from the mixer's third "Rec (pads)" bus), the sample tools (`src/sampletools/`), per-pad levels (`PcPadMix` in `PcSamplerPort.cpp`) and `stm32MessageHandler` for DAW Control (no hub on PC, so no launch buttons)
 - **crosspad-doom**, **crosspad-pong**, **crosspad-pianotiles**: games, each the app of its firmware kit (§ Firmware kits); a kit-only app is left out of the other kits' launchers
 
 ### App Management
@@ -224,8 +224,8 @@ Host input (`src/stm32_emu/`): mouse click on a pad; mouse wheel turns the encod
 
 ```
 App noteOn/noteOff → MlPianoSynth (ISynthEngine, registered via PlatformServices::setSynthEngine)
-  → PcAudioModule thread: process() → AudioMixerEngine (Input 1, Input 2, Synth, Sampler, Pitched, Click, Song, Preview, Kit 2 channels; buses OUT1, OUT2 and the "Rec (pads)" capture bus)
-      (without the crosspad-mixer app: a plain node chain of synth, sampler, pitched and second-kit nodes)
+  → PcAudioModule thread: process() → AudioMixerEngine (Input 1, Input 2, Synth, Sampler, Pitched, Click, Song, Preview channels; buses OUT1, OUT2 and the "Rec (pads)" capture bus)
+      (without the crosspad-mixer app: a plain node chain of synth, sampler and pitched nodes)
   → PcAudioOutput::write() (ring buffer)
   → RtAudio callback: ring buffer → output device (WASAPI on Windows)
   → VU meter timer: pcAudio.getOutputLevel() → crosspad_gui::vu_set_levels()
