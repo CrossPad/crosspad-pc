@@ -116,7 +116,7 @@ device — so every level the scenarios read is real. `CROSSPAD_NO_MIDI` keeps
 the simulator off a real CrossPad on USB: without it the MIDI auto-connect
 finds the board's port.
 
-Four things about the bench, each of which cost an hour to learn:
+Four things to know when driving the simulator:
 
 - **One simulator per port.** A second instance on a port that is taken prints
   "Failed to bind port" and keeps running headless. `pkill -x CrossPad` does

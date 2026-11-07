@@ -497,7 +497,7 @@ def sc_audio_devices(sim):
                   "IN set opened exactly the entry that was selected",
                   (r.get("name"), idev[1]))
         else:
-            print("  [info] IN index1 did not connect on this bench: %s" % idev[1])
+            print("  [info] IN index1 did not connect on this host: %s" % idev[1])
         sim.cmd(cmd="audio_in_set", slot=0, index=0)
 
 
