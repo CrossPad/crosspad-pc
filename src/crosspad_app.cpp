@@ -885,28 +885,34 @@ static int findMidiPortByName(const std::string& name, bool isOutput) {
     std::string lower = name;
     std::transform(lower.begin(), lower.end(), lower.begin(), ::tolower);
 
-    if (isOutput) {
-        RtMidiOut probe;
-        for (unsigned int i = 0; i < probe.getPortCount(); i++) {
-            std::string pn = probe.getPortName(i);
-            std::string pnLower = pn;
-            std::transform(pnLower.begin(), pnLower.end(), pnLower.begin(), ::tolower);
-            if (pnLower.find(lower) != std::string::npos || lower.find(pnLower) != std::string::npos
-                || pn == name) {
-                return (int)i;
+    // RtMidi throws when the system has no MIDI backend (no ALSA sequencer):
+    // then no port matches.
+    try {
+        if (isOutput) {
+            RtMidiOut probe;
+            for (unsigned int i = 0; i < probe.getPortCount(); i++) {
+                std::string pn = probe.getPortName(i);
+                std::string pnLower = pn;
+                std::transform(pnLower.begin(), pnLower.end(), pnLower.begin(), ::tolower);
+                if (pnLower.find(lower) != std::string::npos || lower.find(pnLower) != std::string::npos
+                    || pn == name) {
+                    return (int)i;
+                }
+            }
+        } else {
+            RtMidiIn probe;
+            for (unsigned int i = 0; i < probe.getPortCount(); i++) {
+                std::string pn = probe.getPortName(i);
+                std::string pnLower = pn;
+                std::transform(pnLower.begin(), pnLower.end(), pnLower.begin(), ::tolower);
+                if (pnLower.find(lower) != std::string::npos || lower.find(pnLower) != std::string::npos
+                    || pn == name) {
+                    return (int)i;
+                }
             }
         }
-    } else {
-        RtMidiIn probe;
-        for (unsigned int i = 0; i < probe.getPortCount(); i++) {
-            std::string pn = probe.getPortName(i);
-            std::string pnLower = pn;
-            std::transform(pnLower.begin(), pnLower.end(), pnLower.begin(), ::tolower);
-            if (pnLower.find(lower) != std::string::npos || lower.find(pnLower) != std::string::npos
-                || pn == name) {
-                return (int)i;
-            }
-        }
+    } catch (const RtMidiError& e) {
+        printf("[MIDI] cannot list %s ports: %s\n", isOutput ? "output" : "input", e.what());
     }
     return -1;
 }
