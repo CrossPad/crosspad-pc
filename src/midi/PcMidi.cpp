@@ -155,7 +155,9 @@ bool PcMidi::beginAutoConnect(const std::string& keyword)
     // Find best matching output port
     unsigned int outPort = 0;
     bool outFound = false;
-    {
+    // RtMidi throws when the system has no MIDI backend (no ALSA sequencer,
+    // /dev/snd/seq absent); begin() below reports it and opens nothing.
+    try {
         RtMidiOut probe;
         unsigned int count = probe.getPortCount();
         for (unsigned int i = 0; i < count; i++) {
@@ -169,12 +171,14 @@ bool PcMidi::beginAutoConnect(const std::string& keyword)
         }
         if (!outFound && count > 0)
             printf("[MIDI] Auto-connect: no '%s' output found, falling back to port 0\n", keyword.c_str());
+    } catch (const RtMidiError& e) {
+        printf("[MIDI] Auto-connect: cannot list output ports: %s\n", e.what());
     }
 
     // Find best matching input port
     unsigned int inPort = 0;
     bool inFound = false;
-    {
+    try {
         RtMidiIn probe;
         unsigned int count = probe.getPortCount();
         for (unsigned int i = 0; i < count; i++) {
@@ -188,6 +192,8 @@ bool PcMidi::beginAutoConnect(const std::string& keyword)
         }
         if (!inFound && count > 0)
             printf("[MIDI] Auto-connect: no '%s' input found, falling back to port 0\n", keyword.c_str());
+    } catch (const RtMidiError& e) {
+        printf("[MIDI] Auto-connect: cannot list input ports: %s\n", e.what());
     }
 
     autoConnectFound_ = (outFound || inFound);

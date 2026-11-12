@@ -7,8 +7,8 @@
 set -e
 
 REPO_ROOT="$(cd "$(dirname "$0")" && pwd)"
-CORE_LOCAL="/c/Users/Mateusz/GIT/crosspad-core"
-GUI_LOCAL="/c/Users/Mateusz/GIT/crosspad-gui"
+CORE_LOCAL="$HOME/GIT/crosspad-core"
+GUI_LOCAL="$HOME/GIT/crosspad-gui"
 PINS_FILE="$REPO_ROOT/.dev-mode-pins"
 
 make_junction() {

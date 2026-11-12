@@ -43,7 +43,7 @@ std::vector<std::string> prettyInputLabels(const std::vector<std::string>& rawNa
 /// A system audio sink RtAudio's backend may not enumerate (motherboard analog
 /// jack, active HDMI display) but which the sound server can route to.
 struct SinkCandidate {
-    std::string name;         ///< sink id for move-sink-input
+    std::string name;         ///< sink name, what PcAudioOutput::beginOnSink() opens
     std::string description;  ///< human-readable UI label
 };
 
@@ -51,6 +51,10 @@ struct SinkCandidate {
 /// Empty when virtual audio is disabled or the platform has no sound-server
 /// sink enumeration (Windows/macOS).
 std::vector<SinkCandidate> outputSinkCandidates();
+
+/// The sound server's default sink right now (the effective one), "" when
+/// there is no sound server or it cannot tell (always off-Linux).
+std::string currentDefaultSink();
 
 /* ── Virtual-sink monitor capture ───────────────────────────────────────
  * CrossPad's own null-sink monitors captured for the IN slots (the

@@ -3,8 +3,8 @@
  * @file twin_state.h
  * @brief What the browser twin checks itself against (companion TWIN_STATE).
  *
- * The same header is compiled into the board and into the twin (brag-output's
- * wasm/sync.sh copies it), so both sides describe their screens with the same
+ * The same header is compiled into the board and into the twin (the twin
+ * builds a synced copy), so both sides describe their screens with the same
  * code: the object tree under the LCD's root (the parent of the app
  * container), the encoder group's focus, the scroll offsets, and the overlay
  * layer. Only structure goes in the hash — classes, the hidden flag, child

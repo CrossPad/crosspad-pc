@@ -1,6 +1,7 @@
 /**
  * @file PcUart.cpp
- * @brief Windows COM port backend for the CrossPad virtual USB/UART.
+ * @brief Serial port backends for the CrossPad virtual USB/UART: Windows COM
+ *        ports and Linux ttys (termios).
  */
 
 #include "PcUart.hpp"
@@ -285,8 +286,248 @@ std::vector<std::string> PcUart::readLines()
     return result;
 }
 
+#elif defined(__linux__)
+/* ── Linux: ttys through termios ─────────────────────────────────────── */
+
+#include <dirent.h>
+#include <fcntl.h>
+#include <poll.h>
+#include <termios.h>
+#include <unistd.h>
+
+#include <algorithm>
+#include <cerrno>
+#include <climits>
+#include <cstdlib>
+#include <fstream>
+
+/// USB serial adapters and CDC-ACM devices (a CrossPad, its STM bridge).
+std::vector<std::string> PcUart::enumeratePorts()
+{
+    std::vector<std::string> ports;
+    DIR* dir = opendir("/dev");
+    if (!dir) return ports;
+    while (dirent* e = readdir(dir)) {
+        if (strncmp(e->d_name, "ttyACM", 6) == 0 || strncmp(e->d_name, "ttyUSB", 6) == 0) {
+            ports.push_back(std::string("/dev/") + e->d_name);
+        }
+    }
+    closedir(dir);
+    std::sort(ports.begin(), ports.end());
+    return ports;
+}
+
+/// A hex id file (idVendor/idProduct) of the USB device above a tty.
+static bool readHexId(const std::string& path, uint16_t& out)
+{
+    std::ifstream f(path);
+    std::string text;
+    if (!(f >> text)) return false;
+    out = static_cast<uint16_t>(strtoul(text.c_str(), nullptr, 16));
+    return true;
+}
+
+std::vector<std::string> PcUart::findPortsByVidPid(uint16_t vid, uint16_t pid)
+{
+    std::vector<std::string> result;
+    for (const auto& port : enumeratePorts()) {
+        // /sys/class/tty/<tty>/device is the USB interface; its USB device,
+        // the one with idVendor/idProduct, is a directory or two above.
+        const std::string link = "/sys/class/tty/" + port.substr(5) + "/device";
+        char real[PATH_MAX];
+        if (!realpath(link.c_str(), real)) continue;
+        std::string dir = real;
+        for (int up = 0; up < 3 && !dir.empty(); up++) {
+            uint16_t v = 0, p = 0;
+            if (readHexId(dir + "/idVendor", v) && readHexId(dir + "/idProduct", p)) {
+                if (v == vid && p == pid) result.push_back(port);
+                break;
+            }
+            dir = dir.substr(0, dir.find_last_of('/'));
+        }
+    }
+    return result;
+}
+
+/// By value: termios' B9600... macros shadow the BaudRate names in this file.
+static speed_t toSpeed(PcUart::BaudRate baud)
+{
+    switch (static_cast<uint32_t>(baud)) {
+        case 9600:   return B9600;
+        case 19200:  return B19200;
+        case 38400:  return B38400;
+        case 57600:  return B57600;
+        case 230400: return B230400;
+        case 460800: return B460800;
+        case 921600: return B921600;
+        default:     return B115200;
+    }
+}
+
+bool PcUart::open(const std::string& portName, BaudRate baud)
+{
+    close();
+
+    fd_ = ::open(portName.c_str(), O_RDWR | O_NOCTTY | O_CLOEXEC);
+    if (fd_ < 0) {
+        printf("[UART] Failed to open %s (%s)\n", portName.c_str(), strerror(errno));
+        return false;
+    }
+
+    // Raw 8N1, no flow control; the reader polls, so VMIN/VTIME stay 0.
+    termios tio = {};
+    if (tcgetattr(fd_, &tio) != 0) {
+        printf("[UART] tcgetattr %s failed (%s)\n", portName.c_str(), strerror(errno));
+        ::close(fd_);
+        fd_ = -1;
+        return false;
+    }
+    cfmakeraw(&tio);
+    tio.c_cflag |= CLOCAL | CREAD;
+    tio.c_cflag &= ~(CSTOPB | CRTSCTS);
+    tio.c_cc[VMIN] = 0;
+    tio.c_cc[VTIME] = 0;
+    cfsetispeed(&tio, toSpeed(baud));
+    cfsetospeed(&tio, toSpeed(baud));
+    if (tcsetattr(fd_, TCSANOW, &tio) != 0) {
+        printf("[UART] tcsetattr %s failed (%s)\n", portName.c_str(), strerror(errno));
+        ::close(fd_);
+        fd_ = -1;
+        return false;
+    }
+    tcflush(fd_, TCIFLUSH);
+
+    portName_ = portName;
+    baudRate_ = baud;
+    open_.store(true);
+    stopReader_.store(false);
+
+    readerThread_ = std::thread(&PcUart::readerLoop, this);
+
+    printf("[UART] Opened %s @ %u baud\n", portName.c_str(), static_cast<uint32_t>(baud));
+    return true;
+}
+
+void PcUart::close()
+{
+    if (!open_.load()) return;
+
+    stopReader_.store(true);
+    if (readerThread_.joinable()) {
+        readerThread_.join();
+    }
+
+    if (fd_ >= 0) {
+        ::close(fd_);
+        fd_ = -1;
+    }
+
+    printf("[UART] Closed %s\n", portName_.c_str());
+    portName_.clear();
+    open_.store(false);
+
+    std::lock_guard<std::mutex> lock(bufMutex_);
+    lineBuffer_.clear();
+    partialLine_.clear();
+}
+
+PcUart::~PcUart()
+{
+    close();
+}
+
+int PcUart::write(const uint8_t* data, size_t len)
+{
+    if (!open_.load() || fd_ < 0) return -1;
+
+    size_t done = 0;
+    while (done < len) {
+        const ssize_t n = ::write(fd_, data + done, len - done);
+        if (n < 0) {
+            if (errno == EINTR) continue;
+            printf("[UART] Write failed (%s)\n", strerror(errno));
+            return -1;
+        }
+        done += static_cast<size_t>(n);
+    }
+    return static_cast<int>(done);
+}
+
+int PcUart::write(const std::string& text)
+{
+    return write(reinterpret_cast<const uint8_t*>(text.data()), text.size());
+}
+
+void PcUart::readerLoop()
+{
+    uint8_t buf[512];
+
+    while (!stopReader_.load()) {
+        pollfd pfd = {fd_, POLLIN, 0};
+        const int ready = poll(&pfd, 1, 100);   // short, so close() is not kept waiting
+        if (ready < 0) {
+            if (errno == EINTR) continue;
+            printf("[UART] poll failed (%s), reader stops\n", strerror(errno));
+            break;
+        }
+        if (ready == 0) continue;
+        if (pfd.revents & (POLLERR | POLLHUP | POLLNVAL)) {
+            printf("[UART] %s went away, reader stops\n", portName_.c_str());
+            break;
+        }
+
+        const ssize_t n = ::read(fd_, buf, sizeof(buf));
+        if (n < 0) {
+            if (errno == EINTR || errno == EAGAIN) continue;
+            printf("[UART] Read failed (%s), reader stops\n", strerror(errno));
+            break;
+        }
+        if (n == 0) continue;
+
+        std::lock_guard<std::mutex> lock(bufMutex_);
+        for (ssize_t i = 0; i < n; i++) {
+            const char c = static_cast<char>(buf[i]);
+            if (c == '\n') {
+                if (!partialLine_.empty() && partialLine_.back() == '\r') {
+                    partialLine_.pop_back();
+                }
+                if (lineBuffer_.size() >= MAX_BUFFERED_LINES) {
+                    lineBuffer_.erase(lineBuffer_.begin());
+                }
+                lineBuffer_.push_back(partialLine_);
+                totalLines_.fetch_add(1);
+                if (lineCb_) {
+                    lineCb_(partialLine_);
+                }
+                partialLine_.clear();
+            } else {
+                partialLine_ += c;
+            }
+        }
+    }
+}
+
+std::string PcUart::getPortName() const
+{
+    return portName_;
+}
+
+void PcUart::setOnLineReceived(LineCallback cb)
+{
+    std::lock_guard<std::mutex> lock(bufMutex_);
+    lineCb_ = std::move(cb);
+}
+
+std::vector<std::string> PcUart::readLines()
+{
+    std::lock_guard<std::mutex> lock(bufMutex_);
+    std::vector<std::string> result;
+    result.swap(lineBuffer_);
+    return result;
+}
+
 #else
-/* ── Stub for non-Windows platforms ──────────────────────────────────── */
+/* ── Stub for other platforms ────────────────────────────────────────── */
 
 std::vector<std::string> PcUart::enumeratePorts() { return {}; }
 std::vector<std::string> PcUart::findPortsByVidPid(uint16_t, uint16_t) { return {}; }
