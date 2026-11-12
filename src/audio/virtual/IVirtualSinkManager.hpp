@@ -63,7 +63,7 @@ std::unique_ptr<IVirtualSinkManager> makeVirtualSinkManager();
 /// PipeWire holds the motherboard analog jack / active HDMI display as
 /// defaults and RtAudio's ALSA backend therefore can't list them.
 struct PulseSinkInfo {
-    std::string name;         // PA sink name (passed to pactl move-sink-input)
+    std::string name;         // PA sink name (the stream's target)
     std::string description;  // human-readable description for UI
     bool        available = true; // false when active port reports "not available"
                                   // (e.g. unplugged HDMI) — UI filters these out
@@ -75,14 +75,8 @@ struct PulseSinkInfo {
 /// Returns empty on non-Linux or when pactl isn't available.
 std::vector<PulseSinkInfo> enumeratePulseSinks(bool includeUnavailable = false);
 
-/// Move the CrossPad playback stream for slot 0/1 to the given PA sink.
-/// Operates on the existing RtAudio "PulseAudio Sound Server" / "Default
-/// ALSA Device" stream — does NOT touch CrossPad's audio backend itself.
-/// Returns false on non-Linux or if the move command failed.
-bool movePulseOutputToSink(int slot, const std::string& targetSinkName);
-
-/// Same, but give up after `timeoutMs` instead of the default grace period.
-bool movePulseOutputToSinkWithin(int slot, const std::string& targetSinkName,
-                                 int timeoutMs);
+/// The sound server's default sink (`pactl get-default-sink`); "" when there
+/// is none or no sound server (always off-Linux).
+std::string pulseDefaultSink();
 
 } // namespace crosspad_pc

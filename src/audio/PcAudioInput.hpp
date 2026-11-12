@@ -25,7 +25,10 @@ public:
     PcAudioInput& operator=(const PcAudioInput&) = delete;
 
     // -- Lifecycle --
-    bool begin(unsigned int inputDevice = 0,
+    /// Open the input device RtAudio calls @p deviceName ("" = its default
+    /// input), resolved by the instance that opens it (RtAudio numbers
+    /// devices per instance).
+    bool begin(const std::string& deviceName = {},
                uint32_t sampleRate = 44100, uint32_t bufferFrames = 256,
                RtAudio::Api api = RtAudio::UNSPECIFIED);
 
@@ -52,7 +55,7 @@ public:
     bool isOpen() const;
 
     /// Stop current stream and re-open on a different device.
-    bool switchDevice(unsigned int deviceId);
+    bool switchDevice(const std::string& deviceName);
 
     /// Name of the currently open input device (empty if closed).
     std::string getCurrentDeviceName() const;

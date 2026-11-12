@@ -415,7 +415,6 @@ if(USE_AUDIO)
     list(APPEND MAIN_SOURCES
         src/audio/sampler/PcKitLoad.cpp
         src/audio/sampler/PcSamplerEngine.cpp
-        src/audio/sampler/PcSecondKit.cpp
         src/audio/sampler/PcSamplerPort.cpp
         src/audio/sampler/PcPitchedPort.cpp
         src/audio/sampler/PcInstrumentHost.cpp

@@ -10,6 +10,14 @@
 #include <vector>
 #include <string>
 
+#if defined(__linux__) && defined(USE_VIRTUAL_AUDIO)
+#define CP_SINK_OUTPUT 1
+#include <chrono>
+#include <thread>
+#include <pulse/error.h>
+#include <pulse/simple.h>
+#endif
+
 // Cached device list — only log when devices change
 static std::vector<std::string> s_lastOutputDevices;
 
@@ -19,7 +27,7 @@ PcAudioOutput::~PcAudioOutput() {
     end();
 }
 
-bool PcAudioOutput::begin(unsigned int outputDevice, uint32_t sampleRate,
+bool PcAudioOutput::begin(const std::string& deviceName, uint32_t sampleRate,
                            uint32_t bufferFrames) {
     sampleRate_ = sampleRate;
     bufferFrames_ = bufferFrames;
@@ -57,19 +65,25 @@ bool PcAudioOutput::begin(unsigned int outputDevice, uint32_t sampleRate,
         }
     }
 
-    // Select output device
-    unsigned int outDeviceId;
-    if (outputDevice == 0) {
-        outDeviceId = defaultOutId;
-    } else {
-        outDeviceId = outputDevice;
+    // Select output device: by name, in this instance's own numbering.
+    unsigned int outDeviceId = defaultOutId;
+    if (!deviceName.empty()) {
+        outDeviceId = 0;
+        for (unsigned int id : ids) {
+            if (rtAudio_->getDeviceInfo(id).name == deviceName) { outDeviceId = id; break; }
+        }
+        if (outDeviceId == 0) {
+            printf("[Audio] Output device '%s' is not there\n", deviceName.c_str());
+            rtAudio_.reset();
+            return false;
+        }
     }
 
     // Verify the selected device exists and has output channels
     RtAudio::DeviceInfo outInfo = rtAudio_->getDeviceInfo(outDeviceId);
     if (outInfo.outputChannels < 2) {
-        printf("[Audio] Device %u has only %u output channels, need 2\n",
-               outDeviceId, outInfo.outputChannels);
+        printf("[Audio] Device [%u] '%s' has only %u output channels, need 2\n",
+               outDeviceId, outInfo.name.c_str(), outInfo.outputChannels);
         rtAudio_.reset();
         return false;
     }
@@ -127,7 +141,86 @@ bool PcAudioOutput::begin(unsigned int outputDevice, uint32_t sampleRate,
     return true;
 }
 
+#ifdef CP_SINK_OUTPUT
+/// One beginOnSink() stream. The thread feeding it holds it too: a write to a
+/// sink that never plays (an HDMI port with nothing on it) blocks for as long
+/// as the sink stays silent, and end() must not wait for that.
+struct PcSinkStream {
+    pa_simple*        pa = nullptr;
+    std::atomic<bool> run{true};
+    std::atomic<bool> done{false};
+};
+
+bool PcAudioOutput::beginOnSink(const std::string& sinkName, uint32_t sampleRate,
+                                uint32_t bufferFrames) {
+    if (sinkName.empty()) return false;
+    sampleRate_   = sampleRate;
+    bufferFrames_ = bufferFrames;
+
+    // Naming the sink here makes the server create the stream on it (its
+    // target), instead of on the default and moved afterwards: no moment on
+    // the default, and nothing to find among other programs' streams.
+    const pa_sample_spec spec{PA_SAMPLE_S16LE, sampleRate_, 2};
+    const uint32_t frameBytes = 2 * sizeof(int16_t);
+    pa_buffer_attr attr;
+    attr.maxlength = static_cast<uint32_t>(-1);
+    attr.tlength   = bufferFrames_ * 4 * frameBytes;   // ~21 ms at 256/48k
+    attr.prebuf    = static_cast<uint32_t>(-1);
+    attr.minreq    = bufferFrames_ * frameBytes;
+    attr.fragsize  = static_cast<uint32_t>(-1);
+    int err = 0;
+    pa_simple* pa = pa_simple_new(nullptr, "CrossPad", PA_STREAM_PLAYBACK, sinkName.c_str(),
+                                  "Output", &spec, nullptr, &attr, &err);
+    if (!pa) {
+        printf("[Audio] Sink '%s' would not open: %s\n", sinkName.c_str(), pa_strerror(err));
+        return false;
+    }
+
+    outputRing_.resize(bufferFrames_ * 2 * 32);
+    currentDeviceId_   = 0;
+    currentDeviceName_ = sinkName;
+    streamOpen_        = true;
+    sink_ = std::make_shared<PcSinkStream>();
+    sink_->pa = pa;
+    std::thread([this, st = sink_, frames = bufferFrames_, name = sinkName]() {
+        std::vector<int16_t> block(static_cast<size_t>(frames) * 2);
+        while (st->run.load()) {
+            handleCallback(block.data(), frames, 0);
+            int werr = 0;
+            // Blocks until the server has room: this is the stream's clock.
+            if (pa_simple_write(st->pa, block.data(), block.size() * sizeof(int16_t), &werr) < 0) {
+                printf("[Audio] Sink '%s' write failed: %s\n", name.c_str(), pa_strerror(werr));
+                break;
+            }
+        }
+        pa_simple_free(st->pa);
+        st->done.store(true);
+    }).detach();
+    printf("[Audio] Stream started on sink '%s', %u Hz, %u frames/buffer\n",
+           sinkName.c_str(), sampleRate_, bufferFrames_);
+    return true;
+}
+#else
+bool PcAudioOutput::beginOnSink(const std::string&, uint32_t, uint32_t) { return false; }
+#endif
+
 void PcAudioOutput::end() {
+#ifdef CP_SINK_OUTPUT
+    if (sink_) {
+        // The feeding thread stops after its write returns; a sink that
+        // stopped playing may hold that write, so wait a while, then leave
+        // the stream to the thread (which frees it and never touches this
+        // output again once it sees run == false).
+        sink_->run.store(false);
+        for (int i = 0; i < 50 && !sink_->done.load(); ++i)
+            std::this_thread::sleep_for(std::chrono::milliseconds(10));
+        if (!sink_->done.load())
+            printf("[Audio] Sink '%s' is not playing; its stream is left to close on its own\n",
+                   currentDeviceName_.c_str());
+        sink_.reset();
+        streamOpen_ = false;
+    }
+#endif
     if (rtAudio_ && streamOpen_) {
         if (rtAudio_->isStreamRunning()) {
             rtAudio_->stopStream();
@@ -191,9 +284,9 @@ bool PcAudioOutput::isOpen() const {
     return streamOpen_;
 }
 
-bool PcAudioOutput::switchDevice(unsigned int deviceId) {
+bool PcAudioOutput::switchDevice(const std::string& deviceName) {
     end();
-    return begin(deviceId, sampleRate_, bufferFrames_);
+    return begin(deviceName, sampleRate_, bufferFrames_);
 }
 
 std::string PcAudioOutput::getCurrentDeviceName() const {

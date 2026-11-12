@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 #ifdef __linux__
 #include "PwDefaultSinkGuard.hpp"
+#include "../OutputRoute.hpp"
 #include "PwContext.hpp"
 
 #include <pipewire/pipewire.h>
@@ -202,7 +203,10 @@ bool PwDefaultSinkGuard::takeover(const std::string& sinkNodeName)
         return false;
     }
 
+    // A CrossPad sink as the default (an earlier run that died, another
+    // simulator) is not the user's: restoring it would strand the default.
     if (!havePrevious_) previous_ = pwExtractJsonName(value.c_str());
+    if (out_route::isCrossPadSink(previous_)) previous_.clear();
     lastAudioSinkValue_ = value;
 
     spa_zero(metaListener_);
@@ -267,7 +271,7 @@ bool PwDefaultSinkGuard::restoreStale(const std::string& previousSinkName)
     struct pw_metadata* meta = discoverAndBindDefaultMetadata(ctx.core(), ctx.loop(), value);
     if (!meta) return false;
 
-    if (!previousSinkName.empty()) {
+    if (!previousSinkName.empty() && !out_route::isCrossPadSink(previousSinkName)) {
         std::string json = "{\"name\":\"" + previousSinkName + "\"}";
         pw_metadata_set_property(meta, 0, "default.configured.audio.sink",
                                   "Spa:String:JSON", json.c_str());

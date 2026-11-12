@@ -6,10 +6,9 @@
  * @brief What the simulator's sampler engines share: where a kit's bytes come
  *        from and how a kit's pads are put into a store.
  *
- * The pads' engine (PcSamplerEngine) and a song's second kit (PcSecondKit)
- * each own a store and a source; the reading of WAVs, the resolving of a
- * layer's file and the building of a pad are the same code for both.
- * LVGL-free, so the second kit builds into the unit tests.
+ * The pads' engine (PcSamplerEngine) owns a store and a source; the reading
+ * of WAVs, the resolving of a layer's file and the building of a pad live
+ * here, LVGL-free.
  */
 
 #include <crosspad/audio/WavLayout.hpp>

@@ -18,7 +18,7 @@ PcAudioInput::~PcAudioInput() {
     end();
 }
 
-bool PcAudioInput::begin(unsigned int inputDevice, uint32_t sampleRate,
+bool PcAudioInput::begin(const std::string& deviceName, uint32_t sampleRate,
                           uint32_t bufferFrames, RtAudio::Api api) {
     sampleRate_ = sampleRate;
     bufferFrames_ = bufferFrames;
@@ -56,19 +56,25 @@ bool PcAudioInput::begin(unsigned int inputDevice, uint32_t sampleRate,
         }
     }
 
-    // Select input device
-    unsigned int inDeviceId;
-    if (inputDevice == 0) {
-        inDeviceId = defaultInId;
-    } else {
-        inDeviceId = inputDevice;
+    // Select input device: by name, in this instance's own numbering.
+    unsigned int inDeviceId = defaultInId;
+    if (!deviceName.empty()) {
+        inDeviceId = 0;
+        for (unsigned int id : ids) {
+            if (rtAudio_->getDeviceInfo(id).name == deviceName) { inDeviceId = id; break; }
+        }
+        if (inDeviceId == 0) {
+            printf("[AudioIn] Input device '%s' is not there\n", deviceName.c_str());
+            rtAudio_.reset();
+            return false;
+        }
     }
 
     // Verify the device has input channels
     RtAudio::DeviceInfo inInfo = rtAudio_->getDeviceInfo(inDeviceId);
     if (inInfo.inputChannels < 2) {
-        printf("[AudioIn] Device %u has only %u input channels, need 2\n",
-               inDeviceId, inInfo.inputChannels);
+        printf("[AudioIn] Device [%u] '%s' has only %u input channels, need 2\n",
+               inDeviceId, inInfo.name.c_str(), inInfo.inputChannels);
         rtAudio_.reset();
         return false;
     }
@@ -148,7 +154,7 @@ bool PcAudioInput::beginByName(const std::string& nameSubstring,
             if (info.name.find(nameSubstring) != std::string::npos) {
                 printf("[AudioIn] Matched device [%u] %s for name '%s'\n",
                        id, info.name.c_str(), nameSubstring.c_str());
-                return begin(id, sampleRate, bufferFrames, api);
+                return begin(info.name, sampleRate, bufferFrames, api);
             }
         }
     } catch (...) {
@@ -238,9 +244,9 @@ bool PcAudioInput::isOpen() const {
     return streamOpen_;
 }
 
-bool PcAudioInput::switchDevice(unsigned int deviceId) {
+bool PcAudioInput::switchDevice(const std::string& deviceName) {
     end();
-    return begin(deviceId, sampleRate_, bufferFrames_);
+    return begin(deviceName, sampleRate_, bufferFrames_);
 }
 
 std::string PcAudioInput::getCurrentDeviceName() const {
