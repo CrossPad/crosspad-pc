@@ -7,6 +7,11 @@ static lv_indev_t * s_encoder = NULL;
 static lv_indev_t * s_mouse = NULL;
 static lv_display_t * s_disp = NULL;
 
+#ifdef CROSSPAD_PLATFORM_START
+/* Defined by one of CROSSPAD_EXTRA_SOURCES (CMakeLists.txt). */
+extern void crosspad_platform_start(lv_display_t * disp);
+#endif
+
 /* The mouse as the board's touch panel. Not LVGL's lv_sdl_mouse: its event
  * handler finds its indev by comparing read_cb against its own, so the
  * moment crosspad-gui's touch_gesture wraps read_cb -- as it does the panel's
@@ -122,6 +127,10 @@ lv_display_t * sdl_hal_init(int32_t w, int32_t h)
   lv_indev_t * kb = lv_sdl_keyboard_create();
   lv_indev_set_display(kb, disp);
   lv_indev_set_group(kb, lv_group_get_default());
+
+#ifdef CROSSPAD_PLATFORM_START
+  crosspad_platform_start(disp);
+#endif
 
   return disp;
 }
