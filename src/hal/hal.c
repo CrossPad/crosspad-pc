@@ -43,13 +43,12 @@ static int touch_watch(void * user, SDL_Event * e)
    * port's SDL_PushEvent() inside remote::process_pending(). */
   if (e->type != SDL_MOUSEBUTTONDOWN && e->type != SDL_MOUSEBUTTONUP &&
       e->type != SDL_MOUSEMOTION && e->type != SDL_WINDOWEVENT) return 0;
-#if LVGL_VERSION_MAJOR == 9 && LVGL_VERSION_MINOR < 4
-  /* A board's LVGL 9.3 (the browser twin) has no lv_sdl_window_get_window():
-   * there the page's canvas is the one window, so every event is this one's. */
+#ifdef __EMSCRIPTEN__
+  /* In the browser the page's canvas is the one window, so every event is this one's. */
   const Uint32 win = e->type == SDL_WINDOWEVENT ? e->window.windowID
                    : e->type == SDL_MOUSEMOTION ? e->motion.windowID : e->button.windowID;
 #else
-  const Uint32 win = SDL_GetWindowID(lv_sdl_window_get_window(s_disp));
+  const Uint32 win = SDL_GetWindowID(sdl_hal_window(s_disp));
 #endif
   const float zoom = lv_sdl_window_get_zoom(s_disp);
   switch (e->type) {
@@ -82,6 +81,15 @@ static int touch_watch(void * user, SDL_Event * e)
 lv_indev_t * sdl_hal_get_encoder(void)
 {
   return s_encoder;
+}
+
+struct SDL_Window * sdl_hal_window(lv_display_t * disp)
+{
+#if LVGL_VERSION_MAJOR == 9 && LVGL_VERSION_MINOR < 4
+  return SDL_RenderGetWindow((SDL_Renderer *)lv_sdl_window_get_renderer(disp));
+#else
+  return lv_sdl_window_get_window(disp);
+#endif
 }
 
 lv_indev_t * sdl_hal_get_mouse(void)

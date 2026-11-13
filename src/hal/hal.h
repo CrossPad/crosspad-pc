@@ -42,6 +42,11 @@ lv_indev_t * sdl_hal_get_encoder(void);
 /* The mouse, as the board's touch panel (see hal.c). */
 lv_indev_t * sdl_hal_get_mouse(void);
 
+/* The SDL window a display draws into. A board's LVGL 9.3 has no
+ * lv_sdl_window_get_window(); there it is the window of the display's renderer. */
+struct SDL_Window;
+struct SDL_Window * sdl_hal_window(lv_display_t * disp);
+
 /**********************
  *      MACROS
  **********************/

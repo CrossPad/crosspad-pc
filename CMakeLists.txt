@@ -530,13 +530,16 @@ endif()
 message(STATUS "CrossPad firmware kit: ${CROSSPAD_FW_KIT} ${CROSSPAD_FW_KIT_VERSION} -> bin/${CROSSPAD_EXE_NAME}")
 
 # ── Built-in apps (always present) ──────────────────────────────────────
-# A board has Settings and Firmware, no CITest. In the browser the board's own
+# A board has Settings and Firmware, no CITest; the desktop build of a board's
+# firmware keeps CITest, which the control port calls. In the browser the board's own
 # two are built, their ESP half answered by src/wasm/board/ with the board's
 # data (TWIN_INFO, TWIN_FW); on the desktop the simulator's. The board's own
 # headers (main/include) come after src/wasm/board/: those that reach no
 # ESP-IDF are used as they are, the others are the shims'.
-if(CROSSPAD_FIRMWARE_DIR)
+if(CROSSPAD_FIRMWARE_DIR AND EMSCRIPTEN)
     set(_builtins settings update)
+elseif(CROSSPAD_FIRMWARE_DIR)
+    set(_builtins settings citest update)
 else()
     set(_builtins settings citest update firmware)
 endif()
