@@ -19,9 +19,8 @@ const char *twin_ble_state();
 const char *twin_ble_peer();      // "" when nobody is connected
 uint32_t    twin_imu_sent();
 
-/** What TWIN_FW's M line says: the OTA auto-accept preference, the running version. */
+/** What TWIN_FW's M line says: the OTA auto-accept preference. */
 bool        twin_fw_auto_accept();
-const char *twin_fw_version();
 
 /* Fed by wasm_bridge.cpp as TWIN_STATE comes in. */
 void twin_board_set_ble(const char *state, const char *peer);

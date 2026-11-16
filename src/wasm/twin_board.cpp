@@ -77,7 +77,6 @@ Stm32Manager& getStm32Manager() { static Stm32Manager m; return m; }
 TwinFw& twin_fw() { static TwinFw f; return f; }
 
 bool twin_fw_auto_accept() { return twin_fw().autoAccept; }
-const char* twin_fw_version() { return twin_fw().version; }
 
 /* ESP-IDF esp_app_desc.h: the running firmware's version, as the board reported it. */
 const esp_app_desc_t* esp_app_get_description(void)
@@ -144,20 +143,6 @@ bool fw_library_find(const char* name, FwPackage* out)
             return true;
         }
     return false;
-}
-const char* fw_pkg_verdict_text(FwPkgVerdict v)
-{
-    switch (v) {
-        case FwPkgVerdict::Ok:           return "ok";
-        case FwPkgVerdict::NoImage:      return "no CrossPad.bin";
-        case FwPkgVerdict::NotAnImage:   return "not a firmware image";
-        case FwPkgVerdict::WrongProject: return "another project";
-        case FwPkgVerdict::WrongBoard:   return "built for another board revision";
-        case FwPkgVerdict::TooLarge:     return "too large for the slot";
-        case FwPkgVerdict::UnknownBuild: return "built before packages existed";
-        case FwPkgVerdict::Downloading:  return "downloading";
-    }
-    return "unknown";
 }
 void fw_library_path(const FwPackage& pkg, const char* file, char* buf, size_t len)
 {
