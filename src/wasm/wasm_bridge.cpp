@@ -207,7 +207,8 @@ void read_timers(bool run) {
 }
 
 /* ── lockstep frames ──────────────────────────────────────────────────── */
-enum : uint8_t { F_TOUCH = 0, F_ENC = 1, F_PAD = 2, F_POWER = 3, F_HOST = 4, F_CLOCK = 5, F_LOST = 6, F_STATUS = 8 };
+using twin_state::F_TOUCH; using twin_state::F_ENC; using twin_state::F_PAD; using twin_state::F_POWER;
+using twin_state::F_HOST; using twin_state::F_CLOCK; using twin_state::F_LOST; using twin_state::F_STATUS;
 struct Frame { uint8_t kind; uint32_t tick; uint8_t p[5]; std::string host; };
 std::deque<Frame> s_frames;
 
@@ -442,30 +443,12 @@ void take_telemetry(const char* reply) {
 
 std::string own_state() {
     static char buf[640];
-    auto* cfg = crosspad::CrosspadSettings::getInstance();
-    int n = snprintf(buf, sizeof buf, "TWIN_STATE tick=%lu app=%s cfg=L%uT%uQ%uP%u ", (unsigned long)(s_now - s_k),
-                     running_name().c_str(), cfg ? (unsigned)cfg->launcherStyle : 0u,
-                     cfg ? (unsigned)cfg->themeColorIndex : 0u, cfg && cfg->quickSettingsEnabled ? 1u : 0u,
-                     cfg ? (unsigned)cfg->perfStatsFlags : 0u);
-    n += (int)twin_state::describe(buf + n, sizeof buf - n, crosspad_app_container(), crosspad_gui::getOverlayParent(), nav_group());
-    snprintf(buf + n, sizeof buf - n, " lvl=V%uR%uB%u st=b%dc%ds%dh%du%da%dn%dw%dm%up%u",
-             cfg ? (unsigned)cfg->masterFX.outVolumeCodec[0][0] : 0u, cfg ? (unsigned)cfg->RGBbrightness : 0u,
-             cfg ? (unsigned)cfg->LCDbrightness : 0u, (int)status.batteryPct, status.stm32.chargingStatus ? 1 : 0,
-             status.stm32.sdDetected ? 1 : 0, status.hostAlive(crosspad::getClock().getTimeUs()) ? 1 : 0,
-             status.fwUpdateAvailable ? 1 : 0, status.bluetoothActive ? 1 : 0, status.bluetoothConnected ? 1 : 0,
-             status.wifiConnected ? 1 : 0, (unsigned)s_ramPct, (unsigned)s_psramPct);
-    n = (int)strlen(buf);
-    crosspad_gui::AudioRouteState ar{};
-    const bool haveAr = crosspad_gui::getGuiPlatform().getAudioRoute(ar);
-    snprintf(buf + n, sizeof buf - n, " ar=%d,%u,%u,%u,%u,%u,%u,%u,%u sc=%d host=%u,%lu,%lu,%u,%u fwl=%s song=%s",
-             haveAr ? 1 : 0, ar.captureCodec, ar.adcInput[0], ar.adcInput[1], ar.dacOutput[0], ar.dacOutput[1],
-             ar.mute[0], ar.mute[1], ar.preset, crosspad_gui::getGuiPlatform().hasStmConfigWrite() ? 1 : 0,
-             (unsigned)status.hostCpuPct, (unsigned long)status.hostRamUsedMb, (unsigned long)status.hostRamTotalMb,
-             (unsigned)status.hostDawsInstalled, (unsigned)status.hostDawsRunning,
-             status.fwLatest[0] ? status.fwLatest : "-", escape(twin_song()).c_str());
-    n = (int)strlen(buf);
-    if (cfg) snprintf(buf + n, sizeof buf - n, " set=%08lx ble=%s,%s imu=%lu", (unsigned long)twin_state::settings_hash(*cfg),
-                      twin_ble_state(), *twin_ble_peer() ? twin_ble_peer() : "-", (unsigned long)twin_imu_sent());
+    const std::string app = running_name(), song = escape(twin_song());
+    const twin_state::LineSource src{
+        s_now - s_k, app.c_str(), crosspad_app_container(), crosspad_gui::getOverlayParent(), nav_group(),
+        s_ramPct, s_psramPct, song.c_str(), twin_ble_state(), *twin_ble_peer() ? twin_ble_peer() : "-",
+        (unsigned long)twin_imu_sent()};
+    twin_state::line(buf, sizeof buf, src, status);
     return buf;
 }
 
