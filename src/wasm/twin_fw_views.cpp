@@ -172,16 +172,6 @@ void fw_view_data_cancel_icon(uint32_t ticket)
     s.iconCount = kept;
 }
 
-/* fw_store_files.h: the paths the views name; nothing is fetched or read here. */
-bool fw_icon_valid(const uint8_t *, size_t) { return false; }
-void fw_icon_cache_path(const char *kit, const char *version, char *out, size_t n)
-{
-    snprintf(out, n, "%s/%s-%s.bin", FW_ICON_DIR, kit ? kit : "", version ? version : "");
-}
-void fw_detail_path(const char *kit, char *out, size_t n) { snprintf(out, n, "%s/%s.json", FW_DETAIL_DIR, kit ? kit : ""); }
-
 /* fw_gc.h: the board's card is cleaned by the board; the limit is its default
  * (the board's own setting is not in TWIN_FW). */
-FwGcResult fw_gc_run(uint64_t, const char *, const char *, const char *) { return FwGcResult::Ok; }
-void fw_gc_set_library_limit_mb(uint32_t) {}
 uint32_t fw_gc_library_limit_mb(void) { return static_cast<uint32_t>(crosspad::kFwLibraryMaxDefault / (1024ull * 1024ull)); }

@@ -42,7 +42,7 @@
 
 #include "lvgl/lvgl.h"
 #include "hal/hal.h"
-#include <twin_state.h>   // generated/: the firmware's, or the fallback beside this file (CMakeLists.txt)
+#include <twin_state.h>   // generated/: the firmware's (CMakeLists.txt)
 #include "board/twin_board.h"
 #include "remote/RemoteControl.hpp"
 #include "stm32_emu/Stm32EmuWindow.hpp"
@@ -218,7 +218,6 @@ struct Stats {
     uint32_t dApp = 0, dCfg = 0, dHash = 0, dFocus = 0, dScroll = 0, dGeo = 0, dOvl = 0;
     uint32_t fixApp = 0, fixCfg = 0, fixReopen = 0, fixFocus = 0, fixScroll = 0, gaveUp = 0;
     uint32_t inputs = 0;               // frames applied (touch, encoder, pad, power)
-    std::string board, twin;           // the last pair compared
 } s_st;
 bool s_resync = false;
 /* The board's wall clock (kind 8): time() here is that, moved on by lv_tick. */
