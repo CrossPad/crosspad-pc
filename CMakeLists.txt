@@ -987,11 +987,10 @@ if(EMSCRIPTEN)
         --preload-file "${_web_assets}@/assets"
     )
     # What the board and its twin both describe their screens with (TWIN_STATE):
-    # the firmware's, so both sides agree; a firmware without the board side of
-    # the twin (a release branch) has none, and then the copy kept here does.
+    # the firmware's, so both sides agree.
     set(_twin_state_h "${CROSSPAD_FIRMWARE_DIR}/main/include/twin_state.h")
     if(NOT EXISTS "${_twin_state_h}")
-        set(_twin_state_h "${PROJECT_SOURCE_DIR}/src/wasm/twin_state.h")
+        message(FATAL_ERROR "The twin needs ${_twin_state_h}: this firmware has no board side of the twin.")
     endif()
     message(STATUS "twin_state.h: ${_twin_state_h}")
     configure_file("${_twin_state_h}" "${CMAKE_BINARY_DIR}/generated/twin_state.h" COPYONLY)

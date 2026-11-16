@@ -47,7 +47,6 @@ bool fw_updater_download_start(const char *, const char *, bool, char *refusal, 
     return true;   // the board installs
 }
 void fw_updater_error(char *out, size_t n) { put(out, n, ""); }
-void fw_updater_latest(char *out, size_t n) { put(out, n, status.fwUpdateAvailable ? status.fwLatest : ""); }
 int64_t fw_updater_last_check(void) { return 0; }
 bool fw_updater_checked(void) { return status.fwUpdateAvailable; }   // only a found update says a check ran
 void fw_updater_target(char *out, size_t n) { put(out, n, ""); }
