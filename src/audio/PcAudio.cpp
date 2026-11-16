@@ -21,6 +21,18 @@
 // Cached device list — only log when devices change
 static std::vector<std::string> s_lastOutputDevices;
 
+int pcAudioRtPriority()
+{
+#if defined(_WIN32) || defined(__EMSCRIPTEN__)
+    return 0;
+#else
+    const char* asked = std::getenv("CROSSPAD_RT_AUDIO");
+    if (!asked) return 0;
+    const int prio = std::atoi(asked);
+    return prio > 0 ? prio : kRtAudioDefaultPriority;
+#endif
+}
+
 PcAudioOutput::PcAudioOutput() = default;
 
 PcAudioOutput::~PcAudioOutput() {
@@ -106,6 +118,10 @@ bool PcAudioOutput::begin(const std::string& deviceName, uint32_t sampleRate,
 
     RtAudio::StreamOptions options;
     options.flags = RTAUDIO_MINIMIZE_LATENCY;
+    if (const int prio = pcAudioRtPriority()) {
+        options.flags |= RTAUDIO_SCHEDULE_REALTIME;
+        options.priority = prio;
+    }
 
     unsigned int actualBufferFrames = bufferFrames_;
 

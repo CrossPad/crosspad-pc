@@ -7,6 +7,11 @@ static lv_indev_t * s_encoder = NULL;
 static lv_indev_t * s_mouse = NULL;
 static lv_display_t * s_disp = NULL;
 
+#ifdef CROSSPAD_PLATFORM_START
+/* Defined by one of CROSSPAD_EXTRA_SOURCES (CMakeLists.txt). */
+extern void crosspad_platform_start(lv_display_t * disp);
+#endif
+
 /* The mouse as the board's touch panel. Not LVGL's lv_sdl_mouse: its event
  * handler finds its indev by comparing read_cb against its own, so the
  * moment crosspad-gui's touch_gesture wraps read_cb -- as it does the panel's
@@ -38,13 +43,12 @@ static int touch_watch(void * user, SDL_Event * e)
    * port's SDL_PushEvent() inside remote::process_pending(). */
   if (e->type != SDL_MOUSEBUTTONDOWN && e->type != SDL_MOUSEBUTTONUP &&
       e->type != SDL_MOUSEMOTION && e->type != SDL_WINDOWEVENT) return 0;
-#if LVGL_VERSION_MAJOR == 9 && LVGL_VERSION_MINOR < 4
-  /* A board's LVGL 9.3 (the browser twin) has no lv_sdl_window_get_window():
-   * there the page's canvas is the one window, so every event is this one's. */
+#ifdef __EMSCRIPTEN__
+  /* In the browser the page's canvas is the one window, so every event is this one's. */
   const Uint32 win = e->type == SDL_WINDOWEVENT ? e->window.windowID
                    : e->type == SDL_MOUSEMOTION ? e->motion.windowID : e->button.windowID;
 #else
-  const Uint32 win = SDL_GetWindowID(lv_sdl_window_get_window(s_disp));
+  const Uint32 win = SDL_GetWindowID(sdl_hal_window(s_disp));
 #endif
   const float zoom = lv_sdl_window_get_zoom(s_disp);
   switch (e->type) {
@@ -77,6 +81,15 @@ static int touch_watch(void * user, SDL_Event * e)
 lv_indev_t * sdl_hal_get_encoder(void)
 {
   return s_encoder;
+}
+
+struct SDL_Window * sdl_hal_window(lv_display_t * disp)
+{
+#if LVGL_VERSION_MAJOR == 9 && LVGL_VERSION_MINOR < 4
+  return SDL_RenderGetWindow((SDL_Renderer *)lv_sdl_window_get_renderer(disp));
+#else
+  return lv_sdl_window_get_window(disp);
+#endif
 }
 
 lv_indev_t * sdl_hal_get_mouse(void)
@@ -122,6 +135,10 @@ lv_display_t * sdl_hal_init(int32_t w, int32_t h)
   lv_indev_t * kb = lv_sdl_keyboard_create();
   lv_indev_set_display(kb, disp);
   lv_indev_set_group(kb, lv_group_get_default());
+
+#ifdef CROSSPAD_PLATFORM_START
+  crosspad_platform_start(disp);
+#endif
 
   return disp;
 }

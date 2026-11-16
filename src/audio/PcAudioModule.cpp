@@ -11,6 +11,11 @@
 #include <cstdio>
 #include <algorithm>
 
+#if !defined(_WIN32) && !defined(__EMSCRIPTEN__)
+#include <pthread.h>
+#include <sched.h>
+#endif
+
 namespace crosspad_pc {
 
 // ── PcRtAudioOutputStream ──────────────────────────────────────────────────
@@ -198,6 +203,19 @@ void PcAudioModule::stop() {
 }
 
 void PcAudioModule::audioThreadFunc() {
+#if !defined(_WIN32) && !defined(__EMSCRIPTEN__)
+    /* One below the device callback, so the callback that empties the ring is
+     * never kept waiting by the thread that fills it. */
+    if (const int callbackPrio = pcAudioRtPriority()) {
+        sched_param param{};
+        param.sched_priority = callbackPrio > 1 ? callbackPrio - 1 : 1;
+        const int err = pthread_setschedparam(pthread_self(), SCHED_FIFO, &param);
+        if (err != 0) {
+            printf("[PcAudioModule] CROSSPAD_RT_AUDIO: SCHED_FIFO %d refused (%s)\n",
+                   param.sched_priority, strerror(err));
+        }
+    }
+#endif
     // Absolute-deadline pacing. A relative sleep_for(frameDuration - elapsed)
     // loses the kernel wakeup overshoot (~50-150us) on EVERY cycle — the
     // error accumulates into a ~2% production deficit that periodically

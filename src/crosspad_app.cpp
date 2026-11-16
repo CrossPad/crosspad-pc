@@ -2266,6 +2266,12 @@ void crosspad_app_go_home()
     LoadMainScreen(s_lcdContainer);
 }
 
+void crosspad_app_refresh_apps()
+{
+    crosspad_gui::AppOrchestrator::getInstance().populateApps(app_c);
+    LoadMainScreen(s_lcdContainer);
+}
+
 bool crosspad_app_start(const char* name)
 {
     for (const auto& app : crosspad_gui::AppOrchestrator::getInstance().getApps()) {

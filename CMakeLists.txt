@@ -361,6 +361,13 @@ else()
     list(APPEND MAIN_SOURCES src/uart/PcUart.cpp src/remote/RemoteControl.cpp src/remote/ControlJson.cpp
          src/fw/PcFirmware.cpp src/fw/PcFwDesc.cpp src/fw/PcFwViewService.cpp)
 endif()
+# Sources from outside this repository, built into the simulator as its own are.
+# With any given, hal.c calls `void crosspad_platform_start(lv_display_t*)`, which
+# one of them defines, once the display and the input devices exist.
+set(CROSSPAD_EXTRA_SOURCES "" CACHE STRING "Extra source files to build into the simulator (absolute paths, ;-separated)")
+if(CROSSPAD_EXTRA_SOURCES)
+    list(APPEND MAIN_SOURCES ${CROSSPAD_EXTRA_SOURCES})
+endif()
 set(MAIN_LIBS lvgl lvgl::examples lvgl::demos lvgl::thorvg ${SDL2_LIBRARIES} ArduinoJson)
 
 # FreeRTOS entry point + platform port
@@ -523,13 +530,16 @@ endif()
 message(STATUS "CrossPad firmware kit: ${CROSSPAD_FW_KIT} ${CROSSPAD_FW_KIT_VERSION} -> bin/${CROSSPAD_EXE_NAME}")
 
 # ── Built-in apps (always present) ──────────────────────────────────────
-# A board has Settings and Firmware, no CITest. In the browser the board's own
+# A board has Settings and Firmware, no CITest; the desktop build of a board's
+# firmware keeps CITest, which the control port calls. In the browser the board's own
 # two are built, their ESP half answered by src/wasm/board/ with the board's
 # data (TWIN_INFO, TWIN_FW); on the desktop the simulator's. The board's own
 # headers (main/include) come after src/wasm/board/: those that reach no
 # ESP-IDF are used as they are, the others are the shims'.
-if(CROSSPAD_FIRMWARE_DIR)
+if(CROSSPAD_FIRMWARE_DIR AND EMSCRIPTEN)
     set(_builtins settings update)
+elseif(CROSSPAD_FIRMWARE_DIR)
+    set(_builtins settings citest update)
 else()
     set(_builtins settings citest update firmware)
 endif()
@@ -854,6 +864,9 @@ if(CROSSPAD_FIRMWARE_DIR AND EXISTS "${CROSSPAD_FIRMWARE_DIR}/tools/twin_source_
 endif()
 
 add_executable(CrossPad ${MAIN_SOURCES})
+if(CROSSPAD_EXTRA_SOURCES)
+    target_compile_definitions(CrossPad PRIVATE CROSSPAD_PLATFORM_START=1)
+endif()
 if(TARGET twin_source_id)
     add_dependencies(CrossPad twin_source_id)
     target_compile_definitions(CrossPad PRIVATE TWIN_HELLO=1)   # else a firmware from before it
