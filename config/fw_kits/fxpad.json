@@ -1,0 +1,11 @@
+{
+  "kit": "fxpad",
+  "display_name": "FX Pad",
+  "version": "0.2.2",
+  "apps": [
+    "crosspad-fxpad"
+  ],
+  "standalone": "FxPad",
+  "top_bar": true,
+  "description": "The CrossPad as a performance multi-effect: the inputs through 32 effects on the pads, an XY surface, synced to the tempo. In the simulator IN1 is the mics and IN2 Line 1/2; there is no Line 3/4 and nothing plays in over USB."
+}

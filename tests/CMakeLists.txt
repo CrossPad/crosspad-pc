@@ -78,6 +78,7 @@ set(AUDIO_TEST_SOURCES
     ${PROJECT_SOURCE_DIR}/lib/crosspad-core/src/dsp/AudioKernels.cpp
     ${PROJECT_SOURCE_DIR}/src/audio/PcAudio.cpp
     ${PROJECT_SOURCE_DIR}/src/audio/PcAudioModule.cpp
+    ${PROJECT_SOURCE_DIR}/src/audio/PcFxBus.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/audio/audio_test_stubs.cpp
 )
 
@@ -108,6 +109,7 @@ set(AUDIO_TEST_FILES
     audio/test_MixerGoldens.cpp
     audio/test_PitchedEngine.cpp
     audio/test_OutputRoute.cpp
+    audio/test_PcFxBus.cpp
 )
 
 # ── Native PipeWire backend tests (only when CMake detected usable headers) ──
