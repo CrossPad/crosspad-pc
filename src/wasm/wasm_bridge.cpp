@@ -281,10 +281,10 @@ void apply_frame(const Frame& f) {
         switch (m[0] & 0xF0) {
         case 0x90: if (n >= 3) in.handleNoteOn(ch, m[1], m[2]); break;
         case 0x80: if (n >= 3) in.handleNoteOff(ch, m[1], m[2]); break;
-        case 0xB0: if (n >= 3) in.handleSampleControlChange(ch + 1, m[1], m[2]); break;
+        case 0xB0: if (n >= 3) in.handleSampleControlChange(ch, m[1], m[2]); break;
         case 0xA0: if (n >= 3) in.handleAftertouch(ch, m[1], m[2]); break;
-        case 0xE0: if (n >= 3) in.handleSamplePitchBend(ch + 1, (int16_t)((m[1] | (m[2] << 7)) - 8192)); break;
-        case 0xC0: in.handleSampleProgramChange(ch + 1, m[1]); break;
+        case 0xE0: if (n >= 3) in.handleSamplePitchBend(ch, (int16_t)((m[1] | (m[2] << 7)) - 8192)); break;
+        case 0xC0: in.handleSampleProgramChange(ch, m[1]); break;
         case 0xF0:
             if (auto* h = crosspad::getPlatformServices().stm32MessageHandler) h->handleMessage(m, (unsigned)n);
             break;
