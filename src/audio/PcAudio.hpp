@@ -18,6 +18,13 @@
 
 struct PcSinkStream;
 
+/// The real-time priority asked for with CROSSPAD_RT_AUDIO=<prio> (Linux, macOS),
+/// 0 when the variable is not set. A value that is not a positive number means
+/// kRtAudioDefaultPriority. The device callback runs at it, the render thread one
+/// below; the system refuses both without the rights (rtprio in limits.conf).
+int pcAudioRtPriority();
+constexpr int kRtAudioDefaultPriority = 80;
+
 class PcAudioOutput : public crosspad::IAudioOutput {
 public:
     PcAudioOutput();

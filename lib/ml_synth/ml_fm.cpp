@@ -608,12 +608,44 @@ void FmSynth_Process(const float * /*in*/, float *out, int bufLen)
     float pitchVar = pitchBendValue + FmSynth_GetModulationPitchMultiplier();
     pitchMultiplier = std::pow(2.0f, pitchVar / 12.0f);
 
-    for (int n = 0; n < bufLen; n++)
+    /* A voice whose four operators are off with their envelopes at zero adds
+     * exactly 0 to every sample, and a note-on starts its operators afresh
+     * (FmSynth_ToneInit), so it is left out of the block. */
+    bool sounding[FM_VOICE_CNT];
+    bool anySounding = false;
+    for (int j = 0; j < FM_VOICE_CNT; j++)
+    {
+        sounding[j] = false;
+        for (int i = 0; i < 4; i++)
+        {
+            const struct synthTone_s *osc = &fmVoice[j].op[i];
+            if (osc->state != ENV_OFF || osc->lvl_env != 0.0f)
+            {
+                sounding[j] = true;
+            }
+        }
+        anySounding = anySounding || sounding[j];
+    }
+
+    if (!anySounding)
+    {
+        for (int n = 0; n < bufLen; n++)
+        {
+            out[n] = 0.0f;
+        }
+    }
+
+    for (int n = 0; anySounding && n < bufLen; n++)
     {
         float sample = 0.0f;
 
         for (int j = 0; j < FM_VOICE_CNT; j++)
         {
+            if (!sounding[j])
+            {
+                continue;
+            }
+
             struct synthVoice_s *voice = &fmVoice[j];
 
             for (int i = 0; i < 4; i++)

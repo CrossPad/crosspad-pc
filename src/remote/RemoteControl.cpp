@@ -34,6 +34,7 @@
 // LVGL SDL driver internals — window/renderer access; object class names for
 // the click hit report
 #include "lvgl/src/drivers/sdl/lv_sdl_window.h"
+#include "hal/hal.h"
 #include "lvgl/src/core/lv_obj_class_private.h"
 
 // Where the LCD sits inside the window — one copy, shared with the layout
@@ -272,7 +273,7 @@ static std::string handle_screenshot(const std::string& json = "") {
         return "{" + json_bool("ok", false) + "," + json_string("error", "no display") + "}";
     }
 
-    SDL_Window* window = lv_sdl_window_get_window(s_disp);
+    SDL_Window* window = sdl_hal_window(s_disp);
     SDL_Renderer* renderer = (SDL_Renderer*)lv_sdl_window_get_renderer(s_disp);
     if (!window || !renderer) {
         return "{" + json_bool("ok", false) + "," + json_string("error", "no SDL window/renderer") + "}";
@@ -419,7 +420,7 @@ static std::string handle_click(const std::string& json) {
                   json_int("h", lv_area_get_height(&a)) + "}";
     }
 
-    SDL_Window* window = lv_sdl_window_get_window(s_disp);
+    SDL_Window* window = sdl_hal_window(s_disp);
     Uint32 windowId = SDL_GetWindowID(window);
 
     SDL_Event ev = {};
@@ -555,7 +556,7 @@ static std::string handle_drag(const std::string& json) {
         }
     };
     auto* job = new DragJob{};
-    job->windowId = SDL_GetWindowID(lv_sdl_window_get_window(s_disp));
+    job->windowId = SDL_GetWindowID(sdl_hal_window(s_disp));
     toWindow(x1, y1, job->x1, job->y1);
     toWindow(x2, y2, job->x2, job->y2);
     job->steps = steps;
@@ -757,7 +758,7 @@ static std::string handle_app_start(const std::string& json) {
 
 static std::string handle_encoder_rotate(const std::string& json) {
     int delta = json_get_int(json, "delta", 0);
-    SDL_Window* window = lv_sdl_window_get_window(s_disp);
+    SDL_Window* window = sdl_hal_window(s_disp);
     Uint32 windowId = SDL_GetWindowID(window);
 
     SDL_Event ev = {};
@@ -770,7 +771,7 @@ static std::string handle_encoder_rotate(const std::string& json) {
 }
 
 static std::string handle_encoder_press(bool pressed) {
-    SDL_Window* window = lv_sdl_window_get_window(s_disp);
+    SDL_Window* window = sdl_hal_window(s_disp);
     Uint32 windowId = SDL_GetWindowID(window);
 
     SDL_Event ev = {};
@@ -791,7 +792,7 @@ static std::string handle_key(const std::string& json) {
         return "{" + json_bool("ok", false) + "," + json_string("error", "missing keycode") + "}";
     }
 
-    SDL_Window* window = lv_sdl_window_get_window(s_disp);
+    SDL_Window* window = sdl_hal_window(s_disp);
     Uint32 windowId = SDL_GetWindowID(window);
 
     SDL_Event ev = {};
