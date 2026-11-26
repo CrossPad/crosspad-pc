@@ -101,6 +101,7 @@ void fw_view_service_install(void);   // the board's (platform-idf main/fw_view_
 #include "synth/MlPianoSynth.hpp"
 #if __has_include("crosspad-mixer/AudioMixerEngine.hpp")
 #include "crosspad-mixer/AudioMixerEngine.hpp"
+#include "audio/PcFxBus.hpp"
 #include "sequencer/PcSequencer.hpp"
 #include "song/PcSongEnginePort.hpp"
 #include "song/PcSongSounds.hpp"
@@ -1433,13 +1434,12 @@ static void boot_devices()
         const auto ch = s_mixerEngine.addChannel(s_pitchedNode, "Pitched");
         for (uint8_t o = 0; o < crosspad_pc::PcAudioModule::NUM_BUSES; ++o) s_mixerEngine.setRouteEnabled(ch, o, true);
     }
-    {
-        const auto ch = s_mixerEngine.addChannel(&s_usbNode, "USB");
-        for (uint8_t o = 0; o < crosspad_pc::PcAudioModule::NUM_OUTPUTS; ++o) s_mixerEngine.setRouteEnabled(ch, o, true);
-    }
+    const auto chUsb = s_mixerEngine.addChannel(&s_usbNode, "USB");
+    for (uint8_t o = 0; o < crosspad_pc::PcAudioModule::NUM_OUTPUTS; ++o) s_mixerEngine.setRouteEnabled(chUsb, o, true);
     crosspad_pc::sequencer_init(s_mixerEngine, crosspad_pc::PcAudioModule::NUM_OUTPUTS);
-    s_mixerEngine.addChannel(&s_in1Node, "IN1");
-    s_mixerEngine.addChannel(&s_in2Node, "IN2");
+    const auto chIn1 = s_mixerEngine.addChannel(&s_in1Node, "IN1");
+    const auto chIn2 = s_mixerEngine.addChannel(&s_in2Node, "IN2");
+    crosspad_pc::fx_bus_init(s_mixerEngine, chIn1, chIn2, chUsb, crosspad_pc::PcAudioModule::CAPTURE_BUS);
     s_mixerEngine.setOutputName(0, "Out 1/2");
     s_mixerEngine.setOutputName(1, "Out 3/4");
     s_mixerEngine.setOutputName(crosspad_pc::PcAudioModule::CAPTURE_BUS, "USB rec");
@@ -1447,8 +1447,10 @@ static void boot_devices()
 #else
     // Register predefined PC channels in IN1=0, IN2=1, SYNTH=2 order.
     s_mixerSynthNode.setEngine(&fmSynth);
-    s_mixerEngine.addChannel(&s_in1Node, "Input 1");
-    s_mixerEngine.addChannel(&s_in2Node, "Input 2");
+    const auto chIn1 = s_mixerEngine.addChannel(&s_in1Node, "Input 1");
+    const auto chIn2 = s_mixerEngine.addChannel(&s_in2Node, "Input 2");
+    crosspad_pc::fx_bus_init(s_mixerEngine, chIn1, chIn2, kMixerInvalidChannelId,
+                             crosspad_pc::PcAudioModule::CAPTURE_BUS);
     s_mixerEngine.addChannel(&s_mixerSynthNode, "Synth");
     // Default routing: SYNTH → OUT1 (matches legacy behavior).
     s_mixerEngine.setRouteEnabled(MixerInput::SYNTH, MixerOutput::OUT1, true);

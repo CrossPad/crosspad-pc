@@ -76,7 +76,7 @@ The `CrossPad` target gets: `PLATFORM_PC=1`, `USE_LVGL=1`, `USE_FREERTOS=1`, `CP
 
 ### Core / GUI version gate
 
-`src/crosspad_deps.hpp` declares the crosspad-core / crosspad-gui versions this simulator was written against (today core 2.44.4, gui 2.11.9; major mismatch is `#error`, minor/patch drift a `#warning`). Bump it together with the `lib/` submodules, after building and running against them. Keep the pins in step with what platform-idf's `main` uses.
+`src/crosspad_deps.hpp` declares the crosspad-core / crosspad-gui versions this simulator was written against (today core 2.48.0, gui 2.14.0; major mismatch is `#error`, minor/patch drift a `#warning`). Bump it together with the `lib/` submodules, after building and running against them. Keep the pins in step with what platform-idf's `main` uses.
 
 ## Architecture
 

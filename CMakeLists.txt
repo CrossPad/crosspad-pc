@@ -422,6 +422,7 @@ if(USE_AUDIO)
         src/song/PcSongEnginePort.cpp
         src/song/PcSongSounds.cpp
         src/sampletools/PcSampleToolsPort.cpp
+        src/audio/PcFxBus.cpp
     )
 
     if(USE_VIRTUAL_AUDIO)

@@ -61,3 +61,6 @@
 [submodule "src/apps/crosspad-pianotiles"]
 	path = src/apps/crosspad-pianotiles
 	url = https://github.com/CrossPad/crosspad-pianotiles.git
+[submodule "src/apps/crosspad-fxpad"]
+	path = src/apps/crosspad-fxpad
+	url = https://github.com/CrossPad/crosspad-fxpad.git
